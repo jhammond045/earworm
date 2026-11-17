@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm M0: Live follow</title>
+<link rel="stylesheet" href="/src/common/style.css">
+<style>
+  #ribbon { height: 260px; }
+  #vowel, #tone { height: 90px; }
+  .meters { display: grid; gap: 6px 16px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .m { display: grid; grid-template-columns: 8.5em 1fr; gap: 0 8px; align-items: center; font-size: 0.9rem; }
+  .m .track { position: relative; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .m .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); width: 0; }
+  .m .tick { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--fg); left: 0; }
+  .m .val { grid-column: 2; font-size: 0.8rem; color: var(--muted); min-height: 1.2em; }
+  .presets button[aria-pressed=true], .nb button[aria-pressed=true] { background: var(--accent); color: #fff; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Earworm M0: Live follow</h1>
+  <div class="note"><strong>Use wired headphones.</strong> Speakers feed the mic and the sound will be muted or howl. Bluetooth adds too much delay to judge anything.</div>
+  <div id="bleed" class="alert" hidden>Bleed detected: the mic is hearing the output. Put on wired headphones. The live sound is muted.</div>
+  <div id="error" class="alert" hidden></div>
+
+  <div class="bar">
+    <button id="start" class="primary">Start</button>
+    <label for="device">Input</label>
+    <select id="device" disabled><option>(start first)</option></select>
+    <span id="nb" class="nb bar" role="group" aria-label="Band count">
+      <span>Bands</span>
+      <button type="button" data-n="16" aria-pressed="true">16</button>
+      <button type="button" data-n="24" aria-pressed="false">24</button>
+    </span>
+  </div>
+  <p id="transport" class="mono small muted">Not started.</p>
+
+  <h2>Live view</h2>
+  <canvas id="ribbon" aria-label="Pitch ribbon of the last 8 seconds"></canvas>
+  <p class="small muted">Dots: raw pitch. Line: tuned pitch, thicker when louder, brighter when more open. Ticks at the bottom: onsets.</p>
+
+  <div class="grid">
+    <div><h2>Vowel shape (from you)</h2><canvas id="vowel" aria-label="Live vowel shape bands"></canvas></div>
+    <div><h2>Effective tone bands (what plays)</h2><canvas id="tone" aria-label="Effective tone bands"></canvas></div>
+  </div>
+
+  <h2>Meters</h2>
+  <div class="meters" id="meters"></div>
+
+  <h2>Sound</h2>
+  <div class="bar presets" id="presets" role="group" aria-label="Sound presets"></div>
+  <div class="grid" id="sound"></div>
+
+  <h2>Voice</h2>
+  <div class="grid" id="voice"></div>
+
+  <h2>Tuning</h2>
+  <div class="grid" id="tuning"></div>
+
+  <h2>Tools</h2>
+  <div class="bar">
+    <button id="save" disabled>Save last 30 s</button>
+    <button id="reset" disabled>Reset singer</button>
+    <button id="panic" disabled>Panic</button>
+  </div>
+  <p class="small muted">Save writes the mic as a WAV, the feature frames as a .f32 file and a JSON of settings. Keep the hums for the corpus.</p>
+  <p class="small"><a href="/live-test.html">Listening test checklist</a></p>
+</main>
+<script type="module" src="/src/live/main.ts"></script>
+</body>
+</html>

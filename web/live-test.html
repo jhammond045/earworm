@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm M0: Live follow test</title>
+<link rel="stylesheet" href="/src/common/style.css">
+<style>
+  fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; padding: 8px 12px; }
+  fieldset label { margin-right: 12px; white-space: nowrap; }
+  .step { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Live follow listening test</h1>
+  <div class="note"><strong>Wear wired headphones.</strong> Open <a href="/live.html" target="_blank" rel="noopener">Live follow</a> in another tab, press Start, then work down this list. Settings to use are in each step. Answers save in this browser as you go.</div>
+  <div id="steps"></div>
+  <div class="bar">
+    <button id="download" class="primary">Download results (JSON)</button>
+    <button id="clear">Clear answers</button>
+  </div>
+</main>
+<script type="module" src="/src/live/test-page.ts"></script>
+</body>
+</html>

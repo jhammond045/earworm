@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Earworm M0</title>
+  <link rel="stylesheet" href="/src/common/style.css">
+</head>
+<body>
+  <main>
+    <h1>Earworm M0</h1>
+    <ul>
+      <li><a href="live.html">Live</a>: hum into the mic and the synth follows.</li>
+      <li><a href="live-test.html">Live test</a>: automated checks of the Live tier.</li>
+      <li><a href="influence.html">Influence</a>: match a sound to synth settings.</li>
+      <li><a href="influence-test.html">Influence test</a>: automated checks of the matcher.</li>
+      <li><a href="delay.html">Delay</a>: measure round trip and engine delay.</li>
+    </ul>
+    <p id="coi"></p>
+    <p id="fb"></p>
+  </main>
+  <script>
+    const iso = window.crossOriginIsolated === true;
+    const forced = new URLSearchParams(location.search).get('fallback') === '1';
+    document.getElementById('coi').textContent = iso
+      ? 'crossOriginIsolated: yes. Audio data travels over SharedArrayBuffer.'
+      : 'crossOriginIsolated: no. The MessagePort fallback is used.';
+    const fb = document.getElementById('fb');
+    if (forced) {
+      fb.textContent = 'Fallback forced by ?fallback=1. ';
+      const a = document.createElement('a');
+      a.href = location.pathname;
+      a.textContent = 'Remove it';
+      fb.append(a, '.');
+    } else {
+      fb.append('To force the fallback, add ?fallback=1 to any page URL, for example ');
+      const a = document.createElement('a');
+      a.href = '?fallback=1';
+      a.textContent = 'this page with ?fallback=1';
+      fb.append(a, '.');
+    }
+  </script>
+</body>
+</html>
