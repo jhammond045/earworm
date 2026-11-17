@@ -7,7 +7,8 @@
     "dev:nocoi": "EARWORM_NO_COI=1 vite web",
     "build:wasm": "sh scripts/build-wasm.sh",
     "test": "vitest run --root web && cargo test --workspace",
-    "typecheck": "tsc -p web --noEmit"
+    "typecheck": "tsc -p web --noEmit",
+    "gen:params": "node tools/paramgen/paramgen.ts"
   },
   "devDependencies": {
     "@types/audioworklet": "0.0.102",

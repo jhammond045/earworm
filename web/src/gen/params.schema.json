@@ -1,0 +1,345 @@
+{
+  "type": "object",
+  "description": "A sound: every parameter as a number from 0 to 1.",
+  "properties": {
+    "src.harm_mix": {
+      "type": "number",
+      "description": "Level of the partial bank. Normalized 0 to 1; real range 0.0 to 1.0, neutral 1.0."
+    },
+    "src.noise_mix": {
+      "type": "number",
+      "description": "Level of the shaped noise. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.1."
+    },
+    "src.grain_mix": {
+      "type": "number",
+      "description": "Level of the grain cloud (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "src.tilt": {
+      "type": "number",
+      "description": "Slope of partial levels. Lower is duller. Normalized 0 to 1; real range -24.0 to 6.0 dB/oct, neutral -6.0."
+    },
+    "src.oddeven": {
+      "type": "number",
+      "description": "Odd against even partials. Positive is hollow. Normalized 0 to 1; real range -1.0 to 1.0, neutral 0.0."
+    },
+    "src.stretch": {
+      "type": "number",
+      "description": "Inharmonicity B in f_k = k f0 sqrt(1 + B k^2). Normalized 0 to 1; real range 0.0 to 0.01, neutral 0.0."
+    },
+    "src.jitter": {
+      "type": "number",
+      "description": "Slow random detune of each partial. Normalized 0 to 1; real range 0.0 to 50.0 cents, neutral 0.0."
+    },
+    "src.modal": {
+      "type": "number",
+      "description": "Ratio table: 0 harmonic, 1 drumhead, 2 bar. Normalized 0 to 1; real range 0.0 to 2.0, neutral 0.0."
+    },
+    "src.damp": {
+      "type": "number",
+      "description": "How much faster high partials die than low ones. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "src.f1_freq": {
+      "type": "number",
+      "description": "First formant centre. Normalized 0 to 1; real range 200.0 to 1200.0 Hz, neutral 600.0."
+    },
+    "src.f1_gain": {
+      "type": "number",
+      "description": "First formant boost. Normalized 0 to 1; real range 0.0 to 24.0 dB, neutral 0.0."
+    },
+    "src.f2_freq": {
+      "type": "number",
+      "description": "Second formant centre. Normalized 0 to 1; real range 700.0 to 3500.0 Hz, neutral 1500.0."
+    },
+    "src.f2_gain": {
+      "type": "number",
+      "description": "Second formant boost. Normalized 0 to 1; real range 0.0 to 24.0 dB, neutral 0.0."
+    },
+    "grain.size": {
+      "type": "number",
+      "description": "Grain length (not played until M4). Normalized 0 to 1; real range 0.01 to 0.5 s, neutral 0.08."
+    },
+    "grain.density": {
+      "type": "number",
+      "description": "Grains per second (not played until M4). Normalized 0 to 1; real range 1.0 to 100.0 1/s, neutral 20.0."
+    },
+    "grain.pos": {
+      "type": "number",
+      "description": "Read position in the source (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.5."
+    },
+    "grain.spray": {
+      "type": "number",
+      "description": "Random spread of the read position (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "grain.scatter": {
+      "type": "number",
+      "description": "Random spread of grain timing (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "fold.amt": {
+      "type": "number",
+      "description": "Wavefolder drive. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "fold.bias": {
+      "type": "number",
+      "description": "Wavefolder offset. Adds even harmonics. Normalized 0 to 1; real range -1.0 to 1.0, neutral 0.0."
+    },
+    "clang.amt": {
+      "type": "number",
+      "description": "Metallic phase and ring modulation. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "clang.ratio": {
+      "type": "number",
+      "description": "Modulator frequency over f0. Normalized 0 to 1; real range 0.25 to 8.0, neutral 1.41."
+    },
+    "comb.amt": {
+      "type": "number",
+      "description": "Resonant comb mix. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "comb.tune": {
+      "type": "number",
+      "description": "Comb pitch over f0. Normalized 0 to 1; real range 0.5 to 4.0, neutral 1.0."
+    },
+    "comb.decay": {
+      "type": "number",
+      "description": "Comb ring time. Normalized 0 to 1; real range 0.01 to 2.0 s, neutral 0.2."
+    },
+    "smear.amt": {
+      "type": "number",
+      "description": "Spectral blur (v1, not played). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "smear.freeze": {
+      "type": "number",
+      "description": "Spectral freeze (v1, not played). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "crush.bits": {
+      "type": "number",
+      "description": "Bit depth. Normalized 0 to 1; real range 2.0 to 16.0 bits, neutral 16.0."
+    },
+    "crush.rate": {
+      "type": "number",
+      "description": "Sample-and-hold rate. Normalized 0 to 1; real range 500.0 to 48000.0 Hz, neutral 48000.0."
+    },
+    "tape.amt": {
+      "type": "number",
+      "description": "Wow, flutter and dropouts. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "filt.cutoff": {
+      "type": "number",
+      "description": "Filter cutoff. Normalized 0 to 1; real range 20.0 to 20000.0 Hz, neutral 20000.0."
+    },
+    "filt.res": {
+      "type": "number",
+      "description": "Filter resonance. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "filt.morph": {
+      "type": "number",
+      "description": "Low-pass at 0, band-pass at 0.5, high-pass at 1. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "filt.track": {
+      "type": "number",
+      "description": "How far the cutoff follows pitch. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "env.attack": {
+      "type": "number",
+      "description": "Rise time. Normalized 0 to 1; real range 0.001 to 4.0 s, neutral 0.005."
+    },
+    "env.hold": {
+      "type": "number",
+      "description": "Time at full level after the attack. The minimum means none. Normalized 0 to 1; real range 0.0005 to 2.0 s, neutral 0.0005."
+    },
+    "env.decay": {
+      "type": "number",
+      "description": "Fall time to the sustain level; ring time of a struck sound. Normalized 0 to 1; real range 0.005 to 8.0 s, neutral 0.3."
+    },
+    "env.sustain": {
+      "type": "number",
+      "description": "Level held while the note lasts. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.8."
+    },
+    "env.release": {
+      "type": "number",
+      "description": "Fade after the note ends. Normalized 0 to 1; real range 0.005 to 8.0 s, neutral 0.2."
+    },
+    "env.noise_decay": {
+      "type": "number",
+      "description": "Fall time of the noise, separate from the body. Normalized 0 to 1; real range 0.005 to 4.0 s, neutral 0.2."
+    },
+    "env.pitch_amt": {
+      "type": "number",
+      "description": "Pitch offset at the start of the note. Normalized 0 to 1; real range -24.0 to 48.0 semitones, neutral 0.0."
+    },
+    "env.pitch_time": {
+      "type": "number",
+      "description": "How fast the start pitch falls back. Normalized 0 to 1; real range 0.001 to 0.5 s, neutral 0.05."
+    },
+    "strike.click": {
+      "type": "number",
+      "description": "Start transient. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "strike.color": {
+      "type": "number",
+      "description": "Pitch of the clicks. Normalized 0 to 1; real range 200.0 to 12000.0 Hz, neutral 3000.0."
+    },
+    "strike.end_click": {
+      "type": "number",
+      "description": "Closing transient. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "lfo1.rate": {
+      "type": "number",
+      "description": "First LFO rate. Normalized 0 to 1; real range 0.05 to 20.0 Hz, neutral 5.0."
+    },
+    "lfo1.to_pitch": {
+      "type": "number",
+      "description": "First LFO to pitch. Normalized 0 to 1; real range 0.0 to 100.0 cents, neutral 0.0."
+    },
+    "lfo1.to_filter": {
+      "type": "number",
+      "description": "First LFO to cutoff. Normalized 0 to 1; real range 0.0 to 4.0 oct, neutral 0.0."
+    },
+    "lfo1.to_level": {
+      "type": "number",
+      "description": "First LFO to level. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "lfo2.rate": {
+      "type": "number",
+      "description": "Second LFO rate. Normalized 0 to 1; real range 0.05 to 20.0 Hz, neutral 0.5."
+    },
+    "lfo2.to_pitch": {
+      "type": "number",
+      "description": "Second LFO to pitch. Normalized 0 to 1; real range 0.0 to 100.0 cents, neutral 0.0."
+    },
+    "lfo2.to_filter": {
+      "type": "number",
+      "description": "Second LFO to cutoff. Normalized 0 to 1; real range 0.0 to 4.0 oct, neutral 0.0."
+    },
+    "lfo2.to_grain": {
+      "type": "number",
+      "description": "Second LFO to grain position (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "chaos.rate": {
+      "type": "number",
+      "description": "Speed of the random wander. Normalized 0 to 1; real range 0.1 to 30.0 Hz, neutral 2.0."
+    },
+    "chaos.amt": {
+      "type": "number",
+      "description": "Random wander of pitch, cutoff and level. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "delay.time": {
+      "type": "number",
+      "description": "Echo time. Normalized 0 to 1; real range 0.01 to 2.0 s, neutral 0.375."
+    },
+    "delay.fb": {
+      "type": "number",
+      "description": "Echo feedback. Normalized 0 to 1; real range 0.0 to 0.95, neutral 0.35."
+    },
+    "delay.shift": {
+      "type": "number",
+      "description": "Pitch shift inside the echo loop. Normalized 0 to 1; real range -12.0 to 12.0 semitones, neutral 0.0."
+    },
+    "delay.mix": {
+      "type": "number",
+      "description": "Echo level. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "verb.size": {
+      "type": "number",
+      "description": "Room size and tail length. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.5."
+    },
+    "verb.damp": {
+      "type": "number",
+      "description": "High-frequency loss in the tail. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.5."
+    },
+    "verb.mix": {
+      "type": "number",
+      "description": "Reverb level. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "verb.freeze": {
+      "type": "number",
+      "description": "Holds the tail forever at 1. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+    },
+    "width": {
+      "type": "number",
+      "description": "Stereo width: 0 mono, 1 as is, 2 wide. Normalized 0 to 1; real range 0.0 to 2.0, neutral 1.0."
+    },
+    "tone_bands": {
+      "type": "array",
+      "description": "Partial levels by frequency band, the vowel shape. 16 numbers from 0 to 1 (low to high frequency, 80 Hz to 12 kHz); real range -30.0 to 30.0 dB, neutral 0.0.",
+      "items": {
+        "type": "number"
+      }
+    },
+    "noise_bands": {
+      "type": "array",
+      "description": "Noise levels by frequency band. 16 numbers from 0 to 1 (low to high frequency, 80 Hz to 12 kHz); real range -30.0 to 30.0 dB, neutral 0.0.",
+      "items": {
+        "type": "number"
+      }
+    }
+  },
+  "required": [
+    "src.harm_mix",
+    "src.noise_mix",
+    "src.grain_mix",
+    "src.tilt",
+    "src.oddeven",
+    "src.stretch",
+    "src.jitter",
+    "src.modal",
+    "src.damp",
+    "src.f1_freq",
+    "src.f1_gain",
+    "src.f2_freq",
+    "src.f2_gain",
+    "grain.size",
+    "grain.density",
+    "grain.pos",
+    "grain.spray",
+    "grain.scatter",
+    "fold.amt",
+    "fold.bias",
+    "clang.amt",
+    "clang.ratio",
+    "comb.amt",
+    "comb.tune",
+    "comb.decay",
+    "smear.amt",
+    "smear.freeze",
+    "crush.bits",
+    "crush.rate",
+    "tape.amt",
+    "filt.cutoff",
+    "filt.res",
+    "filt.morph",
+    "filt.track",
+    "env.attack",
+    "env.hold",
+    "env.decay",
+    "env.sustain",
+    "env.release",
+    "env.noise_decay",
+    "env.pitch_amt",
+    "env.pitch_time",
+    "strike.click",
+    "strike.color",
+    "strike.end_click",
+    "lfo1.rate",
+    "lfo1.to_pitch",
+    "lfo1.to_filter",
+    "lfo1.to_level",
+    "lfo2.rate",
+    "lfo2.to_pitch",
+    "lfo2.to_filter",
+    "lfo2.to_grain",
+    "chaos.rate",
+    "chaos.amt",
+    "delay.time",
+    "delay.fb",
+    "delay.shift",
+    "delay.mix",
+    "verb.size",
+    "verb.damp",
+    "verb.mix",
+    "verb.freeze",
+    "width",
+    "tone_bands",
+    "noise_bands"
+  ],
+  "additionalProperties": false
+}
