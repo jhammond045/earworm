@@ -206,6 +206,8 @@ pub struct Layer {
     gr: f32,
     gl_t: f32,
     gr_t: f32,
+    gl_step: f32,
+    gr_step: f32,
     grit_on: bool,
     pub peak: f32,
     pub steals: u32,
@@ -261,6 +263,8 @@ impl Layer {
             gr: 0.0,
             gl_t: 0.0,
             gr_t: 0.0,
+            gl_step: 0.0,
+            gr_step: 0.0,
             grit_on: false,
             peak: 0.0,
             steals: 0,
@@ -590,6 +594,9 @@ impl Layer {
         let a = (self.pan + 1.0) * std::f32::consts::FRAC_PI_4;
         self.gl_t = lvl * a.cos();
         self.gr_t = lvl * a.sin();
+        // Fixed per tick so the ramp does not depend on how the tick is split.
+        self.gl_step = (self.gl_t - self.gl) / TICK as f32;
+        self.gr_step = (self.gr_t - self.gr) / TICK as f32;
     }
 
     /// Read voice `v`'s curve frame at its clip time (held after the note's
@@ -687,8 +694,7 @@ impl Layer {
             self.peak = 0.0;
             return;
         }
-        let k = 1.0 / TICK as f32;
-        let (dl, dr) = ((self.gl_t - self.gl) * k, (self.gr_t - self.gr) * k);
+        let (dl, dr) = (self.gl_step, self.gr_step);
         let w = self.real[0][P::WIDTH];
         let mut peak = 0.0f32;
         for i in 0..n {
