@@ -46,15 +46,14 @@ pub const MSG_PLAY: u16 = 6;
 pub const MSG_STOP: u16 = 7;
 /// index = section. Taken at the end of the current pass of the section.
 pub const MSG_JUMP: u16 = 8;
-/// value 1 = the track loops back to section 0 at its end, 0 = it stops.
-pub const MSG_SET_LOOP: u16 = 9;
 /// value = active-partial budget for all layers. 0 = automatic: start at
-/// BUDGET_MAX and adapt to the host-reported CPU load (live only).
-pub const MSG_SET_BUDGET: u16 = 10;
+/// BUDGET_MAX and adapt to the host-reported CPU load (live only; offline
+/// renders use BUDGET_MAX). Whether the track loops is a flag in the track blob.
+pub const MSG_SET_BUDGET: u16 = 9;
 /// layer whose resolved values the meter block shows.
-pub const MSG_SELECT_LAYER: u16 = 11;
+pub const MSG_SELECT_LAYER: u16 = 10;
 /// Silence every voice and clear every effect tail at once.
-pub const MSG_PANIC: u16 = 12;
+pub const MSG_PANIC: u16 = 11;
 
 /// MSG_SET_PARAM targets (the `index` byte).
 pub const SET_BASE: u8 = 0;

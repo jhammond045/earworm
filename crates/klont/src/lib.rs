@@ -7,6 +7,10 @@
 //! allocated in `ew_init`; process and render calls never allocate.
 
 pub mod curve;
+pub mod engine;
+pub mod layer;
 pub mod protocol;
 pub mod seq;
 pub mod voice;
+
+pub use engine::Engine;
