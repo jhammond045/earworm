@@ -1,0 +1,13 @@
+[package]
+name = "analysis"
+version = "0.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dsp = { path = "../dsp" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hound = "3"
