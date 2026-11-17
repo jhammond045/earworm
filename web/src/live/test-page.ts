@@ -2,6 +2,9 @@
 
 import { download } from '../common/wav';
 
+// Inside live-session.html (?embed=1): hide the links to the other page.
+if (new URLSearchParams(location.search).has('embed')) document.documentElement.classList.add('embedded');
+
 interface Step { id: string; title: string; do: string; listen: string; rate?: string }
 const STEPS: Step[] = [
   { id: 'vowels', title: 'Sustained vowels', do: 'Mouth depth 100%. Sing "aaa, eee, ooo" on one note, holding each.', listen: 'Do the three vowels sound different?', rate: '1 = identical, 5 = clearly different' },

@@ -22,6 +22,7 @@ export default defineConfig({
         index: page('index.html'),
         live: page('live.html'),
         liveTest: page('live-test.html'),
+        liveSession: page('live-session.html'),
         influence: page('influence.html'),
         influenceTest: page('influence-test.html'),
         delay: page('delay.html'),

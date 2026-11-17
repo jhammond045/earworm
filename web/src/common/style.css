@@ -48,6 +48,10 @@ a { color: var(--accent); }
 .note { background: var(--warn-bg); color: var(--warn-fg); border-radius: 6px; padding: 10px 12px; margin: 12px 0; }
 .alert { background: var(--bad-bg); color: var(--bad-fg); border-radius: 6px; padding: 10px 12px; margin: 12px 0; font-weight: 600; }
 [hidden] { display: none !important; }
+.embedded .standalone { display: none !important; }
+.embedded main { max-width: none; }
+:root:not(.embedded) .embedded-only { display: none; }
+
 button, select, input, textarea { font: inherit; color: inherit; }
 button {
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px;

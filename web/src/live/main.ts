@@ -12,6 +12,9 @@ import { PRESETS, SOUND_PARAMS, presetValues } from './presets';
 import { Ribbon, drawBands, noteName, readColors } from './ribbon';
 import recorderUrl from './recorder-processor.ts?worker&url';
 
+// Inside live-session.html (?embed=1): hide the links to the other page.
+if (new URLSearchParams(location.search).has('embed')) document.documentElement.classList.add('embedded');
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---------- settings (kept across engine restarts) ----------
@@ -339,6 +342,7 @@ let take: Float32Array | null = null;
 let recording = false;
 let player: AudioBufferSourceNode | null = null;
 let recTimer = 0;
+let takeInfo = '';
 
 function updateMute() {
   if (outGain) outGain.gain.value = recording || player ? 0 : 1;
@@ -367,7 +371,8 @@ function onRecorderMessage(ev: MessageEvent) {
     let o = 0;
     for (const c of takeChunks) { take.set(c, o); o += c.length; }
     takeChunks = [];
-    updateTakeUi(`Take: ${(n / (host?.sampleRate ?? 48000)).toFixed(1)} s. Play renders it with the current settings.`);
+    takeInfo = `Take: ${(n / (host?.sampleRate ?? 48000)).toFixed(1)} s. Play synth renders it with the current settings.`;
+    updateTakeUi(takeInfo);
   }
 }
 
@@ -388,7 +393,7 @@ function stopPlayback() {
   p.stop();
   p.disconnect();
   updateMute();
-  updateTakeUi();
+  updateTakeUi(takeInfo);
 }
 
 function play(samples: Float32Array, label: string) {
@@ -399,7 +404,7 @@ function play(samples: Float32Array, label: string) {
   player = ctx.createBufferSource();
   player.buffer = buf;
   player.connect(ctx.destination);
-  player.onended = () => { player = null; updateMute(); updateTakeUi(); };
+  player.onended = () => { player = null; updateMute(); updateTakeUi(takeInfo); };
   updateMute();
   player.start();
   updateTakeUi(label);
