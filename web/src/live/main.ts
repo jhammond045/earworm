@@ -322,7 +322,7 @@ function updateInfo() {
   const lat = (x: number | undefined) => (x === undefined ? 'n/a' : (x * 1000).toFixed(1) + ' ms');
   $('transport').textContent =
     `transport ${host.mode} | ${host.sampleRate} Hz | baseLatency ${lat(ctx.baseLatency)} | outputLatency ${lat(ctx.outputLatency)}` +
-    ` | analysis delay level ${meters[M_DELAY_LEVEL].toFixed(1)} ms, pitch ${meters[M_DELAY_PITCH].toFixed(1)} ms | bands ${host.nBands}`;
+    ` | nominal analysis delay level ${lat(meters[M_DELAY_LEVEL])}, pitch ${lat(meters[M_DELAY_PITCH])} | bands ${host.nBands}`;
 }
 
 function frame(now: number) {

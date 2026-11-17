@@ -158,8 +158,8 @@ export async function runEngineDelay(): Promise<EngineResult> {
   const cap = host.readCapture(c0, n);
   const meters = new Float32Array(METER_LEN);
   if (host.readMeters(meters)) {
-    res.meterDelayLevel = num(meters[M_DELAY_LEVEL]);
-    res.meterDelayPitch = num(meters[M_DELAY_PITCH]);
+    res.meterDelayLevel = num(meters[M_DELAY_LEVEL] * 1000);
+    res.meterDelayPitch = num(meters[M_DELAY_PITCH] * 1000);
   }
   host.setLive(false);
   micSrc.disconnect();
@@ -251,7 +251,7 @@ function render() {
       table(['Burst', 'Mic onset s', 'Input f0 Hz', 'Level delay ms', 'Pitch delay ms'],
         en.bursts.map((b, i) => [String(i + 1), fmt(b.micOnsetS, 3), fmt(b.inputF0), fmt(b.levelDelayMs), fmt(b.pitchDelayMs)])
           .concat([['Median', '', '', fmt(en.levelMedianMs), fmt(en.pitchMedianMs)]])),
-      note(`Transport: ${en.transport}. Engine's own meters (raw): level ${fmt(en.meterDelayLevel, 2)}, pitch ${fmt(en.meterDelayPitch, 2)}.`),
+      note(`Transport: ${en.transport}. Nominal analysis delay from the engine: level ${fmt(en.meterDelayLevel, 1)} ms, pitch ${fmt(en.meterDelayPitch, 1)} ms.`),
       ...(en.error ? [note(en.error)] : []));
   }
   if (rt?.medianMs != null && en) {
