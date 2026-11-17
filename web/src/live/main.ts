@@ -1,15 +1,16 @@
 // Live follow prototype page. Throwaway: one file of wiring, plain DOM.
 
 import {
-  EngineHost, createAudioContext, micConstraints, wantsFallback,
+  EngineHost, OfflineEngine, createAudioContext, micConstraints, wantsFallback,
 } from '../host/engine-host';
 import {
-  METER_LEN, M_ACTIVE_PARTIALS, M_BLEED, M_BREATH, M_DELAY_LEVEL, M_DELAY_PITCH, M_F0, M_FLOOR_DB,
+  MSG_SET_PARAM, METER_LEN, M_ACTIVE_PARTIALS, M_BLEED, M_BREATH, M_DELAY_LEVEL, M_DELAY_PITCH, M_F0, M_FLOOR_DB,
   M_GATE, M_HARD, M_INPUT_DB, M_LOUD, M_OPEN, M_TONE_EFF, M_VOICING, M_VOWEL, PARAMS, P, RECORD_STRIDE, SCALES,
 } from '../host/protocol';
 import { download, encodeWav } from '../common/wav';
 import { PRESETS, SOUND_PARAMS, presetValues } from './presets';
 import { Ribbon, drawBands, noteName, readColors } from './ribbon';
+import recorderUrl from './recorder-processor.ts?worker&url';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -163,6 +164,8 @@ let host: EngineHost | null = null;
 let ctx: AudioContext | null = null;
 let stream: MediaStream | null = null;
 let micSrc: MediaStreamAudioSourceNode | null = null;
+let outGain: GainNode | null = null; // live output; muted while a take records or plays
+let recorder: AudioWorkletNode | null = null;
 let nBands: 16 | 24 = 16;
 let cursor = 0;
 
@@ -200,7 +203,12 @@ async function openMic(deviceId?: string) {
   micSrc?.disconnect();
   stream?.getTracks().forEach((t) => t.stop());
   stream = await navigator.mediaDevices.getUserMedia(micConstraints(deviceId));
-  if (host) micSrc = host.connectMic(stream);
+  if (host) wireMic();
+}
+
+function wireMic() {
+  micSrc = host!.connectMic(stream!);
+  if (recorder) micSrc.connect(recorder);
 }
 
 async function startEngine(n: 16 | 24) {
@@ -209,8 +217,9 @@ async function startEngine(n: 16 | 24) {
   nBands = n;
   cursor = 0;
   recTotal = 0;
-  if (stream) micSrc = host.connectMic(stream);
-  host.node.connect(ctx.destination);
+  if (stream) wireMic();
+  host.node.disconnect();
+  host.node.connect(outGain!);
   for (const d of PARAMS) host.setParam(P[d.name], settings[d.name]);
   zeroBands();
   host.setLive(true);
@@ -239,10 +248,19 @@ $<HTMLButtonElement>('start').addEventListener('click', async (ev) => {
   try {
     ctx = createAudioContext(); // inside the click so the context may start
     await ctx.resume();
+    outGain = ctx.createGain();
+    outGain.connect(ctx.destination);
+    await ctx.audioWorklet.addModule(recorderUrl);
+    recorder = new AudioWorkletNode(ctx, 'earworm-recorder', {
+      numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit',
+    });
+    recorder.connect(ctx.destination); // silent; keeps the node pulled
+    recorder.port.onmessage = onRecorderMessage;
     stream = await navigator.mediaDevices.getUserMedia(micConstraints());
     await startEngine(nBands);
     await refreshDevices();
     for (const id of ['save', 'reset', 'panic']) $<HTMLButtonElement>(id).disabled = false;
+    updateTakeUi();
     btn.textContent = 'Running';
   } catch (e) {
     showError('Could not start: ' + (e instanceof Error ? e.message : String(e)));
@@ -311,6 +329,121 @@ $<HTMLButtonElement>('save').addEventListener('click', () => {
   download(new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }), `earworm-live-${stamp}.json`);
 });
 
+// ---------- record a take, play it back ----------
+// Record captures the raw mic with the live output muted. Play runs the take
+// through a fresh offline engine on the same live path with the current
+// settings, so changing a setting and pressing Play again re-renders it.
+const TAKE_MAX_S = 60;
+let takeChunks: Float32Array[] = [];
+let take: Float32Array | null = null;
+let recording = false;
+let player: AudioBufferSourceNode | null = null;
+let recTimer = 0;
+
+function updateMute() {
+  if (outGain) outGain.gain.value = recording || player ? 0 : 1;
+}
+
+function takeLength(): number {
+  return takeChunks.reduce((a, c) => a + c.length, 0);
+}
+
+function updateTakeUi(msg?: string) {
+  const started = !!host;
+  $<HTMLButtonElement>('take-rec').disabled = !started || recording;
+  $<HTMLButtonElement>('take-stop').disabled = !recording && !player;
+  $<HTMLButtonElement>('take-play').disabled = !started || recording || !take;
+  $<HTMLButtonElement>('take-voice').disabled = !started || recording || !take;
+  if (msg !== undefined) $('take-status').textContent = msg;
+}
+
+function onRecorderMessage(ev: MessageEvent) {
+  if (ev.data.chunk) {
+    takeChunks.push(ev.data.chunk as Float32Array);
+    if (host && takeLength() >= TAKE_MAX_S * host.sampleRate) stopRecording();
+  } else if (ev.data.done) {
+    const n = takeLength();
+    take = new Float32Array(n);
+    let o = 0;
+    for (const c of takeChunks) { take.set(c, o); o += c.length; }
+    takeChunks = [];
+    updateTakeUi(`Take: ${(n / (host?.sampleRate ?? 48000)).toFixed(1)} s. Play renders it with the current settings.`);
+  }
+}
+
+function stopRecording() {
+  if (!recording) return;
+  recording = false;
+  clearInterval(recTimer);
+  recorder?.port.postMessage('stop');
+  updateMute();
+  updateTakeUi('Finishing the take...');
+}
+
+function stopPlayback() {
+  if (!player) return;
+  const p = player;
+  player = null;
+  p.onended = null;
+  p.stop();
+  p.disconnect();
+  updateMute();
+  updateTakeUi();
+}
+
+function play(samples: Float32Array, label: string) {
+  if (!ctx) return;
+  stopPlayback();
+  const buf = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buf.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
+  player = ctx.createBufferSource();
+  player.buffer = buf;
+  player.connect(ctx.destination);
+  player.onended = () => { player = null; updateMute(); updateTakeUi(); };
+  updateMute();
+  player.start();
+  updateTakeUi(label);
+}
+
+$<HTMLButtonElement>('take-rec').addEventListener('click', () => {
+  if (!recorder || !host) return;
+  stopPlayback();
+  takeChunks = [];
+  recording = true;
+  updateMute();
+  recorder.port.postMessage('start');
+  const t0 = performance.now();
+  recTimer = window.setInterval(() => {
+    $('take-status').textContent = `Recording, live sound muted: ${((performance.now() - t0) / 1000).toFixed(0)} s (max ${TAKE_MAX_S} s).`;
+  }, 250);
+  updateTakeUi('Recording, live sound muted.');
+});
+
+$<HTMLButtonElement>('take-stop').addEventListener('click', () => {
+  if (recording) stopRecording();
+  else stopPlayback();
+});
+
+$<HTMLButtonElement>('take-play').addEventListener('click', async () => {
+  if (!take || !ctx) return;
+  const sr = ctx.sampleRate;
+  const eng = await OfflineEngine.create(sr, nBands);
+  let r;
+  try {
+    r = eng.processLive(take, PARAMS.map((d, i): [number, number, number, number] => [MSG_SET_PARAM, 0, i, settings[d.name]]));
+  } finally {
+    eng.dispose();
+  }
+  const muted = r.bleedSamples / sr;
+  play(r.out, `Playing the synth for this take (${nBands} bands, current settings).` +
+    (muted > 0.05 ? ` The bleed check muted ${muted.toFixed(1)} s of it: see the note below.` : ''));
+  $('take-bleed').hidden = muted <= 0.05;
+});
+
+$<HTMLButtonElement>('take-voice').addEventListener('click', () => {
+  if (take) play(take, 'Playing your voice as recorded.');
+});
+
 // ---------- drawing ----------
 const ribbon = new Ribbon($('ribbon') as HTMLCanvasElement);
 const meters = new Float32Array(METER_LEN);
@@ -338,7 +471,7 @@ function frame(now: number) {
   drawBands($('vowel') as HTMLCanvasElement, meters.subarray(M_VOWEL, M_VOWEL + n), n, 24, col);
   drawBands($('tone') as HTMLCanvasElement, meters.subarray(M_TONE_EFF, M_TONE_EFF + n), n, 24, col);
   const m = meters;
-  $('bleed').hidden = m[M_BLEED] < 0.5;
+  $('bleed').hidden = m[M_BLEED] < 0.5 || recording || !!player;
   mInput.set(dbFrac(m[M_INPUT_DB]), `${m[M_INPUT_DB].toFixed(0)} dB / floor ${m[M_FLOOR_DB].toFixed(0)} dB`, dbFrac(m[M_FLOOR_DB]));
   mGate.set(m[M_GATE], m[M_GATE] > 0.5 ? 'open' : 'closed');
   const v = Math.round(m[M_VOICING]);

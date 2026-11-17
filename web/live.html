@@ -37,6 +37,16 @@
   </div>
   <p id="transport" class="mono small muted">Not started.</p>
 
+  <h2>Record a take</h2>
+  <div class="bar">
+    <button id="take-rec" disabled>Record</button>
+    <button id="take-stop" disabled>Stop</button>
+    <button id="take-play" disabled>Play synth</button>
+    <button id="take-voice" disabled>Play voice</button>
+  </div>
+  <p id="take-status" class="small" aria-live="polite">Record sings into the engine with the live sound muted. Play synth renders the take through the same engine with the current settings; change a setting and press it again to hear the same take another way.</p>
+  <p id="take-bleed" class="note small" hidden>The engine's speaker-bleed check muted part of this playback. Nothing was playing while you recorded, so it is a false alarm: the check fires when the synth is louder than the mic and follows it. Live follow would have muted the same parts. Lower Level or raise the mic gain and play again.</p>
+
   <h2>Live view</h2>
   <canvas id="ribbon" aria-label="Pitch ribbon of the last 8 seconds"></canvas>
   <p class="small muted">Dots: raw pitch. Line: tuned pitch, thicker when louder, brighter when more open. Ticks at the bottom: onsets.</p>
