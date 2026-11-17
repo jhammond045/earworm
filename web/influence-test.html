@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Earworm: Influence blind test</title>
+  <link rel="stylesheet" href="/src/common/style.css">
+  <style>
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+    .cand { border: 1px solid #8886; border-radius: 6px; padding: 8px; }
+    .ok { color: #2a7; }
+    .bad { color: #c33; }
+    .err { color: #c33; }
+    table { border-collapse: collapse; }
+    td, th { padding: 2px 12px 2px 0; text-align: left; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Influence blind test</h1>
+    <p>Each trial plays a synthesised match of one sound. Listen to the four original sounds A to D and pick the one the match was made from. Listen as often as you like. Nothing about you is stored.</p>
+    <div class="row">
+      <label>Bands <select id="bands"><option value="16">16</option><option value="24">24</option></select></label>
+      <label>Seed <input id="seed" size="10"></label>
+      <button id="start">Start</button>
+    </div>
+    <div id="status" role="status"></div>
+    <div id="trial"></div>
+    <div id="result"></div>
+  </main>
+  <script type="module" src="/src/influence/test-page.ts"></script>
+</body>
+</html>

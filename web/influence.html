@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Earworm: Influence match</title>
+  <link rel="stylesheet" href="/src/common/style.css">
+  <style>
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+    #drop { border: 2px dashed #888; border-radius: 6px; padding: 14px; text-align: center; }
+    #drop.over { background: rgba(128, 128, 255, 0.15); }
+    #layout { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 16px; }
+    @media (max-width: 760px) { #layout { grid-template-columns: 1fr; } }
+    .src { display: block; width: 100%; text-align: left; margin: 4px 0; padding: 6px; }
+    .src.sel { outline: 2px solid #66f; }
+    .src canvas { display: block; width: 100%; height: 36px; }
+    .src small { display: block; opacity: 0.75; }
+    table.params { border-collapse: collapse; margin: 6px 0; }
+    table.params td, table.params th { padding: 2px 10px 2px 0; text-align: left; font-variant-numeric: tabular-nums; }
+    .charts { display: flex; flex-wrap: wrap; gap: 16px; }
+    .charts canvas { width: 240px; height: 80px; border: 1px solid #8884; }
+    #status { min-height: 1.4em; }
+    .err { color: #c33; }
+    .slow { color: #c60; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Influence match</h1>
+    <p>Add sounds, check how closely the matched synth sound resembles each one. Sources are saved in this browser for the <a href="/influence-test.html">blind test</a>. Nothing leaves your machine.</p>
+
+    <div id="drop">
+      Drop audio files here, or
+      <input type="file" id="file" accept="audio/*" multiple>
+      <button id="rec">Record 3 s from mic</button>
+    </div>
+    <div class="row">
+      <label>Bands <select id="bands"><option value="16">16</option><option value="24">24</option></select></label>
+      <button id="clear">Clear saved sources</button>
+      <a href="/influence-test.html">Open blind test</a>
+    </div>
+    <div id="status" role="status"></div>
+
+    <div id="layout">
+      <div id="list"></div>
+      <div id="detail"></div>
+    </div>
+  </main>
+  <script type="module" src="/src/influence/main.ts"></script>
+</body>
+</html>
