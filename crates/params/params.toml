@@ -1,0 +1,777 @@
+# The Earworm parameter table (TDD "Parameter system").
+#
+# Every sound is these 64 scalars plus the two 16-band shapes at the end: 96
+# numbers, each stored normalized 0..1. Order is the wire order and the index
+# into a ParamSet; append new parameters, never reorder, never reuse an id.
+# `pnpm gen:params` turns this file into crates/params/src/table.rs,
+# web/src/gen/params.ts, web/src/gen/params.schema.json and
+# web/src/gen/params-dictionary.md.
+#
+# scale: lin | log | db | bipolar. log maps n to min * (max/min)^n; the others
+# map linearly (bipolar is centred in the interface, db is shown in dB).
+# macros: weights into the eight-macro matrix, named in [macros] below.
+
+[macros]
+names = ["bright", "body", "wobble", "grit", "space", "punch", "air", "length"]
+
+[[param]]
+id        = "src.harm_mix"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 1.0
+unit      = ""
+smooth_ms = 15
+doc       = "Level of the partial bank."
+
+[[param]]
+id        = "src.noise_mix"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.1
+unit      = ""
+smooth_ms = 15
+doc       = "Level of the shaped noise."
+macros    = { air = 0.5 }
+
+[[param]]
+id        = "src.grain_mix"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Level of the grain cloud (not played until M4)."
+
+[[param]]
+id        = "src.tilt"
+group     = "tone"
+scale     = "lin"
+min       = -24.0
+max       = 6.0
+neutral   = -6.0
+unit      = "dB/oct"
+smooth_ms = 15
+doc       = "Slope of partial levels. Lower is duller."
+macros    = { bright = 0.6, body = -0.2 }
+
+[[param]]
+id        = "src.oddeven"
+group     = "tone"
+scale     = "bipolar"
+min       = -1.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Odd against even partials. Positive is hollow."
+
+[[param]]
+id        = "src.stretch"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 0.01
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Inharmonicity B in f_k = k f0 sqrt(1 + B k^2)."
+
+[[param]]
+id        = "src.jitter"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 50.0
+neutral   = 0.0
+unit      = "cents"
+smooth_ms = 15
+doc       = "Slow random detune of each partial."
+macros    = { wobble = 0.2 }
+
+[[param]]
+id        = "src.modal"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 2.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Ratio table: 0 harmonic, 1 drumhead, 2 bar."
+
+[[param]]
+id        = "src.damp"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "How much faster high partials die than low ones."
+macros    = { length = -0.3 }
+
+[[param]]
+id        = "src.f1_freq"
+group     = "tone"
+scale     = "log"
+min       = 200.0
+max       = 1200.0
+neutral   = 600.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "First formant centre."
+macros    = { bright = 0.1 }
+
+[[param]]
+id        = "src.f1_gain"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 24.0
+neutral   = 0.0
+unit      = "dB"
+smooth_ms = 15
+doc       = "First formant boost."
+macros    = { body = 0.4 }
+
+[[param]]
+id        = "src.f2_freq"
+group     = "tone"
+scale     = "log"
+min       = 700.0
+max       = 3500.0
+neutral   = 1500.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "Second formant centre."
+macros    = { bright = 0.2 }
+
+[[param]]
+id        = "src.f2_gain"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 24.0
+neutral   = 0.0
+unit      = "dB"
+smooth_ms = 15
+doc       = "Second formant boost."
+
+[[param]]
+id        = "grain.size"
+group     = "tone"
+scale     = "log"
+min       = 0.01
+max       = 0.5
+neutral   = 0.08
+unit      = "s"
+smooth_ms = 15
+doc       = "Grain length (not played until M4)."
+
+[[param]]
+id        = "grain.density"
+group     = "motion"
+scale     = "log"
+min       = 1.0
+max       = 100.0
+neutral   = 20.0
+unit      = "1/s"
+smooth_ms = 15
+doc       = "Grains per second (not played until M4)."
+
+[[param]]
+id        = "grain.pos"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.5
+unit      = ""
+smooth_ms = 15
+doc       = "Read position in the source (not played until M4)."
+
+[[param]]
+id        = "grain.spray"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Random spread of the read position (not played until M4)."
+
+[[param]]
+id        = "grain.scatter"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Random spread of grain timing (not played until M4)."
+
+[[param]]
+id        = "fold.amt"
+group     = "grit"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Wavefolder drive."
+macros    = { grit = 0.5 }
+
+[[param]]
+id        = "fold.bias"
+group     = "grit"
+scale     = "bipolar"
+min       = -1.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Wavefolder offset. Adds even harmonics."
+
+[[param]]
+id        = "clang.amt"
+group     = "grit"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Metallic phase and ring modulation."
+macros    = { grit = 0.2 }
+
+[[param]]
+id        = "clang.ratio"
+group     = "grit"
+scale     = "log"
+min       = 0.25
+max       = 8.0
+neutral   = 1.41
+unit      = ""
+smooth_ms = 15
+doc       = "Modulator frequency over f0."
+
+[[param]]
+id        = "comb.amt"
+group     = "grit"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Resonant comb mix."
+
+[[param]]
+id        = "comb.tune"
+group     = "grit"
+scale     = "log"
+min       = 0.5
+max       = 4.0
+neutral   = 1.0
+unit      = ""
+smooth_ms = 15
+doc       = "Comb pitch over f0."
+
+[[param]]
+id        = "comb.decay"
+group     = "grit"
+scale     = "log"
+min       = 0.01
+max       = 2.0
+neutral   = 0.2
+unit      = "s"
+smooth_ms = 15
+doc       = "Comb ring time."
+
+[[param]]
+id        = "smear.amt"
+group     = "grit"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Spectral blur (v1, not played)."
+
+[[param]]
+id        = "smear.freeze"
+group     = "grit"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Spectral freeze (v1, not played)."
+
+[[param]]
+id        = "crush.bits"
+group     = "grit"
+scale     = "lin"
+min       = 2.0
+max       = 16.0
+neutral   = 16.0
+unit      = "bits"
+smooth_ms = 15
+doc       = "Bit depth."
+macros    = { grit = -0.3 }
+
+[[param]]
+id        = "crush.rate"
+group     = "grit"
+scale     = "log"
+min       = 500.0
+max       = 48000.0
+neutral   = 48000.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "Sample-and-hold rate."
+
+[[param]]
+id        = "tape.amt"
+group     = "grit"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Wow, flutter and dropouts."
+macros    = { wobble = 0.2 }
+
+[[param]]
+id        = "filt.cutoff"
+group     = "shape"
+scale     = "log"
+min       = 20.0
+max       = 20000.0
+neutral   = 20000.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "Filter cutoff."
+macros    = { bright = 0.4, body = 0.1 }
+
+[[param]]
+id        = "filt.res"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Filter resonance."
+
+[[param]]
+id        = "filt.morph"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Low-pass at 0, band-pass at 0.5, high-pass at 1."
+macros    = { body = -0.2 }
+
+[[param]]
+id        = "filt.track"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "How far the cutoff follows pitch."
+
+[[param]]
+id        = "env.attack"
+group     = "shape"
+scale     = "log"
+min       = 0.001
+max       = 4.0
+neutral   = 0.005
+unit      = "s"
+smooth_ms = 0
+doc       = "Rise time."
+macros    = { punch = -0.5 }
+
+[[param]]
+id        = "env.hold"
+group     = "shape"
+scale     = "log"
+min       = 0.0005
+max       = 2.0
+neutral   = 0.0005
+unit      = "s"
+smooth_ms = 0
+doc       = "Time at full level after the attack. The minimum means none."
+
+[[param]]
+id        = "env.decay"
+group     = "shape"
+scale     = "log"
+min       = 0.005
+max       = 8.0
+neutral   = 0.3
+unit      = "s"
+smooth_ms = 0
+doc       = "Fall time to the sustain level; ring time of a struck sound."
+macros    = { length = 0.5 }
+
+[[param]]
+id        = "env.sustain"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.8
+unit      = ""
+smooth_ms = 0
+doc       = "Level held while the note lasts."
+macros    = { length = 0.2, punch = -0.2 }
+
+[[param]]
+id        = "env.release"
+group     = "shape"
+scale     = "log"
+min       = 0.005
+max       = 8.0
+neutral   = 0.2
+unit      = "s"
+smooth_ms = 0
+doc       = "Fade after the note ends."
+macros    = { length = 0.4 }
+
+[[param]]
+id        = "env.noise_decay"
+group     = "shape"
+scale     = "log"
+min       = 0.005
+max       = 4.0
+neutral   = 0.2
+unit      = "s"
+smooth_ms = 0
+doc       = "Fall time of the noise, separate from the body."
+macros    = { length = 0.3 }
+
+[[param]]
+id        = "env.pitch_amt"
+group     = "shape"
+scale     = "lin"
+min       = -24.0
+max       = 48.0
+neutral   = 0.0
+unit      = "semitones"
+smooth_ms = 0
+doc       = "Pitch offset at the start of the note."
+macros    = { punch = 0.2 }
+
+[[param]]
+id        = "env.pitch_time"
+group     = "shape"
+scale     = "log"
+min       = 0.001
+max       = 0.5
+neutral   = 0.05
+unit      = "s"
+smooth_ms = 0
+doc       = "How fast the start pitch falls back."
+
+[[param]]
+id        = "strike.click"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 0
+doc       = "Start transient."
+macros    = { punch = 0.4 }
+
+[[param]]
+id        = "strike.color"
+group     = "shape"
+scale     = "log"
+min       = 200.0
+max       = 12000.0
+neutral   = 3000.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "Pitch of the clicks."
+macros    = { bright = 0.2 }
+
+[[param]]
+id        = "strike.end_click"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 0
+doc       = "Closing transient."
+
+[[param]]
+id        = "lfo1.rate"
+group     = "motion"
+scale     = "log"
+min       = 0.05
+max       = 20.0
+neutral   = 5.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "First LFO rate."
+macros    = { wobble = 0.2 }
+
+[[param]]
+id        = "lfo1.to_pitch"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 100.0
+neutral   = 0.0
+unit      = "cents"
+smooth_ms = 15
+doc       = "First LFO to pitch."
+macros    = { wobble = 0.3 }
+
+[[param]]
+id        = "lfo1.to_filter"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 4.0
+neutral   = 0.0
+unit      = "oct"
+smooth_ms = 15
+doc       = "First LFO to cutoff."
+
+[[param]]
+id        = "lfo1.to_level"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "First LFO to level."
+
+[[param]]
+id        = "lfo2.rate"
+group     = "motion"
+scale     = "log"
+min       = 0.05
+max       = 20.0
+neutral   = 0.5
+unit      = "Hz"
+smooth_ms = 15
+doc       = "Second LFO rate."
+
+[[param]]
+id        = "lfo2.to_pitch"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 100.0
+neutral   = 0.0
+unit      = "cents"
+smooth_ms = 15
+doc       = "Second LFO to pitch."
+
+[[param]]
+id        = "lfo2.to_filter"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 4.0
+neutral   = 0.0
+unit      = "oct"
+smooth_ms = 15
+doc       = "Second LFO to cutoff."
+macros    = { wobble = 0.3 }
+
+[[param]]
+id        = "lfo2.to_grain"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Second LFO to grain position (not played until M4)."
+
+[[param]]
+id        = "chaos.rate"
+group     = "motion"
+scale     = "log"
+min       = 0.1
+max       = 30.0
+neutral   = 2.0
+unit      = "Hz"
+smooth_ms = 15
+doc       = "Speed of the random wander."
+
+[[param]]
+id        = "chaos.amt"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Random wander of pitch, cutoff and level."
+macros    = { wobble = 0.2 }
+
+[[param]]
+id        = "delay.time"
+group     = "space"
+scale     = "log"
+min       = 0.01
+max       = 2.0
+neutral   = 0.375
+unit      = "s"
+smooth_ms = 50
+doc       = "Echo time."
+
+[[param]]
+id        = "delay.fb"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 0.95
+neutral   = 0.35
+unit      = ""
+smooth_ms = 15
+doc       = "Echo feedback."
+macros    = { space = 0.2 }
+
+[[param]]
+id        = "delay.shift"
+group     = "space"
+scale     = "bipolar"
+min       = -12.0
+max       = 12.0
+neutral   = 0.0
+unit      = "semitones"
+smooth_ms = 15
+doc       = "Pitch shift inside the echo loop."
+
+[[param]]
+id        = "delay.mix"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Echo level."
+macros    = { space = 0.3 }
+
+[[param]]
+id        = "verb.size"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.5
+unit      = ""
+smooth_ms = 15
+doc       = "Room size and tail length."
+macros    = { space = 0.4 }
+
+[[param]]
+id        = "verb.damp"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.5
+unit      = ""
+smooth_ms = 15
+doc       = "High-frequency loss in the tail."
+macros    = { bright = -0.1 }
+
+[[param]]
+id        = "verb.mix"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Reverb level."
+macros    = { space = 0.6 }
+
+[[param]]
+id        = "verb.freeze"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Holds the tail forever at 1."
+
+[[param]]
+id        = "width"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 2.0
+neutral   = 1.0
+unit      = ""
+smooth_ms = 15
+doc       = "Stereo width: 0 mono, 1 as is, 2 wide."
+macros    = { space = 0.2 }
+
+# Band shapes: 16 gains in dB at the band centres the capture front end
+# measures (80 Hz to 12 kHz, log spaced). `count` expands to ids tone_bands.0
+# through tone_bands.15.
+[[bands]]
+id        = "tone_bands"
+group     = "tone"
+scale     = "db"
+min       = -30.0
+max       = 30.0
+neutral   = 0.0
+unit      = "dB"
+smooth_ms = 15
+count     = 16
+doc       = "Partial levels by frequency band, the vowel shape."
+
+[[bands]]
+id        = "noise_bands"
+group     = "tone"
+scale     = "db"
+min       = -30.0
+max       = 30.0
+neutral   = 0.0
+unit      = "dB"
+smooth_ms = 15
+count     = 16
+doc       = "Noise levels by frequency band."

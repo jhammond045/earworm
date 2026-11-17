@@ -11,12 +11,16 @@
 
 pub mod bands;
 pub mod capture;
+pub mod delay;
 pub mod fft;
 pub mod filters;
 pub mod frame;
+pub mod fx;
+pub mod layer_fx;
 pub mod noise;
 pub mod params;
 pub mod resample;
+
 pub mod tune;
 pub mod yin;
 
