@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Earworm delay</title>
+  <link rel="stylesheet" href="/src/common/style.css">
+  <style>
+    table.res { border-collapse: collapse; margin: 0.5rem 0 1rem; }
+    table.res th, table.res td { border: 1px solid #8884; padding: 2px 8px; text-align: right; }
+    table.res th:first-child, table.res td:first-child { text-align: left; }
+    .ok { color: #2a8a3a; } .bad { color: #c0392b; }
+    #status { min-height: 1.4em; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.75rem 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="index.html">Earworm M0</a></p>
+    <h1>Delay measurement</h1>
+    <p>
+      Round trip is input device plus output device. Total from voice to ear is
+      input + engine + output, so total = round trip + engine internal delay.
+      Both tests need sound to get from the speakers to the mic: use a loopback
+      cable or turn the speakers up. Keep headphones off the mic path, and use
+      wired audio.
+    </p>
+    <div class="row">
+      <button id="btn-rt">1. Round trip</button>
+      <button id="btn-eng">2. Engine internal delay</button>
+      <button id="btn-all">Run all</button>
+      <button id="btn-json" disabled>Download JSON</button>
+    </div>
+    <p id="status">Idle.</p>
+    <p id="mode"></p>
+
+    <h2>Round trip</h2>
+    <div id="rt">Not run.</div>
+    <h2>Engine internal delay</h2>
+    <div id="eng">Not run.</div>
+    <h2>Voice to ear</h2>
+    <div id="total">Needs both measurements.</div>
+  </main>
+  <script type="module" src="/src/delay/main.ts"></script>
+</body>
+</html>
