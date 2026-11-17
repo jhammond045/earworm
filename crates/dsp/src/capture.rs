@@ -104,6 +104,8 @@ const RING: usize = MAX_ALIGN + 1;
 
 const MED_LEN: usize = 40; // 200 ms of 5 ms pitch hops
 const MAX_JUMP_CENTS: f32 = 700.0;
+/// Confidence needed for the first estimate of a new pitch region.
+const SEED_CONFIDENCE: f32 = 0.8;
 const PERSIST_HOPS: u32 = 6; // 30 ms
 const FLOOR_MIN_DB: f32 = -80.0;
 const FLOOR_START_DB: f32 = -60.0;
@@ -402,7 +404,12 @@ impl LiveTier {
         self.gesture.pitch_conf = conf;
         let mut update = (f32::NAN, conf);
 
-        if est.hz > 0.0 && conf >= 0.5 {
+        // A new region (empty history) needs a confident estimate to seed the
+        // guard. The first YIN windows after silence are part silence and can
+        // land on a harmonic with middling confidence; seeding the median with
+        // that would then reject the right pitch for the whole 30 ms.
+        let min_conf = if self.hist_n == 0 { SEED_CONFIDENCE } else { 0.5 };
+        if est.hz > 0.0 && conf >= min_conf {
             let cents = crate::hz_to_cents(est.hz);
             self.unvoiced_run = 0;
             let mut accept = true;

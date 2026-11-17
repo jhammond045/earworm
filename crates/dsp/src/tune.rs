@@ -37,7 +37,7 @@ pub const SCALES: [(&str, u16); 6] = [
 pub struct TuneSettings {
     /// Pitch Snap, 0..1.
     pub snap: f32,
-    /// Tune speed: lag time constant in ms, 0..250. 0 = instant.
+    /// Tune speed: lag time constant of the snap correction in ms, 0..250. 0 = instant.
     pub speed_ms: f32,
     pub slides: Slides,
     /// 0 flatten, 1 keep, 2 exaggerate.
@@ -86,8 +86,9 @@ pub struct Tuner {
     last_out: f32,
     slow: f32,
     prev_slow: f32,
-    /// Smoothed (lagged) slow output, before vibrato is added back.
-    out_slow: f32,
+    /// Lagged snap correction (pulled minus slow pitch). Tune speed lags the
+    /// correction, not the sung pitch, so at Snap 0 nothing is delayed.
+    corr: f32,
     /// Current target degree as an integer step k: cents = 100*k + ref_cents.
     target: i32,
     /// Note Jump mode is holding (same index scheme).
@@ -110,7 +111,7 @@ impl Tuner {
             last_out: f32::NAN,
             slow: 0.0,
             prev_slow: 0.0,
-            out_slow: 0.0,
+            corr: 0.0,
             target: 0,
             held: 0,
             slide_t: 0.0,
@@ -266,15 +267,18 @@ impl Tuner {
         }
         let pulled = self.slow + snap * (self.degree_cents(note) - self.slow);
 
-        // Lag.
+        // Lag the correction only. Lagging the whole pitch would also delay
+        // the singer's own pitch changes (and a wrong first estimate at note
+        // start) by Tune speed even at Snap 0.
+        let target_corr = pulled - self.slow;
         if fresh || speed_ms <= 0.0 {
-            self.out_slow = pulled;
+            self.corr = target_corr;
         } else {
             let a = 1.0 - (-self.dt / (speed_ms * 0.001)).exp();
-            self.out_slow += a * (pulled - self.out_slow);
+            self.corr += a * (target_corr - self.corr);
         }
 
-        let out = self.out_slow + s.vibrato.clamp(0.0, 2.0) * remainder;
+        let out = self.slow + self.corr + s.vibrato.clamp(0.0, 2.0) * remainder;
         self.last_out = out;
         out
     }
@@ -285,7 +289,7 @@ impl Tuner {
         self.last_out = f32::NAN;
         self.slow = 0.0;
         self.prev_slow = 0.0;
-        self.out_slow = 0.0;
+        self.corr = 0.0;
         self.target = 0;
         self.held = 0;
         self.slide_t = 0.0;

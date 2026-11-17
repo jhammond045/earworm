@@ -174,10 +174,12 @@ export async function runEngineDelay(): Promise<EngineResult> {
   const pitches: number[] = [];
   for (const b of bursts) {
     const r: BurstResult = { micOnsetS: b.start / sr, levelDelayMs: null, pitchDelayMs: null, inputF0: null };
-    const micOn = onsetIndex(cap.mic, sr, b.start - w(0.05), b.start + w(0.1));
+    // A low threshold on both: the synth reaches full level faster than the
+    // faded-in test hum, so a 10% threshold would read as negative delay.
+    const micOn = onsetIndex(cap.mic, sr, b.start - w(0.05), b.start + w(0.1), { frac: 0.02 });
     if (micOn >= 0) {
       r.micOnsetS = micOn / sr;
-      const outOn = onsetIndex(cap.out, sr, micOn - w(0.03), micOn + w(0.4));
+      const outOn = onsetIndex(cap.out, sr, micOn - w(0.03), micOn + w(0.4), { frac: 0.02 });
       if (outOn >= 0) {
         r.levelDelayMs = ms(outOn - micOn, sr);
         levels.push(r.levelDelayMs);
