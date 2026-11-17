@@ -11,7 +11,7 @@ import workletUrl from '../worklet/engine-processor.ts?worker&url';
 import type { ProcessorOptions } from '../worklet/engine-processor';
 import { CONTROL_CAP, MSG_BYTES, MSG_NOTE_OFF, MSG_NOTE_ON, MSG_PANIC, MSG_RESET_SINGER,
   MSG_SET_LIVE, MSG_SET_NOISE_BAND, MSG_SET_PARAM, MSG_SET_TONE_BAND, RECORD_STRIDE, BT_CONTROL, BT_CONTROL_COUNT,
-  BT_FIELDS, BT_OUTPUT, type EngineExports } from './protocol';
+  BT_FIELDS, BT_INPUT, BT_METER, BT_OUTPUT, METER_LEN, M_BLEED, type EngineExports } from './protocol';
 import { ControlRing, MeterBlock, RecordRing, encodeMessage } from './rings';
 export { encodeMessage } from './rings';
 
@@ -196,6 +196,7 @@ async function addModuleOnce(ctx: AudioContext): Promise<void> {
 }
 
 const OFFLINE_BLOCK = 4096;
+const LIVE_BLOCK = 128; // the worklet's render quantum
 
 /** Offline engine on the calling thread (Influence auditions, tests). */
 export class OfflineEngine {
@@ -240,6 +241,31 @@ export class OfflineEngine {
     this.send([[MSG_NOTE_OFF, 0, 0, 0]]);
     this.renderInto(out, hold, out.length);
     return out;
+  }
+
+  /** Run a recorded mic signal through the live path (ew_process with live
+   *  on), in render-quantum blocks like the worklet, so the output is what
+   *  Live follow would have played for that input. `setup` is applied before
+   *  the first block. Use a fresh engine per take: singer and noise-floor
+   *  state carry over between calls. Returns the engine output, the
+   *  high-passed mic as the engine saw it, and how many samples the bleed
+   *  check muted. */
+  processLive(input: Float32Array, setup: [type: number, index: number, param: number, value: number][] = []):
+      { out: Float32Array; mic: Float32Array; bleedSamples: number } {
+    this.send([...setup, [MSG_SET_LIVE, 0, 0, 1]]);
+    const out = new Float32Array(input.length), mic = new Float32Array(input.length);
+    let bleedSamples = 0;
+    for (let pos = 0; pos < input.length; pos += LIVE_BLOCK) {
+      const n = Math.min(LIVE_BLOCK, input.length - pos);
+      let t = new Uint32Array(this.ex.memory.buffer, this.ex.ew_buffers(this.e), BT_FIELDS);
+      new Float32Array(this.ex.memory.buffer, t[BT_INPUT], n).set(input.subarray(pos, pos + n));
+      this.ex.ew_process(this.e, n);
+      t = new Uint32Array(this.ex.memory.buffer, this.ex.ew_buffers(this.e), BT_FIELDS);
+      out.set(new Float32Array(this.ex.memory.buffer, t[BT_OUTPUT], n), pos);
+      mic.set(new Float32Array(this.ex.memory.buffer, t[BT_INPUT], n), pos);
+      if (new Float32Array(this.ex.memory.buffer, t[BT_METER], METER_LEN)[M_BLEED] > 0.5) bleedSamples += n;
+    }
+    return { out, mic, bleedSamples };
   }
 
   private renderInto(out: Float32Array, from: number, to: number): void {

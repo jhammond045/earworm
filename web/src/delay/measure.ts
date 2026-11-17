@@ -262,3 +262,52 @@ export function synthHum(
   }
   return { samples, burstStarts, f0 };
 }
+
+/** Engine settings for the internal delay test. Level is at its minimum so
+ *  the engine's speaker-bleed check cannot fire: that check mutes the engine
+ *  when its output is louder than the mic and the two envelopes move
+ *  together, which is always true here (the engine follows a quiet hum from
+ *  the speakers) even though the engine itself is never played. Delay is
+ *  read from onsets and pitch, which do not depend on level. */
+export const ENGINE_TEST_PARAMS: [name: string, value: number][] = [
+  ['depth.mouth', 0], ['tune.snap', 0], ['depth.loud', 1], ['harm_mix', 1], ['noise_mix', 0], ['level', -60],
+];
+
+export interface BurstDelay {
+  micOnsetS: number;
+  levelDelayMs: number | null;
+  pitchDelayMs: number | null;
+  inputF0: number | null;
+}
+
+/** Level and pitch delay per hum burst, from the engine's view of the mic
+ *  and its output on the same sample clock. */
+export function analyseEngineCapture(mic: Arr, out: Arr, sr: number): BurstDelay[] {
+  const w = (s: number) => Math.round(s * sr);
+  const ms = (samples: number) => (samples / sr) * 1000;
+  const fin = (x: number) => (Number.isFinite(x) ? x : null);
+  const res: BurstDelay[] = [];
+  for (const b of segmentBursts(mic, sr)) {
+    const r: BurstDelay = { micOnsetS: b.start / sr, levelDelayMs: null, pitchDelayMs: null, inputF0: null };
+    // A low threshold on both: the synth reaches full level faster than the
+    // faded-in test hum, so a 10% threshold would read as negative delay.
+    // The output is digital and quiet (see ENGINE_TEST_PARAMS), so its
+    // silence floor is far below the default minPeak.
+    const micOn = onsetIndex(mic, sr, b.start - w(0.05), b.start + w(0.1), { frac: 0.02 });
+    if (micOn >= 0) {
+      r.micOnsetS = micOn / sr;
+      const outOn = onsetIndex(out, sr, micOn - w(0.03), micOn + w(0.4), { frac: 0.02, minPeak: 1e-7 });
+      if (outOn >= 0) r.levelDelayMs = ms(outOn - micOn);
+      const f0 = medianF0(mic, sr, micOn + w(0.2), Math.min(b.end - w(0.06), micOn + w(0.5)));
+      r.inputF0 = fin(f0);
+      if (Number.isFinite(f0)) {
+        const from = micOn - w(0.01), to = micOn + w(0.6);
+        let lock = pitchLockIndex(out, sr, from, to, f0);
+        if (lock < 0) lock = pitchLockIndex(out, sr, from, to, f0, 50, 3, 2, 0.8);
+        if (lock >= 0) r.pitchDelayMs = ms(lock - micOn);
+      }
+    }
+    res.push(r);
+  }
+  return res;
+}

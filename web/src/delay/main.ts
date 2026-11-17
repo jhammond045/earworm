@@ -5,8 +5,8 @@ import {
 } from '../host/engine-host';
 import { M_DELAY_LEVEL, M_DELAY_PITCH, METER_LEN, P } from '../host/protocol';
 import {
-  chirp, crossCorrelationLag, median, medianF0, onsetIndex, pitchLockIndex,
-  segmentBursts, spread, synthHum,
+  ENGINE_TEST_PARAMS, analyseEngineCapture, chirp, crossCorrelationLag, median, spread, synthHum,
+  type BurstDelay,
 } from './measure';
 import loopbackUrl from './loopback-processor.ts?worker&url';
 
@@ -29,12 +29,7 @@ export interface RoundTripResult {
   error?: string;
 }
 
-export interface BurstResult {
-  micOnsetS: number;
-  levelDelayMs: number | null;
-  pitchDelayMs: number | null;
-  inputF0: number | null;
-}
+export type BurstResult = BurstDelay;
 
 export interface EngineResult {
   sampleRate: number;
@@ -135,11 +130,7 @@ export async function runEngineDelay(): Promise<EngineResult> {
   mute.connect(s.ctx.destination);
   const micSrc = host.connectMic(s.stream);
 
-  host.setParam(P['depth.mouth'], 0);
-  host.setParam(P['tune.snap'], 0);
-  host.setParam(P['depth.loud'], 1);
-  host.setParam(P['harm_mix'], 1);
-  host.setParam(P['noise_mix'], 0);
+  for (const [name, v] of ENGINE_TEST_PARAMS) host.setParam(P[name], v);
   host.setLive(true);
   await sleep(0.3);
 
@@ -168,39 +159,12 @@ export async function runEngineDelay(): Promise<EngineResult> {
   host.dispose();
 
   setStatus('Engine delay: analysing.');
-  const w = (s: number) => Math.round(s * sr);
-  const bursts = segmentBursts(cap.mic, sr);
-  const levels: number[] = [];
-  const pitches: number[] = [];
-  for (const b of bursts) {
-    const r: BurstResult = { micOnsetS: b.start / sr, levelDelayMs: null, pitchDelayMs: null, inputF0: null };
-    // A low threshold on both: the synth reaches full level faster than the
-    // faded-in test hum, so a 10% threshold would read as negative delay.
-    const micOn = onsetIndex(cap.mic, sr, b.start - w(0.05), b.start + w(0.1), { frac: 0.02 });
-    if (micOn >= 0) {
-      r.micOnsetS = micOn / sr;
-      const outOn = onsetIndex(cap.out, sr, micOn - w(0.03), micOn + w(0.4), { frac: 0.02 });
-      if (outOn >= 0) {
-        r.levelDelayMs = ms(outOn - micOn, sr);
-        levels.push(r.levelDelayMs);
-      }
-      const f0 = medianF0(cap.mic, sr, micOn + w(0.2), Math.min(b.end - w(0.06), micOn + w(0.5)));
-      r.inputF0 = num(f0);
-      if (Number.isFinite(f0)) {
-        const from = micOn - w(0.01), to = micOn + w(0.6);
-        let lock = pitchLockIndex(cap.out, sr, from, to, f0);
-        if (lock < 0) lock = pitchLockIndex(cap.out, sr, from, to, f0, 50, 3, 2, 0.8);
-        if (lock >= 0) {
-          r.pitchDelayMs = ms(lock - micOn, sr);
-          pitches.push(r.pitchDelayMs);
-        }
-      }
-    }
-    res.bursts.push(r);
-  }
+  res.bursts = analyseEngineCapture(cap.mic, cap.out, sr);
+  const levels = res.bursts.flatMap((b) => (b.levelDelayMs == null ? [] : [b.levelDelayMs]));
+  const pitches = res.bursts.flatMap((b) => (b.pitchDelayMs == null ? [] : [b.pitchDelayMs]));
   res.levelMedianMs = num(median(levels));
   res.pitchMedianMs = num(median(pitches));
-  if (bursts.length === 0) res.error = 'No hum heard on the mic ring. Turn the speakers up or use a loopback cable.';
+  if (res.bursts.length === 0) res.error = 'No hum heard on the mic ring. Turn the speakers up or use a loopback cable.';
   else if (levels.length === 0) res.error = 'Engine output stayed silent. Is Live follow running?';
   last.engine = res;
   render();
