@@ -1,0 +1,143 @@
+// The open project: its Store, the autosave hookup, and the take blobs held in memory.
+// Everything else on the page reads `session.store` (it changes when another project is opened).
+
+import { newProject } from '../project/commands';
+import type { HistoryState, JournalEntry } from '../project/history';
+import { opfsBlobs, ProjectDb, type BlobStore, type Kv } from '../project/persist';
+import { Store } from '../project/store';
+import type { Project, Take } from '../project/types';
+
+export interface TakeData {
+  /** High-passed mic audio at the take's rate. Null if the blob is missing. */
+  audio: Float32Array | null;
+  /** 25-float frame records; slot 0 holds the repaired pitch. */
+  frames: Float32Array;
+}
+
+export type ChangeKind = 'change' | 'swap';
+type Listener = (doc: Project, kind: ChangeKind, entry: JournalEntry | null) => void;
+
+export const audioRef = (takeId: string) => `audio-${takeId}`;
+export const framesRef = (takeId: string) => `frames-${takeId}`;
+
+export class Session {
+  store!: Store;
+  blobs!: BlobStore;
+  /** Take id -> data, loaded when a project opens or a take is captured. */
+  readonly takes = new Map<string, TakeData>();
+  /** Set when OPFS could not be used (takes then live in memory only). */
+  blobError: string | null = null;
+  private listeners = new Set<Listener>();
+  private unsub: (() => void) | null = null;
+  private loading = new Map<string, Promise<void>>();
+
+  constructor(readonly kv: Kv, readonly db: ProjectDb, private readonly makeBlobs: (id: string) => BlobStore = opfsBlobs) {}
+
+  get doc(): Project { return this.store.doc; }
+
+  /** Called after every change and after the open project is replaced. */
+  onChange(fn: Listener): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+
+  /** Open the project named by settings 'lastProject' (or `preferId`), else the newest, else a new "Untitled". */
+  async init(preferId?: string): Promise<void> {
+    const want = preferId ?? ((await this.kv.get('settings', 'lastProject')) as string | undefined);
+    if (want && (await this.open(want, preferId === undefined))) return;
+    const rows = await this.db.list();
+    for (const r of rows) if (await this.open(r.id)) return;
+    await this.create('Untitled');
+  }
+
+  async create(name: string, remember = true): Promise<void> {
+    await this.adopt(newProject(name), remember);
+  }
+
+  /** Save a ready-made document as a new project and open it. */
+  async adopt(doc: Project, remember = true): Promise<void> {
+    await this.db.flush();
+    await this.db.create(doc);
+    await this.attach(new Store(doc), remember);
+  }
+
+  async open(id: string, remember = true): Promise<boolean> {
+    await this.db.flush();
+    const r = await this.db.open(id);
+    if (!r) return false;
+    await this.attach(new Store(r.doc, r.history), remember);
+    return true;
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.db.remove(id);
+    try {
+      const b = this.makeBlobs(id);
+      for (const ref of await b.list()) await b.del(ref);
+    } catch { /* no blob store: nothing to delete */ }
+    if ((await this.kv.get('settings', 'lastProject')) === id) await this.kv.del('settings', 'lastProject');
+  }
+
+  private async attach(store: Store, remember: boolean): Promise<void> {
+    this.unsub?.();
+    this.store = store;
+    this.blobs = this.makeBlobs(store.doc.id);
+    this.blobError = null;
+    this.takes.clear();
+    this.loading.clear();
+    this.unsub = store.subscribe((doc, entry) => {
+      this.db.append(doc.id, entry, doc, store.history.toJSON() as HistoryState);
+      this.emit(doc, 'change', entry);
+    });
+    if (remember) await this.kv.put('settings', 'lastProject', store.doc.id);
+    await Promise.all(Object.values(store.doc.takes).map((t) => this.loadTake(t.id)));
+    this.emit(store.doc, 'swap', null);
+  }
+
+  /** Load a take's blobs into memory (once). Resolves when done, also when the blobs are missing. */
+  loadTake(id: string): Promise<void> {
+    if (this.takes.has(id)) return Promise.resolve();
+    let p = this.loading.get(id);
+    if (!p) {
+      const blobs = this.blobs;
+      p = (async () => {
+        try {
+          const [frames, audio] = await Promise.all([blobs.get(framesRef(id)), blobs.get(audioRef(id))]);
+          if (blobs === this.blobs && frames) this.takes.set(id, { frames, audio });
+        } catch (e) {
+          this.blobError = e instanceof Error ? e.message : String(e);
+        } finally {
+          this.loading.delete(id);
+        }
+      })();
+      this.loading.set(id, p);
+    }
+    return p;
+  }
+
+  /** Frame records for a take, or null while they load (or if they are gone). A later change event says when they arrive. */
+  framesFor(take: Take): Float32Array | null {
+    const d = this.takes.get(take.id);
+    if (d) return d.frames;
+    void this.loadTake(take.id).then(() => {
+      if (this.takes.has(take.id)) this.emit(this.store.doc, 'change', null);
+    });
+    return null;
+  }
+
+  /** Keep a new take: in memory at once, in the blob store in the background (errors are remembered, not thrown). */
+  async putTake(id: string, data: TakeData): Promise<void> {
+    this.takes.set(id, data);
+    try {
+      await this.blobs.put(framesRef(id), data.frames);
+      if (data.audio) await this.blobs.put(audioRef(id), data.audio);
+    } catch (e) {
+      this.blobError = e instanceof Error ? e.message : String(e);
+      throw e;
+    }
+  }
+
+  private emit(doc: Project, kind: ChangeKind, entry: JournalEntry | null): void {
+    for (const fn of [...this.listeners]) fn(doc, kind, entry);
+  }
+}

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm M3: Track</title>
+<link rel="stylesheet" href="/src/common/style.css">
+<style>
+  main { max-width: 1100px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; }
+  .row label { display: grid; gap: 2px; font-size: 0.85rem; color: var(--muted); }
+  .row label input, .row label select { color: var(--fg); }
+  input[type=number] { width: 7em; }
+  input[type=text] { min-width: 0; }
+  #projName { width: 14em; max-width: 100%; }
+  .strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .strip button { text-align: left; line-height: 1.25; }
+  .strip button[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .strip button.playing { background: var(--accent); color: #fff; }
+  .strip button.queued { outline: 2px dashed var(--accent); }
+  .layer { padding: 8px 12px; }
+  .layer.active { border-color: var(--accent); }
+  .layer h3 { margin: 0 0 6px; font-size: 0.95rem; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .layer .grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  details.tune > summary { cursor: pointer; margin: 6px 0; }
+  #tlscroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
+  #tlscroll canvas { border: 0; border-radius: 0; width: auto; touch-action: none; }
+  #tlscroll canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #hold { min-width: 12em; min-height: 52px; font-size: 1.05rem; touch-action: none; user-select: none; }
+  #hold.down { background: #d9402b; color: #fff; border-color: #d9402b; }
+  .stats { display: grid; gap: 4px 16px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  pre.out { max-height: 14em; overflow: auto; margin: 6px 0; font-size: 0.8rem; white-space: pre-wrap; }
+  .pass { color: #1b7a34; font-weight: 700; }
+  .failed { color: #b3261e; font-weight: 700; }
+  @media (max-width: 560px) {
+    body { padding: 10px; }
+    #projName { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <p><a href="index.html">Earworm M0</a></p>
+  <h1>Earworm M3: Track</h1>
+  <p class="muted">Sections, layers and tempo, edited while the track plays. Edits go to the engine as they happen and are saved on this device.
+    Hold Space to overdub the selected layer.</p>
+  <div class="note">Use wired headphones. There is no feedback protection: nothing mutes or checks the mic, so a speaker in the room will feed back.</div>
+  <div id="error" class="alert" role="alert" hidden></div>
+
+  <div class="bar">
+    <button id="start" class="primary">Start (audio and mic)</button>
+    <button id="startNoMic">Start without mic</button>
+    <button id="enableMic" hidden>Enable mic</button>
+    <span id="engineStatus" class="mono small muted" role="status">Not started.</span>
+  </div>
+
+  <h2>Project</h2>
+  <div class="panel">
+    <div class="row">
+      <label>Name <input id="projName" type="text" aria-label="Project name" autocomplete="off"></label>
+      <button id="projNew">New</button>
+      <label>Saved projects <select id="projList" aria-label="Saved projects"></select></label>
+      <button id="projOpen">Open</button>
+      <button id="projDelete">Delete</button>
+    </div>
+    <p class="small mono"><span id="saveStatus" role="status">Saved</span> · <span id="storage">Storage: ...</span></p>
+    <div id="storageWarn" class="note" hidden>Storage is over 80% of the browser's quota. Delete projects or old takes.</div>
+  </div>
+
+  <h2>Transport</h2>
+  <div class="bar">
+    <button id="play" disabled>Play</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="seek" disabled>Go to section start</button>
+    <button id="undo" aria-label="Undo" disabled>Undo</button>
+    <button id="redo" aria-label="Redo" disabled>Redo</button>
+    <span id="position" class="mono small muted" role="status">Stopped.</span>
+  </div>
+
+  <h2>Sections</h2>
+  <div id="strip" class="strip" role="group" aria-label="Sections"></div>
+  <div class="bar">
+    <button id="secAdd">Add section</button>
+    <button id="secDup">Duplicate</button>
+    <button id="secRemove">Remove</button>
+    <button id="secLeft" aria-label="Move section left">Move left</button>
+    <button id="secRight" aria-label="Move section right">Move right</button>
+  </div>
+  <div id="secFields" class="row"></div>
+
+  <h2>Layers</h2>
+  <div id="layers"></div>
+  <div class="row">
+    <label>Kind
+      <select id="addKind" aria-label="New layer kind">
+        <option value="melody">Melody</option>
+        <option value="beat">Beat</option>
+        <option value="texture">Texture</option>
+      </select>
+    </label>
+    <label>Sound <select id="addSound" aria-label="New layer sound"></select></label>
+    <button id="addLayer">Add layer</button>
+    <span id="layerCount" class="small muted"></span>
+  </div>
+
+  <h2>Timeline</h2>
+  <div class="row">
+    <label>Snap <select id="snap" aria-label="Snap for edits in the selected clip"></select></label>
+    <label>Zoom
+      <select id="zoom" aria-label="Timeline zoom">
+        <option value="1">1x</option><option value="2">2x</option><option value="4">4x</option><option value="8">8x</option>
+      </select>
+    </label>
+    <label>Loop length <input id="loopLen" type="number" min="0.01" step="any" aria-label="Loop length of the active clip, in beats or seconds"></label>
+    <button id="quantize">Quantize</button>
+  </div>
+  <p class="small muted" id="tlHelp">Click a note or hit to select, Shift-click to add. Drag to move (Alt: no snap), drag a note's right end to resize,
+    drag a hit up or down to change its slot. Double-click empty lane space to add. Delete removes. With the timeline focused:
+    arrows move the selection, Shift+arrows resize, comma and period pick the previous or next item, A adds one at the playhead.</p>
+  <div id="tlscroll"><canvas id="timeline" tabindex="0" role="application"
+    aria-label="Timeline of the selected section, one lane per layer" aria-describedby="tlHelp"></canvas></div>
+
+  <h2>Capture (overdub)</h2>
+  <div class="panel">
+    <p class="small">Pick the layer with its Capture radio button in the Layers list. Hold Space (when no text field is focused) or hold the button,
+      sing or beatbox, let go. The take lands in the selected section from where the transport was.</p>
+    <div class="bar">
+      <button id="hold" disabled>Hold to capture (Space)</button>
+      <span id="capStatus" class="mono small" role="status">Not started.</span>
+    </div>
+    <div class="row">
+      <label>Round trip ms <input id="roundTrip" type="number" min="0" max="500" step="0.1" aria-label="Round trip in milliseconds"></label>
+      <button id="measureRt" disabled>Measure round trip</button>
+      <span id="rtNote" class="small muted"></span>
+    </div>
+    <p class="small muted">Measure plays five chirps and records them. Give the mic a path from the output: a loopback cable, or headphones held against the mic.</p>
+  </div>
+
+  <h2>Live</h2>
+  <div id="meters" class="stats mono small"></div>
+
+  <h2>Edit while playing, no loss</h2>
+  <div class="panel gate">
+    <p class="small">The M3 gate. Edit stress test plays a scratch project and applies 300 seeded random edits at 10 a second.
+      Reload check saves the project, reloads the page and compares. Crash check makes 20 edits and reloads without saving; the journal should lose
+      at most the last 300 ms.</p>
+    <div class="bar">
+      <button id="gStress" disabled>Edit stress test</button>
+      <button id="gStressStop" disabled>Cancel</button>
+      <button id="gStressDl" disabled>Download JSON</button>
+      <span id="gStressStatus" class="mono small" role="status"></span>
+    </div>
+    <pre id="gStressOut" class="out mono panel" hidden></pre>
+    <div class="bar">
+      <button id="gReload">Reload check</button>
+      <button id="gCrash">Crash check</button>
+    </div>
+    <p id="gReloadOut" class="mono small" role="status"></p>
+    <p id="gCrashOut" class="mono small" role="status"></p>
+  </div>
+</main>
+<script type="module" src="/src/m3/main.ts"></script>
+</body>
+</html>
