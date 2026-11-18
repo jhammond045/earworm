@@ -12,8 +12,9 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo "cargo not found. Install Rust (https://rustup.rs) and run: rustup target add wasm32-unknown-unknown" >&2
   exit 1
 fi
-cargo build --release --target wasm32-unknown-unknown -p engine -p analysis
+cargo build --release --target wasm32-unknown-unknown -p engine -p analysis -p klont
 mkdir -p web/public/wasm
 cp target/wasm32-unknown-unknown/release/engine.wasm web/public/wasm/engine.wasm
 cp target/wasm32-unknown-unknown/release/analysis.wasm web/public/wasm/analysis.wasm
+cp target/wasm32-unknown-unknown/release/klont.wasm web/public/wasm/klont.wasm
 ls -l web/public/wasm

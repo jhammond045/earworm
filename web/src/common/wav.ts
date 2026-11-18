@@ -1,9 +1,13 @@
-// Minimal mono WAV writer for downloads (hum corpus, delay measurements).
+// Minimal WAV writer for downloads (hum corpus, delay measurements, M1 export).
 
 export type WavFormat = 'pcm16' | 'float32';
 
-/** Encode mono samples as a WAV file. 16-bit PCM by default; 'float32' keeps exact values. */
-export function encodeWav(samples: Float32Array, sampleRate: number, format: WavFormat = 'pcm16'): Blob {
+/** Encode samples as a WAV file: mono, or one array per channel (equal lengths, interleaved here).
+ *  16-bit PCM by default; 'float32' keeps exact values. */
+export function encodeWav(input: Float32Array | Float32Array[], sampleRate: number, format: WavFormat = 'pcm16'): Blob {
+  const chans = Array.isArray(input) ? input : [input];
+  const nch = chans.length;
+  const samples = nch === 1 ? chans[0] : interleave(chans);
   const float = format === 'float32';
   const bytesPer = float ? 4 : 2;
   const dataLen = samples.length * bytesPer;
@@ -18,10 +22,10 @@ export function encodeWav(samples: Float32Array, sampleRate: number, format: Wav
   str(12, 'fmt ');
   v.setUint32(16, 16, true);
   v.setUint16(20, float ? 3 : 1, true); // 3 = IEEE float, 1 = PCM
-  v.setUint16(22, 1, true); // mono
+  v.setUint16(22, nch, true);
   v.setUint32(24, Math.round(sampleRate), true);
-  v.setUint32(28, Math.round(sampleRate) * bytesPer, true);
-  v.setUint16(32, bytesPer, true);
+  v.setUint32(28, Math.round(sampleRate) * bytesPer * nch, true);
+  v.setUint16(32, bytesPer * nch, true);
   v.setUint16(34, bytesPer * 8, true);
   str(36, 'data');
   v.setUint32(40, dataLen, true);
@@ -36,6 +40,13 @@ export function encodeWav(samples: Float32Array, sampleRate: number, format: Wav
     }
   }
   return new Blob([buf], { type: 'audio/wav' });
+}
+
+function interleave(chans: Float32Array[]): Float32Array {
+  const n = chans[0].length;
+  const out = new Float32Array(n * chans.length);
+  chans.forEach((c, k) => { if (c.length !== n) throw new RangeError('wav: channels differ in length'); for (let i = 0; i < n; i++) out[i * chans.length + k] = c[i]; });
+  return out;
 }
 
 /** Save a blob through a temporary link. */

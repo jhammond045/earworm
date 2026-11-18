@@ -41,4 +41,13 @@ describe('encodeWav', () => {
     expect(v.byteLength).toBe(44);
     expect(v.getUint32(40, true)).toBe(0);
   });
+
+  it('interleaves two channels', async () => {
+    const v = await view(encodeWav([new Float32Array([0.5, 0]), new Float32Array([-0.5, 1])], 44100));
+    expect(v.getUint16(22, true)).toBe(2);
+    expect(v.getUint32(28, true)).toBe(44100 * 4);
+    expect(v.getUint16(32, true)).toBe(4);
+    expect(v.getUint32(40, true)).toBe(8);
+    expect([44, 46, 48, 50].map((o) => v.getInt16(o, true))).toEqual([16384, -16384, 0, 32767]);
+  });
 });

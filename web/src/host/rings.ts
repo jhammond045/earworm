@@ -33,9 +33,13 @@ export class ControlRing {
   }
   /** Producer. False when the ring is full (message dropped). */
   push(type: number, index: number, param: number, value: number): boolean {
+    return this.pushWith((v, o) => encodeMessage(v, o, type, index, param, value));
+  }
+  /** Producer, general form: `write` fills the 16-byte slot (the M1 host sets layer and time). */
+  pushWith(write: (view: DataView, offset: number) => void): boolean {
     const w = Atomics.load(this.idx, 0);
     if (((w - Atomics.load(this.idx, 1)) | 0) >= CONTROL_CAP) return false;
-    encodeMessage(this.view, (w & (CONTROL_CAP - 1)) * MSG_BYTES, type, index, param, value);
+    write(this.view, (w & (CONTROL_CAP - 1)) * MSG_BYTES);
     Atomics.store(this.idx, 0, (w + 1) | 0);
     return true;
   }
@@ -55,16 +59,18 @@ export class ControlRing {
 /** Meter block guarded by a version counter: odd while the writer is inside. */
 export class MeterBlock {
   static readonly BYTES = HDR + METER_LEN * 4;
+  /** Buffer size for a block of `len` floats (the M1 engine uses 240). */
+  static bytes(len: number): number { return HDR + len * 4; }
   private readonly ver: Int32Array;
   private readonly data: Float32Array;
-  constructor(buf: ArrayBufferLike) {
+  constructor(buf: ArrayBufferLike, readonly len: number = METER_LEN) {
     this.ver = new Int32Array(buf, 0, 1);
-    this.data = new Float32Array(buf, HDR, METER_LEN);
+    this.data = new Float32Array(buf, HDR, len);
   }
   write(src: Float32Array): void {
     const v = Atomics.load(this.ver, 0);
     Atomics.store(this.ver, 0, (v + 1) | 0);
-    this.data.set(src.subarray(0, METER_LEN));
+    this.data.set(src.subarray(0, this.len));
     Atomics.store(this.ver, 0, (v + 2) | 0);
   }
   /** False if nothing was ever published, or every try hit a write. `mid` is a test hook. */
