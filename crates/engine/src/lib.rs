@@ -21,7 +21,6 @@ pub struct Engine {
     max_block: usize,
     input: Vec<f32>,
     output: Vec<f32>,
-    prev_out: Vec<f32>,
     control: Vec<u8>,
     control_count: u32,
     meter: Vec<f32>,
@@ -48,7 +47,6 @@ impl Engine {
             max_block,
             input: vec![0.0; max_block],
             output: vec![0.0; max_block],
-            prev_out: vec![0.0; max_block],
             control: vec![0; CONTROL_CAP * MSG_BYTES],
             control_count: 0,
             meter: vec![0.0; METER_LEN],
@@ -208,8 +206,7 @@ impl Engine {
         let frames = frames.min(self.max_block);
         self.drain_control();
         self.sink.clear();
-        let (input, prev) = (&mut self.input[..frames], &self.prev_out[..frames]);
-        self.tier.process(input, prev, &mut self.sink);
+        self.tier.process(&mut self.input[..frames], &mut self.sink);
 
         let g = self.tier.gesture();
         for &(cents, conf) in &g.pitch_updates[..g.n_pitch_updates] {
@@ -222,13 +219,9 @@ impl Engine {
         if self.live_on {
             let drive = LiveDrive { tuned_cents: carrier, gesture: g };
             self.synth.render(out, Some(&drive));
-            if g.bleed {
-                out.fill(0.0);
-            }
         } else {
             self.synth.render(out, None);
         }
-        self.prev_out[..frames].copy_from_slice(out);
         self.write_frames(carrier);
         self.write_meters(frames, carrier);
     }
@@ -273,7 +266,6 @@ impl Engine {
         m[M_BREATH] = g.breathiness;
         m[M_HARD] = g.hardness;
         m[M_VOICING] = g.voicing;
-        m[M_BLEED] = g.bleed as u8 as f32;
         m[M_ONSET] = g.onset;
         m[M_LIVE] = self.live_on as u8 as f32;
         let sm = self.synth.meters();

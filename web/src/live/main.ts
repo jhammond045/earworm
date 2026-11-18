@@ -4,7 +4,7 @@ import {
   EngineHost, OfflineEngine, createAudioContext, micConstraints, wantsFallback,
 } from '../host/engine-host';
 import {
-  MSG_SET_PARAM, METER_LEN, M_ACTIVE_PARTIALS, M_BLEED, M_BREATH, M_DELAY_LEVEL, M_DELAY_PITCH, M_F0, M_FLOOR_DB,
+  MSG_SET_PARAM, METER_LEN, M_ACTIVE_PARTIALS, M_BREATH, M_DELAY_LEVEL, M_DELAY_PITCH, M_F0, M_FLOOR_DB,
   M_GATE, M_HARD, M_INPUT_DB, M_LOUD, M_OPEN, M_TONE_EFF, M_VOICING, M_VOWEL, PARAMS, P, RECORD_STRIDE, SCALES,
 } from '../host/protocol';
 import { download, encodeWav } from '../common/wav';
@@ -439,10 +439,7 @@ $<HTMLButtonElement>('take-play').addEventListener('click', async () => {
   } finally {
     eng.dispose();
   }
-  const muted = r.bleedSamples / sr;
-  play(r.out, `Playing the synth for this take (${nBands} bands, current settings).` +
-    (muted > 0.05 ? ` The bleed check muted ${muted.toFixed(1)} s of it: see the note below.` : ''));
-  $('take-bleed').hidden = muted <= 0.05;
+  play(r.out, `Playing the synth for this take (${nBands} bands, current settings).`);
 });
 
 $<HTMLButtonElement>('take-voice').addEventListener('click', () => {
@@ -476,7 +473,6 @@ function frame(now: number) {
   drawBands($('vowel') as HTMLCanvasElement, meters.subarray(M_VOWEL, M_VOWEL + n), n, 24, col);
   drawBands($('tone') as HTMLCanvasElement, meters.subarray(M_TONE_EFF, M_TONE_EFF + n), n, 24, col);
   const m = meters;
-  $('bleed').hidden = m[M_BLEED] < 0.5 || recording || !!player;
   mInput.set(dbFrac(m[M_INPUT_DB]), `${m[M_INPUT_DB].toFixed(0)} dB / floor ${m[M_FLOOR_DB].toFixed(0)} dB`, dbFrac(m[M_FLOOR_DB]));
   mGate.set(m[M_GATE], m[M_GATE] > 0.5 ? 'open' : 'closed');
   const v = Math.round(m[M_VOICING]);

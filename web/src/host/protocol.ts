@@ -52,17 +52,16 @@ export const M_OPEN = 9;
 export const M_BREATH = 10;
 export const M_HARD = 11;
 export const M_VOICING = 12;
-export const M_BLEED = 13;
-export const M_ONSET = 14;
-export const M_LIVE = 15;
-export const M_F0 = 16;
-export const M_VOICED_MIX = 17;
-export const M_ACTIVE_PARTIALS = 18;
-export const M_N_BANDS = 19;
-export const M_VOWEL = 20;
-export const M_TONE_EFF = 44;
-export const M_DELAY_LEVEL = 68;
-export const M_DELAY_PITCH = 69;
+export const M_ONSET = 13;
+export const M_LIVE = 14;
+export const M_F0 = 15;
+export const M_VOICED_MIX = 16;
+export const M_ACTIVE_PARTIALS = 17;
+export const M_N_BANDS = 18;
+export const M_VOWEL = 19;
+export const M_TONE_EFF = 43;
+export const M_DELAY_LEVEL = 67;
+export const M_DELAY_PITCH = 68;
 export const METER_LEN = 72;
 
 // BufferTable returned by ew_buffers: 12 u32 fields, in this order.

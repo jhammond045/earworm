@@ -365,7 +365,7 @@ The voice plays the synth while it is being sung. So every quantity that shapes 
 | 7 | Sound before pitch is known | The first 20 ms of a note has no pitch estimate. The voice starts at once on the last pitch, or on noise after silence, and glides to the estimate over 10 ms |
 | 8 | Octave slips without look-ahead | The pitch search is held within 7 semitones of the running median unless a new region persists for 30 ms |
 | 9 | Silence must be silent | An adaptive noise floor and a gate with hysteresis, 5 ms attack and 60 ms release |
-| 10 | The mic must hear only the voice | Browser echo cancellation is off, so speaker playback would enter the analysis. A bleed detector compares mic bands with engine output; on bleed the live sound is muted and headphones are prompted |
+| 10 | The mic must hear only the voice | Browser echo cancellation is off, so speaker playback would enter the analysis. M0 prompts for wired headphones; the bleed detector it first used was removed because it muted Live follow with headphones on |
 | 11 | Channels arrive with different delays | Level and vowel shape lead; pitch trails by about 12 ms. Live uses each as soon as it exists. Stored frames are shifted so channels line up |
 | 12 | Output is parameters, not features | Frames map to parameter offsets through fixed linear maps, which is what lets every slider move |
 | 13 | Tuning must be causal | Section 7's autotune uses only past frames. Glissando is free; Jump costs 60 ms |
@@ -667,7 +667,7 @@ What M0 must contain, given Live follow: the full live tier, a one-layer engine 
 - [ ] Second-pass pitch: pYIN-style or a small neural tracker? Decided on the hum corpus in M0.
 - [ ] Are 16 bands enough for vowels and words to come through in Live follow, or does it need 24? Decided by ear in M0.
 - [ ] What partial budget does the reference laptop sustain with 8 layers? Measured in M1.
-- [ ] Is the bleed detector enough for speaker users, or is a reference-based echo canceller needed so Live follow can sound on speakers?
+- [ ] Is a reference-based echo canceller needed so Live follow can sound on speakers?
 - [ ] For untaught kits, is brightness-based live slot choice good enough, or should the first beat capture prompt Teach my kit?
 - [ ] Rust is assumed for the engine. If the builders know C++ better, the same design holds with Emscripten.
 - [ ] How far does Safari go in the MVP: full support, or playback and editing with capture marked experimental?

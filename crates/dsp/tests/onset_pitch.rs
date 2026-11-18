@@ -40,7 +40,7 @@ fn first_pitch_after_silence_is_right_and_prompt() {
     for (b, chunk) in signal.chunks(128).enumerate() {
         let mut buf = chunk.to_vec();
         sink.clear();
-        tier.process(&mut buf, &[], &mut sink);
+        tier.process(&mut buf, &mut sink);
         let g = tier.gesture();
         let t_ms = ((b + 1) * 128) as f32 / SR * 1000.0 - onset as f32 / SR * 1000.0;
         for &(cents, _) in &g.pitch_updates[..g.n_pitch_updates] {

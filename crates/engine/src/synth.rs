@@ -805,7 +805,6 @@ mod tests {
             gate: true,
             gate_env: 1.0,
             bands_db: [0.0; MAX_BANDS],
-            bleed: false,
             input_db: -20.0,
             floor_db: -80.0,
         }

@@ -21,8 +21,7 @@
 <body>
 <main>
   <h1>Earworm M0: Live follow</h1>
-  <div class="note"><strong>Use wired headphones.</strong> Speakers feed the mic and the sound will be muted or howl. Bluetooth adds too much delay to judge anything.</div>
-  <div id="bleed" class="alert" hidden>Bleed detected: the mic is hearing the output. Put on wired headphones. The live sound is muted.</div>
+  <div class="note"><strong>Use wired headphones.</strong> Speakers feed the mic and the sound will howl. Bluetooth adds too much delay to judge anything.</div>
   <div id="error" class="alert" hidden></div>
 
   <div class="bar">
@@ -45,7 +44,6 @@
     <button id="take-voice" disabled>Play voice</button>
   </div>
   <p id="take-status" class="small" aria-live="polite">Record sings into the engine with the live sound muted. Play synth renders the take through the same engine with the current settings; change a setting and press it again to hear the same take another way.</p>
-  <p id="take-bleed" class="note small" hidden>The engine's speaker-bleed check muted part of this playback. Nothing was playing while you recorded, so it is a false alarm: the check fires when the synth is louder than the mic and follows it. Live follow would have muted the same parts. Lower Level or raise the mic gain and play again.</p>
 
   <h2>Live view</h2>
   <canvas id="ribbon" aria-label="Pitch ribbon of the last 8 seconds"></canvas>
