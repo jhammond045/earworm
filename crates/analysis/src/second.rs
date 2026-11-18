@@ -227,6 +227,18 @@ pub fn repair_pitch(live: &[f32], second: &[f32], audible: impl Fn(usize) -> boo
     (out, changed)
 }
 
+/// Frames more than this far below the take's loudest are not sounding, dB.
+pub const SOUND_RANGE_DB: f32 = 50.0;
+
+/// NaN the pitch wherever the frame's audio level is under `min_db`.
+pub fn mask_silent(pitch: &mut [f32], level_db: &[f32], min_db: f32) {
+    for (p, &l) in pitch.iter_mut().zip(level_db) {
+        if l < min_db {
+            *p = f32::NAN;
+        }
+    }
+}
+
 /// Shortest stretch of pYIN-only pitch that is taken over the live tier's "unvoiced".
 pub const FILL_FRAMES: usize = 6;
 
@@ -311,6 +323,9 @@ pub fn second_pass(audio: &[f32], sr: f32, frames: &[f32], opts: &Options) -> Se
     let (pitch, repaired) = repair_pitch(&live, &second, |k| lv.frame_db[k] > floor);
     res.pitch = pitch;
     res.repaired = repaired;
+    // The live tier holds pitch through its gate release (and pYIN can fill into quiet): drop
+    // pitch from frames where the audio itself is silent, so notes end where the sound does.
+    mask_silent(&mut res.pitch, &lv.frame_db, floor.max(lv.peak_db - SOUND_RANGE_DB));
 
     let fl = flux(audio, sr, n);
     let onsets = detect_onsets(&lv, &fl);
@@ -469,6 +484,39 @@ mod tests {
         assert_eq!(r.pitch.len(), 10);
         let r = second_pass(&[0.0; 4800], f32::NAN, &vec![0.0; STRIDE * 10], &Options::default());
         assert!(r.bpm.is_none());
+    }
+
+    #[test]
+    fn clean_gap_makes_no_phantom_note_and_notes_end_with_the_sound() {
+        // Digital silence between notes while the live pitch lingers 120 ms after each note ends.
+        let sr = 48_000.0f32;
+        let spans = [(0.3f32, 0.5f32, 220.0f32), (0.95, 0.5, 262.0), (1.6, 0.5, 196.0)];
+        let mut audio = vec![0.0f32; (2.4 * sr) as usize];
+        let n = 240;
+        let mut frames = vec![0.0f32; n * STRIDE];
+        for k in 0..n {
+            frames[k * STRIDE] = f32::NAN;
+            frames[k * STRIDE + 7] = 2.0;
+        }
+        for &(t, d, hz) in &spans {
+            for i in (t * sr) as usize..((t + d) * sr) as usize {
+                let x = i as f32 / sr - t;
+                let env = (x / 0.01).min(1.0).min((d - x) / 0.02);
+                audio[i] = 0.2 * env * (std::f32::consts::TAU * hz * i as f32 / sr).sin();
+            }
+            let c = dsp::hz_to_cents(hz);
+            for k in ((t + 0.03) * 100.0) as usize..(((t + d + 0.12) * 100.0) as usize).min(n) {
+                frames[k * STRIDE] = c;
+                frames[k * STRIDE + 1] = 0.95;
+                frames[k * STRIDE + 7] = 0.0;
+            }
+        }
+        let r = second_pass(&audio, sr, &frames, &Options { kind: Some(Kind::Melody), ..Options::default() });
+        assert_eq!(r.notes.len(), 3, "{:?}", r.notes);
+        for (note, &(t, d, _)) in r.notes.iter().zip(&spans) {
+            assert!((note.t - t).abs() < 0.04, "{note:?}");
+            assert!((note.t + note.dur - (t + d)).abs() < 0.04, "{note:?}");
+        }
     }
 
     #[test]
