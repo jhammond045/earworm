@@ -3,7 +3,8 @@ import { CURVE_STRIDE } from '../m1/track';
 import {
   TUNED, LOUD, centsToY, dragCents, dragDt, fitPpu, gridLines, hitGlyph, hitTestHits, hitTestNotes, newItemDur, noteRect,
   pitchRange, readFrame, resizeDur, ribbonRuns, slotRow, slotY, snapChoices, snapTo, timeToX, warpToTake, warpSlope, xToTime, yToCents,
-  type Viewport,
+  MORPH_H, dragMarkerT, hitTestMarkers, mixColor, morphAt, shapeProgress, stateColor,
+  type MorphShapeName, type Viewport,
 } from './geometry';
 
 const vp: Viewport = { ppu: 0.1, x0: 50 };
@@ -186,5 +187,75 @@ describe('drag maths', () => {
     expect(resizeDur(0, 500, 130, 240, 1)).toBe(720); // end 630 -> 720
     expect(resizeDur(0, 500, -900, 240, 1)).toBe(1);
     expect(resizeDur(0, 500, 33, 240, 1, true)).toBe(533);
+  });
+});
+
+describe('morph lane', () => {
+  const ups = 960 * 100 / 60; // 100 bpm in ticks per second
+  const mk = (t: number, lenMs: number, shape: MorphShapeName = 'line') => ({ t, lenMs, shape });
+
+  it('shapes match the engine formulas', () => {
+    expect(shapeProgress('line', 0.25)).toBe(0.25);
+    expect(shapeProgress('ease', 0.5)).toBe(0.5);
+    expect(shapeProgress('ease', 0.25)).toBeCloseTo(0.15625, 9);
+    expect(shapeProgress('late', 0.5)).toBe(0.125);
+    expect(shapeProgress('step', 0)).toBe(1);
+    expect(shapeProgress('wobble', 0.5)).toBeCloseTo(0.5, 9); // sin(3 pi) = 0
+    expect(shapeProgress('wobble', 0.25)).toBeCloseTo(0.25 + 0.12 * Math.sin(1.5 * Math.PI) * 0.75, 9);
+    for (const s of ['line', 'ease', 'late', 'wobble'] as const) {
+      expect(shapeProgress(s, 0)).toBeCloseTo(0, 9);
+      expect(shapeProgress(s, 1)).toBeCloseTo(1, 9);
+      expect(shapeProgress(s, 7)).toBeCloseTo(1, 9);
+    }
+  });
+
+  it('morphAt: none, one, and the transition between two', () => {
+    expect(morphAt([], 100, ups)).toBeNull();
+    expect(morphAt([mk(480, 500)], 10, ups)).toEqual({ k: 0, prev: 0, x: 1 });
+    const two = [mk(0, 0), mk(1920, 1000)];
+    expect(morphAt(two, 1000, ups)).toEqual({ k: 0, prev: 1, x: 1 }); // step-like: len 0
+    const m = morphAt(two, 1920, ups)!;
+    expect(m.k).toBe(1); expect(m.prev).toBe(0); expect(m.x).toBe(0);
+    const half = morphAt(two, 1920 + ups * 0.5, ups)!; // 500 ms in of 1000 ms
+    expect(half.x).toBeCloseTo(0.5, 9);
+    expect(morphAt(two, 1920 + ups * 3, ups)!.x).toBe(1);
+  });
+
+  it('morphAt: before the first marker the last one is still in force (the lane wraps)', () => {
+    const two = [mk(960, 500), mk(2880, 500)];
+    const m = morphAt(two, 100, ups)!;
+    expect(m.k).toBe(1); expect(m.prev).toBe(0); expect(m.x).toBe(1);
+  });
+
+  it('a step marker jumps at once whatever its length', () => {
+    const two = [mk(0, 0), mk(960, 5000, 'step')];
+    expect(morphAt(two, 960, ups)!.x).toBe(1);
+  });
+
+  it('hitTestMarkers finds the nearest glyph inside the strip only', () => {
+    const v: Viewport = { ppu: 0.1, x0: 50 };
+    const marks = [{ t: 0 }, { t: 1000 }, { t: 1100 }];
+    expect(hitTestMarkers(marks, 50, 205, v, 200)).toBe(0);
+    expect(hitTestMarkers(marks, 150, 205, v, 200)).toBe(1);
+    expect(hitTestMarkers(marks, 160, 205, v, 200)).toBe(2);
+    expect(hitTestMarkers(marks, 100, 205, v, 200)).toBe(-1);
+    expect(hitTestMarkers(marks, 50, 150, v, 200)).toBe(-1);
+    expect(hitTestMarkers(marks, 50, 200 + MORPH_H + 1, v, 200)).toBe(-1);
+  });
+
+  it('dragMarkerT snaps, keeps ticks whole and stays inside the loop', () => {
+    expect(dragMarkerT(960, 130, 240, 3840, true)).toBe(1200);
+    expect(dragMarkerT(960, 130, 240, 3840, true, true)).toBe(1090);
+    expect(dragMarkerT(960, -5000, 240, 3840, true)).toBe(0);
+    expect(dragMarkerT(960, 9000, 0, 3840, true)).toBe(3839);
+    expect(dragMarkerT(1, 0.3333, 0, 8, false)).toBe(1.333);
+    expect(dragMarkerT(1, 99, 0, 8, false)).toBe(7.999);
+  });
+
+  it('mixColor blends and keeps the ends', () => {
+    expect(mixColor('#000000', '#ffffff', 0)).toBe('rgb(0,0,0)');
+    expect(mixColor('#000000', '#ffffff', 1)).toBe('rgb(255,255,255)');
+    expect(mixColor('#000000', '#ff8000', 0.5)).toBe('rgb(128,64,0)');
+    expect(stateColor(0)).toBe(stateColor(8));
   });
 });

@@ -9,12 +9,12 @@ import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
 import { commands } from '../project/commands';
 import { applyOps } from '../project/patch';
 import { storageEstimate } from '../project/persist';
-import { MAX_LAYERS, type Layer, type LayerKind, type Project, type Tune } from '../project/types';
+import { MAX_LAYERS, type Layer, type LayerKind, type Project, type State, type Tune } from '../project/types';
 import { $, type App } from './app';
 
 // ---------------------------------------------------------------- small builders
 
-function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> & { class?: string } = {},
+export function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> & { class?: string } = {},
                                                   ...kids: (Node | string)[]): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
   const { class: cls, ...rest } = props as Record<string, unknown>;
@@ -26,13 +26,13 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEle
 }
 
 let uid = 0;
-const nextId = (p: string) => `${p}-${++uid}`;
+export const nextId = (p: string) => `${p}-${++uid}`;
 
-type Updater = (doc: Project) => void;
+export type Updater = (doc: Project) => void;
 
-const focused = (el: Element) => document.activeElement === el;
+export const focused = (el: Element) => document.activeElement === el;
 
-interface RangeOpts {
+export interface RangeOpts {
   label: string; min: number; max: number; step: number; digits?: number; unit?: string;
   get: (doc: Project) => number;
   /** Fires on every move of the slider (the engine hears it; the document is not touched). */
@@ -41,7 +41,7 @@ interface RangeOpts {
   commit: (v: number) => void;
 }
 
-function rangeCtl(parent: HTMLElement, o: RangeOpts): Updater {
+export function rangeCtl(parent: HTMLElement, o: RangeOpts): Updater {
   const id = nextId('rng');
   const out = h('output', { class: 'mono small' });
   out.setAttribute('for', id);
@@ -282,14 +282,14 @@ function presetArgs(kind: LayerKind, i: number): { base: number[]; kit?: { param
 }
 
 let presetCache: { melody: number[][]; beat: number[][] } | null = null;
-/** Index of the preset whose base matches the layer, or -1 (Custom). */
-function matchPreset(l: Layer): number {
+/** Index of the preset whose base matches the state being edited, or -1 (Custom). */
+function matchPreset(l: Layer, state: State = l.states[0]): number {
   presetCache ??= {
     melody: MELODY_SOUNDS.map((_, i) => presetArgs('melody', i).base),
     beat: BEAT_KITS.map((_, i) => presetArgs('beat', i).base),
   };
   const sets = l.kind === 'beat' ? presetCache.beat : presetCache.melody;
-  const base = l.states[0]?.base;
+  const base = state?.base;
   return sets.findIndex((s) => base && s.length === base.length && s.every((v, k) => v === base[k]));
 }
 
@@ -349,8 +349,15 @@ export function initLayers(app: App): LayerPanel {
     // Sound preset.
     ups.push(selectCtl(g, {
       label: l.kind === 'beat' ? 'Kit' : 'Sound', options: soundNames(l.kind),
-      get: (d) => { const x = d.layers.find((y) => y.id === id); return x ? matchPreset(x) : -1; },
-      commit: (v) => { const a = presetArgs(l.kind, v); app.run(() => app.store.dispatch('setLayerSound', { id, base: a.base, ...(a.kit ? { kit: a.kit } : {}) })); },
+      get: (d) => { const x = d.layers.find((y) => y.id === id); return x ? matchPreset(x, app.ui.editState(x)) : -1; },
+      commit: (v) => {
+        const a = presetArgs(l.kind, v);
+        const x = layerOf(app.doc, id);
+        const st = app.ui.editState(x);
+        // setLayerSound writes the first state (and the kit); any other state is written with setState.
+        if (st.id === x.states[0].id) app.run(() => app.store.dispatch('setLayerSound', { id, base: a.base, ...(a.kit ? { kit: a.kit } : {}) }));
+        else app.run(() => app.store.dispatch('setState', { layer: id, id: st.id, base: a.base }));
+      },
     }));
     ups.push(rangeCtl(g, {
       label: 'Level (dB)', min: -60, max: 12, step: 0.5, digits: 1, unit: ' dB', get: (d) => layerOf(d, id).level,

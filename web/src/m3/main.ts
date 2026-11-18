@@ -1,4 +1,5 @@
-// Earworm M3 page: project bar, sections, layers, timeline, overdub capture and the gate checks.
+// Earworm track page (M3 and M4): project bar, sections, layers, sound states, Influence, timeline with the morph lane,
+// overdub capture and the gate checks.
 //
 // For automated runs the page exposes `window.earworm`:
 //   store     the open project's Store (dispatch, undo, redo, doc, history); it changes when another project is opened
@@ -6,6 +7,7 @@
 //   host      the KlontHost (null until Start)
 //   compiler  the Compiler that diffs documents into engine blobs
 //   gate      { runStress(seed?), reloadCheck(), crashCheck(), last, lastReload, lastCrash }
+//   app       the shared page state (selection, matcher, document access)
 //   session, sync, ui: the pieces behind the above, for poking at in the console
 
 import { KlontHost, wantsFallback } from '../m1/klont-host';
@@ -16,8 +18,12 @@ import { PPQ } from '../project/types';
 import { $, App } from './app';
 import { Capture } from './capture';
 import { Gate } from './gate';
+import { initInfluence } from './influence';
+import { initKit } from './kit';
+import { initMorph } from './morph';
 import { initLayers, initProjectBar, initSections } from './panels';
 import { Session } from './session';
+import { initStates } from './states';
 import { Timeline } from './timeline';
 
 async function main(): Promise<void> {
@@ -40,6 +46,10 @@ async function main(): Promise<void> {
   const gate = new Gate(app);
   const layers = initLayers(app);
   const sections = initSections(app);
+  const states = initStates(app);
+  const influence = initInfluence(app);
+  const kit = initKit(app);
+  const morph = initMorph(app);
   const projectBar = initProjectBar(app, () => { /* the session's change event does the rest */ });
 
   // ---- keep the panels in step with the document
@@ -50,6 +60,11 @@ async function main(): Promise<void> {
     projectBar.refresh(doc);
     sections.refresh(doc);
     layers.refresh(doc);
+    states.refresh(doc);
+    influence.refresh(doc);
+    kit.refresh(doc);
+    morph.refresh(doc);
+    $('kitHead').hidden = $('kitPanel').hidden;
     timeline.refreshToolbar(doc);
     ($('undo') as HTMLButtonElement).disabled = !app.store.history.canUndo;
     ($('redo') as HTMLButtonElement).disabled = !app.store.history.canRedo;
@@ -60,6 +75,7 @@ async function main(): Promise<void> {
   session.onChange((doc, kind) => {
     if (kind === 'swap') {
       app.ui.selection = { layerId: '', ids: [] };
+      app.ui.marker = null;
       app.ui.pendingJump = -1;
       app.ui.sectionId = '';
       app.ui.layerId = '';
@@ -73,6 +89,7 @@ async function main(): Promise<void> {
     app.refreshAll();
   });
   app.sync.framesFor = (take) => session.framesFor(take);
+  app.sync.grainFor = (layer) => session.grainFor(layer);
   app.sync.onPass = (r) => {
     timeline.invalidate(); // a tuned curve may have arrived
     if (r.errors.length) app.fail(`Engine: ${r.errors.join('; ')}`);
@@ -195,6 +212,7 @@ async function main(): Promise<void> {
       session,
       sync: app.sync,
       ui: app.ui,
+      app,
     },
   });
 

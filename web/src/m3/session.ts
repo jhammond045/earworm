@@ -5,7 +5,7 @@ import { newProject } from '../project/commands';
 import type { HistoryState, JournalEntry } from '../project/history';
 import { opfsBlobs, ProjectDb, type BlobStore, type Kv } from '../project/persist';
 import { Store } from '../project/store';
-import type { Project, Take } from '../project/types';
+import type { Layer, Project, Take } from '../project/types';
 
 export interface TakeData {
   /** High-passed mic audio at the take's rate. Null if the blob is missing. */
@@ -20,11 +20,21 @@ type Listener = (doc: Project, kind: ChangeKind, entry: JournalEntry | null) => 
 export const audioRef = (takeId: string) => `audio-${takeId}`;
 export const framesRef = (takeId: string) => `frames-${takeId}`;
 
+/** What the compiler's grainFor returns (project/compile.ts GrainFor). */
+export interface GrainSource { data: Float32Array; rate: number; refCents: number | null }
+
+const MAX_GRAIN_CACHE = 16;
+
 export class Session {
   store!: Store;
   blobs!: BlobStore;
   /** Take id -> data, loaded when a project opens or a take is captured. */
   readonly takes = new Map<string, TakeData>();
+  /** Influence source blob id ('grain-...') -> mono audio at the source's own rate. */
+  readonly grains = new Map<string, Float32Array>();
+  /** Grain regions already sliced, by blob, region and rate: the same array comes back until the source changes. */
+  private grainCache = new Map<string, { src: Float32Array; out: GrainSource }>();
+  private grainLoading = new Map<string, Promise<void>>();
   /** Set when OPFS could not be used (takes then live in memory only). */
   blobError: string | null = null;
   private listeners = new Set<Listener>();
@@ -85,12 +95,18 @@ export class Session {
     this.blobError = null;
     this.takes.clear();
     this.loading.clear();
+    this.grains.clear();
+    this.grainCache.clear();
+    this.grainLoading.clear();
     this.unsub = store.subscribe((doc, entry) => {
       this.db.append(doc.id, entry, doc, store.history.toJSON() as HistoryState);
       this.emit(doc, 'change', entry);
     });
     if (remember) await this.kv.put('settings', 'lastProject', store.doc.id);
-    await Promise.all(Object.values(store.doc.takes).map((t) => this.loadTake(t.id)));
+    await Promise.all([
+      ...Object.values(store.doc.takes).map((t) => this.loadTake(t.id)),
+      ...store.doc.layers.flatMap((l) => (l.influence ? [this.loadGrain(l.influence.source)] : [])),
+    ]);
     this.emit(store.doc, 'swap', null);
   }
 
@@ -135,6 +151,66 @@ export class Session {
       this.blobError = e instanceof Error ? e.message : String(e);
       throw e;
     }
+  }
+
+  /** Keep an Influence source: in memory at once, in the blob store in the background (like a take). */
+  async putGrain(ref: string, data: Float32Array): Promise<void> {
+    this.grains.set(ref, data);
+    try {
+      await this.blobs.put(ref, data);
+    } catch (e) {
+      this.blobError = e instanceof Error ? e.message : String(e);
+      throw e;
+    }
+  }
+
+  /** Load an Influence source's audio into memory (once). Resolves when done, also when the blob is missing. */
+  loadGrain(ref: string): Promise<void> {
+    if (this.grains.has(ref)) return Promise.resolve();
+    let p = this.grainLoading.get(ref);
+    if (!p) {
+      const blobs = this.blobs;
+      p = (async () => {
+        try {
+          const data = await blobs.get(ref);
+          if (blobs === this.blobs && data) this.grains.set(ref, data);
+        } catch (e) {
+          this.blobError = e instanceof Error ? e.message : String(e);
+        } finally {
+          this.grainLoading.delete(ref);
+        }
+      })();
+      this.grainLoading.set(ref, p);
+    }
+    return p;
+  }
+
+  /** The layer's grain source for the compiler: its Influence source cut to the grain region, or null while the
+   *  audio loads (a later change event says when it arrives). The same array comes back for the same blob and
+   *  region, because the compiler sends a grain again only when the array is a different one. */
+  grainFor(layer: Layer): GrainSource | null {
+    const infl = layer.influence;
+    if (!infl || !infl.grain) return null;
+    const src = this.grains.get(infl.source);
+    if (!src) {
+      void this.loadGrain(infl.source).then(() => {
+        if (this.grains.has(infl.source)) this.emit(this.store.doc, 'change', null);
+      });
+      return null;
+    }
+    const start = Math.max(0, Math.min(src.length - 1, Math.floor(infl.grain.start)));
+    const end = Math.max(start + 1, Math.min(src.length, Math.floor(infl.grain.end)));
+    const key = `${infl.source}|${start}|${end}|${infl.sourceRate}|${infl.grain.refCents}`;
+    const hit = this.grainCache.get(key);
+    if (hit && hit.src === src) {
+      this.grainCache.delete(key);
+      this.grainCache.set(key, hit);
+      return hit.out;
+    }
+    const out: GrainSource = { data: src.slice(start, end), rate: infl.sourceRate, refCents: infl.grain.refCents };
+    this.grainCache.set(key, { src, out });
+    while (this.grainCache.size > MAX_GRAIN_CACHE) this.grainCache.delete(this.grainCache.keys().next().value as string);
+    return out;
   }
 
   private emit(doc: Project, kind: ChangeKind, entry: JournalEntry | null): void {

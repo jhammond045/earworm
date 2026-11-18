@@ -3,7 +3,8 @@
 import type { KlontHost } from '../m1/klont-host';
 import { METER_LEN } from '../m1/protocol';
 import type { Analysis } from '../m2/analysis';
-import type { Project } from '../project/types';
+import { Matcher } from '../m4/match';
+import type { Layer, Project, State } from '../project/types';
 import { Session } from './session';
 import { Sync, type SyncResult } from './sync';
 
@@ -16,11 +17,18 @@ export const $ = <T extends HTMLElement>(id: string): T => {
 /** Items picked in one lane. Selection is per layer: picking in another lane replaces it. */
 export interface Selection { layerId: string; ids: string[] }
 
+/** A morph marker picked on the timeline: the lane's layer (in the selected section) and its index in the clip's morph list. */
+export interface MarkerSel { layerId: string; index: number }
+
 export class UiState {
   sectionId = '';
   /** The lane being edited, and the layer a capture goes to. */
   layerId = '';
   selection: Selection = { layerId: '', ids: [] };
+  /** The picked morph marker, if any. Picking a marker clears the note selection and the other way round. */
+  marker: MarkerSel | null = null;
+  /** The state each layer's sound controls edit (layer id -> state id). A missing or stale entry means the first state. */
+  private editing: Record<string, string> = {};
   /** Horizontal zoom of the timeline. */
   zoom = 1;
   /** Section index of a queued jump (shown until the transport gets there), or -1. */
@@ -32,6 +40,22 @@ export class UiState {
 
   select(layerId: string, ids: string[]): void {
     this.selection = { layerId, ids };
+    if (ids.length) this.marker = null;
+    this.changed();
+  }
+
+  selectMarker(m: MarkerSel | null): void {
+    this.marker = m;
+    if (m) this.selection = { layerId: m.layerId, ids: [] };
+    this.changed();
+  }
+
+  /** The state of `layer` that the sound preset, macros and Influence amount edit. */
+  editState(layer: Layer): State {
+    return layer.states.find((s) => s.id === this.editing[layer.id]) ?? layer.states[0];
+  }
+  setEditState(layer: Layer, stateId: string): void {
+    this.editing[layer.id] = stateId;
     this.changed();
   }
   clearSelection(): void {
@@ -42,6 +66,10 @@ export class UiState {
   fit(doc: Project): void {
     if (!doc.sections.some((s) => s.id === this.sectionId)) this.sectionId = doc.sections[0]?.id ?? '';
     if (!doc.layers.some((l) => l.id === this.layerId)) this.layerId = doc.layers[0]?.id ?? '';
+    if (this.marker) {
+      const m = doc.sections.find((x) => x.id === this.sectionId)?.clips[this.marker.layerId]?.morph;
+      if (!m || this.marker.index >= m.length) this.marker = null;
+    }
     if (this.selection.ids.length) {
       const sec = doc.sections.find((s) => s.id === this.sectionId);
       const clip = sec?.clips[this.selection.layerId];
@@ -60,6 +88,12 @@ export class App {
   /** The engine sync that the newest store change started (the gate reads its timings). */
   lastRequest: Promise<SyncResult> | null = null;
   host: KlontHost | null = null;
+  private matcherP: Promise<Matcher> | null = null;
+  /** The match worker, started on first use. A failure is not cached, so the next try starts it again. */
+  matcher(): Promise<Matcher> {
+    this.matcherP ??= Matcher.create().catch((e) => { this.matcherP = null; throw e; });
+    return this.matcherP;
+  }
   analysis: Analysis | null = null;
   ctx: AudioContext | null = null;
   stream: MediaStream | null = null;
@@ -91,6 +125,20 @@ export class App {
       this.refreshAll();
       return false;
     }
+  }
+
+  /** Run an edit that a slider or drag was previewing. When it changed nothing the document is the same object, so the
+   *  engine (which heard the preview) is put back on it by hand. */
+  runRestoring(fn: () => unknown): boolean {
+    const before = this.doc;
+    const ok = this.run(fn);
+    if (this.doc === before) void this.sync.request(this.doc);
+    return ok;
+  }
+
+  /** Let the engine hear `make(doc)` without touching the document. A bad value is left for the commit to report. */
+  previewDoc(make: (doc: Project) => Project): void {
+    try { void this.sync.request(make(this.doc)); } catch { /* the commit on release reports it */ }
   }
 
   /** The newest meters, or null before the engine has published any. */

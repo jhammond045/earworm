@@ -242,3 +242,78 @@ export function resizeDur(t: number, dur: number, rawDt: number, snap: number, m
   const snapped = free || snap <= 0 ? end : snapTo(end, snap);
   return Math.max(minDur, snapped - t);
 }
+
+// ---------------------------------------------------------------- morph lane
+
+/** Height of the morph strip under each lane, px. */
+export const MORPH_H = 18;
+/** Radius of a marker glyph, px. */
+export const MARKER_R = 6;
+
+/** One colour per state index (a layer has at most 8 states). Chosen to stay apart on both light and dark pages. */
+export const STATE_COLORS = ['#7a6df0', '#e2874a', '#34a98f', '#d84f7e', '#6aa84f', '#c9a227', '#3d8fd1', '#9a6b4f'];
+export const stateColor = (index: number): string => STATE_COLORS[((index % STATE_COLORS.length) + STATE_COLORS.length) % STATE_COLORS.length];
+
+export type MorphShapeName = 'line' | 'ease' | 'late' | 'step' | 'wobble';
+
+/** The shaped progress of a transition, x in 0..1 (crates/klont/src/seq.rs, "Morph lane"). Step is 1 at once,
+ *  also at x = 0 (a step marker has no ramp). */
+export function shapeProgress(shape: MorphShapeName, x: number): number {
+  const c = Math.max(0, Math.min(1, x));
+  switch (shape) {
+    case 'ease': return c * c * (3 - 2 * c);
+    case 'late': return c * c * c;
+    case 'step': return 1;
+    case 'wobble': return Math.max(0, Math.min(1, c + 0.12 * Math.sin(6 * Math.PI * c) * (1 - c)));
+    default: return c;
+  }
+}
+
+export interface MorphMark { t: number; lenMs: number; shape: MorphShapeName }
+
+/** Where a clip's morph lane is at position `pos` (section units, inside the loop): the marker in force,
+ *  the one before it (the lane wraps with the loop), and the shaped progress from the older state to the newer.
+ *  Same rules as the engine, so the strip draws what is heard. `unitsPerSec` turns the marker's length in ms
+ *  into section units. No markers: null. One marker: that marker with progress 1. */
+export function morphAt(markers: readonly MorphMark[], pos: number, unitsPerSec: number): { k: number; prev: number; x: number } | null {
+  const n = markers.length;
+  if (n === 0) return null;
+  let k = -1;
+  for (let i = 0; i < n; i++) if (markers[i].t <= pos) k = i;
+  const wrapped = k < 0;
+  if (wrapped) k = n - 1;
+  const prev = n === 1 ? k : (k + n - 1) % n;
+  if (n === 1) return { k, prev, x: 1 };
+  const m = markers[k];
+  // Before the first marker the last one is still in force: the loop is a whole lap behind it, so its transition is done.
+  const since = wrapped ? Infinity : ((pos - m.t) / unitsPerSec) * 1000;
+  const raw = m.lenMs <= 0 || m.shape === 'step' ? 1 : Math.max(0, Math.min(1, since / m.lenMs));
+  return { k, prev, x: shapeProgress(m.shape, raw) };
+}
+
+/** The marker whose glyph is under px (and inside the strip at py), nearest first, or -1. */
+export function hitTestMarkers(markers: readonly { t: number }[], px: number, py: number, vp: Viewport, top: number, h = MORPH_H, slack = 3): number {
+  if (py < top || py > top + h) return -1;
+  let best = -1, bestD = Infinity;
+  markers.forEach((m, i) => {
+    const d = Math.abs(px - timeToX(m.t, vp));
+    if (d <= MARKER_R + slack && d < bestD) { best = i; bestD = d; }
+  });
+  return best;
+}
+
+/** A dragged marker's new time: snapped (unless `free`), whole ticks in a grid section, and inside the loop
+ *  (0 up to just under `loopLen`, as the document requires). */
+export function dragMarkerT(t: number, rawDt: number, snap: number, loopLen: number, grid: boolean, free = false): number {
+  const want = free || snap <= 0 ? t + rawDt : snapTo(t + rawDt, snap);
+  const top = grid ? loopLen - 1 : loopLen - 0.001;
+  const v = Math.max(0, Math.min(top, want));
+  return grid ? Math.round(v) : Math.round(v * 1000) / 1000;
+}
+
+/** Linear blend of two #rrggbb colours, w in 0..1. */
+export function mixColor(a: string, b: string, w: number): string {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = (s: number) => Math.round(((pa >> s) & 255) * (1 - w) + ((pb >> s) & 255) * w);
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
