@@ -46,7 +46,7 @@ max       = 1.0
 neutral   = 0.0
 unit      = ""
 smooth_ms = 15
-doc       = "Level of the grain cloud (not played until M4)."
+doc       = "Level of the grain cloud."
 
 [[param]]
 id        = "src.tilt"
@@ -173,7 +173,7 @@ max       = 0.5
 neutral   = 0.08
 unit      = "s"
 smooth_ms = 15
-doc       = "Grain length (not played until M4)."
+doc       = "Grain length."
 
 [[param]]
 id        = "grain.density"
@@ -184,7 +184,7 @@ max       = 100.0
 neutral   = 20.0
 unit      = "1/s"
 smooth_ms = 15
-doc       = "Grains per second (not played until M4)."
+doc       = "Grains per second."
 
 [[param]]
 id        = "grain.pos"
@@ -195,7 +195,7 @@ max       = 1.0
 neutral   = 0.5
 unit      = ""
 smooth_ms = 15
-doc       = "Read position in the source (not played until M4)."
+doc       = "Read position in the source."
 
 [[param]]
 id        = "grain.spray"
@@ -206,7 +206,7 @@ max       = 1.0
 neutral   = 0.0
 unit      = ""
 smooth_ms = 15
-doc       = "Random spread of the read position (not played until M4)."
+doc       = "Random spread of the read position."
 
 [[param]]
 id        = "grain.scatter"
@@ -217,7 +217,7 @@ max       = 1.0
 neutral   = 0.0
 unit      = ""
 smooth_ms = 15
-doc       = "Random spread of grain timing (not played until M4)."
+doc       = "Random spread of grain timing."
 
 [[param]]
 id        = "fold.amt"
@@ -619,7 +619,7 @@ max       = 1.0
 neutral   = 0.0
 unit      = ""
 smooth_ms = 15
-doc       = "Second LFO to grain position (not played until M4)."
+doc       = "Second LFO to grain position."
 
 [[param]]
 id        = "chaos.rate"

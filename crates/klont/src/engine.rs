@@ -235,6 +235,57 @@ impl Engine {
                 self.layers[s].load(&w);
                 LOAD_OK
             }
+            LOAD_GRAIN => {
+                let s = slot as usize;
+                if s >= MAX_LAYERS {
+                    return LOAD_BAD_SLOT;
+                }
+                let hdr = GRAIN_HEADER_WORDS * 4;
+                if bytes.len() < hdr {
+                    return LOAD_MALFORMED;
+                }
+                let word = |i: usize| u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]]);
+                if word(0) != GRAIN_MAGIC {
+                    return LOAD_BAD_MAGIC;
+                }
+                let (rate, ref_cents, n) = (f32::from_bits(word(1)), f32::from_bits(word(2)), word(3) as usize);
+                if n > GRAIN_MAX_SAMPLES {
+                    return LOAD_TOO_BIG;
+                }
+                if bytes.len() != hdr + n * 4 || (n > 0 && !(rate.is_finite() && (1000.0..=384_000.0).contains(&rate))) {
+                    return LOAD_MALFORMED;
+                }
+                // NaN means unpitched; any other value is a pitch in cents.
+                let ref_cents = if ref_cents.is_finite() { ref_cents.clamp(0.0, 13_000.0) } else { f32::NAN };
+                self.layers[s].load_grain(rate, ref_cents, n, &bytes[hdr..]);
+                LOAD_OK
+            }
+            LOAD_STATES => {
+                let s = slot as usize;
+                if s >= MAX_LAYERS {
+                    return LOAD_BAD_SLOT;
+                }
+                if bytes.len() < 8 {
+                    return LOAD_MALFORMED;
+                }
+                let word = |i: usize| u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]]);
+                if word(0) != STATES_MAGIC {
+                    return LOAD_BAD_MAGIC;
+                }
+                let n = word(1) as usize;
+                if n > MAX_STATES {
+                    return LOAD_TOO_BIG;
+                }
+                if bytes.len() != 8 + n * STATE_WORDS * 4 {
+                    return LOAD_MALFORMED;
+                }
+                let mut w = [0.0f32; MAX_STATES * STATE_WORDS];
+                for (i, x) in w[..n * STATE_WORDS].iter_mut().enumerate() {
+                    *x = f32::from_bits(word(2 + i));
+                }
+                self.layers[s].load_states(&w[..n * STATE_WORDS], n);
+                LOAD_OK
+            }
             LOAD_CURVE => match self.curves.load(slot as usize, bytes) {
                 Ok(()) => LOAD_OK,
                 Err(crate::curve::CurveError::BadSlot) => LOAD_BAD_SLOT,
@@ -519,6 +570,7 @@ impl Engine {
 
     /// Control tick: resolution and budget for every layer, then every voice.
     fn tick(&mut self) {
+        self.update_morph();
         for l in self.layers.iter_mut() {
             l.control_tick();
         }
@@ -530,6 +582,29 @@ impl Engine {
         let ups = self.transport.units_per_sample();
         for l in self.layers.iter_mut() {
             l.voices_tick(&self.track, &self.curves, ups);
+        }
+    }
+
+    /// Resolution step 1: tell each layer with states which two to blend,
+    /// from the morph lane of its clip in the current section. No clip or no
+    /// marker: state 0.
+    fn update_morph(&mut self) {
+        let section = self.transport.section();
+        let pos = self.transport.pos();
+        let ups = self.transport.units_per_sample();
+        let ms_per_unit = if ups > 0.0 { 1000.0 / (ups * self.sr as f64) } else { 0.0 };
+        for (li, l) in self.layers.iter_mut().enumerate() {
+            if !l.has_states() {
+                continue;
+            }
+            let b = self
+                .track
+                .clip_index_for(section, li)
+                .and_then(|ci| self.track.morph_blend(ci, pos, ms_per_unit));
+            match b {
+                Some(b) => l.set_morph(b.from, b.to, b.x),
+                None => l.set_morph(0, 0, 0.0),
+            }
         }
     }
 

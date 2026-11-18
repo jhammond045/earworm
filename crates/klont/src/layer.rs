@@ -3,7 +3,15 @@
 //! per-layer effects.
 //!
 //! Resolution (TDD "Resolution order"), as built in M1:
-//! 1. Morph: not yet (states and the morph lane arrive in M4).
+//! 1. Morph (M4): with states loaded (`load_states`), the engine tells the
+//!    layer each control tick which two states its clip's morph lane blends
+//!    and how far (`set_morph`); the blend of their base sets, macros and
+//!    Influence amount replaces the layer's own base, macros and amount. A
+//!    steady blend marks nothing dirty, so it costs nothing per tick. Without
+//!    a marker (or clip) the engine asks for state 0. A layer that never got
+//!    states keeps what `LOAD_LAYER` and live messages set. Live edits of
+//!    base, macros or amount on a layer with states last until the blend next
+//!    changes (the host reloads states to change them for good).
 //! 2. Influence: `params::influence_blend` on the layer's base set.
 //! 3. Macros: `params::apply_macros` on every set.
 //!    Steps 2 and 3 run when a stored value changes, then every set is
@@ -21,9 +29,13 @@
 //!    per voice; per-voice offsets come from 10 ms frames read with linear
 //!    interpolation or are fixed for the note, so they need none.
 //!
+//! The grain cloud (`grain.rs`) is per layer and renders into the layer bus
+//! with the voices, before the per-layer effects.
+//!
 //! The space, crush and tape modules are per layer and always read the
 //! layer's base set, also on beat layers.
 
+use crate::grain::{GrainCloud, VoiceGrain};
 use crate::curve::{self, CurvePool, CURVE_STRIDE, TUNED};
 use crate::protocol::*;
 use crate::seq::{Clip, Event, Track};
@@ -42,6 +54,14 @@ pub const SETS: usize = 1 + KIT_SLOTS;
 const NOISE_RMS: f32 = 0.35;
 /// Voicing crossfade (TDD "Vowel shape: the vocoder path").
 const VOICE_XFADE_S: f32 = 0.010;
+
+/// One stored state: base set, macros and Influence amount (LOAD_STATES).
+#[derive(Clone, Copy)]
+struct State {
+    base: ParamSet,
+    macros: [f32; N_MACROS],
+    amount: f32,
+}
 
 /// What drives a voice besides its layer's set.
 #[derive(Clone, Copy, Debug)]
@@ -225,6 +245,11 @@ pub struct Layer {
     space_on: bool,
     pub peak: f32,
     pub steals: u32,
+    /// Morph states (resolution step 1) and the blend last applied.
+    states: [State; MAX_STATES],
+    n_states: usize,
+    morph_applied: Option<(u32, u32, f32)>,
+    grain: GrainCloud,
     /// Partial budget share per voice, set by the engine before each tick.
     pub max_partials: [usize; VOICES_PER_LAYER],
     age: u64,
@@ -289,6 +314,10 @@ impl Layer {
             space_on: false,
             peak: 0.0,
             steals: 0,
+            states: [State { base: neutral, macros: [0.5; N_MACROS], amount: 0.0 }; MAX_STATES],
+            n_states: 0,
+            morph_applied: None,
+            grain: GrainCloud::new(sr, seed ^ 0x7f4a_7c15),
             max_partials: [crate::voice::MAX_PARTIALS; VOICES_PER_LAYER],
             age: 0,
             live: neutral,
@@ -373,7 +402,65 @@ impl Layer {
         for k in 0..N_MACROS {
             self.set_macro(k, w[LAYER_OFF_MACROS + k]);
         }
+        // With states loaded they stay the source of base, macros and amount.
+        self.morph_applied = None;
         self.dirty = true;
+    }
+
+    /// Load states (protocol STATES layout): `w` holds `n * STATE_WORDS`
+    /// floats, already bounds-checked. n = 0 clears them (the layer then keeps
+    /// the values it has now).
+    pub fn load_states(&mut self, w: &[f32], n: usize) {
+        let neutral = P::neutral_set();
+        let clean = |x: f32, d: f32| if x.is_finite() { x.clamp(0.0, 1.0) } else { d };
+        for (k, st) in w.chunks_exact(STATE_WORDS).take(n.min(MAX_STATES)).enumerate() {
+            let s = &mut self.states[k];
+            for i in 0..P::COUNT {
+                s.base[i] = clean(st[i], neutral[i]);
+            }
+            for m in 0..N_MACROS {
+                s.macros[m] = clean(st[P::COUNT + m], 0.5);
+            }
+            s.amount = clean(st[P::COUNT + N_MACROS], 0.0);
+        }
+        self.n_states = n.min(MAX_STATES);
+        self.morph_applied = None;
+    }
+
+    pub fn has_states(&self) -> bool {
+        self.n_states > 0
+    }
+
+    /// Step 1: blend state `from` into state `to` by `x` (0..1). Does nothing
+    /// without states, and nothing (no dirty mark) when the blend is the one
+    /// already applied. Indices past the loaded states use the last one.
+    pub fn set_morph(&mut self, from: u32, to: u32, x: f32) {
+        if self.n_states == 0 {
+            return;
+        }
+        let last = (self.n_states - 1) as u32;
+        let (a, b) = (from.min(last), to.min(last));
+        let x = if a == b || !x.is_finite() { 0.0 } else { x.clamp(0.0, 1.0) };
+        if self.morph_applied == Some((a, b, x)) {
+            return;
+        }
+        self.morph_applied = Some((a, b, x));
+        let (sa, sb) = (&self.states[a as usize], &self.states[b as usize]);
+        // Exact at the ends, so a settled morph sits on the state's own values.
+        let mix = |p: f32, q: f32| if x <= 0.0 { p } else if x >= 1.0 { q } else { p + (q - p) * x };
+        for i in 0..P::COUNT {
+            self.base[i] = mix(sa.base[i], sb.base[i]);
+        }
+        for m in 0..N_MACROS {
+            self.macros[m] = mix(sa.macros[m], sb.macros[m]);
+        }
+        self.infl_amount = mix(sa.amount, sb.amount);
+        self.dirty = true;
+    }
+
+    /// Replace the grain source (LOAD_GRAIN). `data` is the sample bytes.
+    pub fn load_grain(&mut self, rate: f32, ref_cents: f32, n: usize, data: &[u8]) {
+        self.grain.set_source(rate, ref_cents, n, data);
     }
 
     fn resolve(&mut self) {
@@ -543,6 +630,7 @@ impl Layer {
             v.kill();
         }
         self.slots = [Slot::default(); VOICES_PER_LAYER];
+        self.grain.clear_grains();
         self.delay.reset();
         self.reverb.reset();
         let (sr, seed) = (self.sr, self.seed);
@@ -621,6 +709,7 @@ impl Layer {
         let mut c = self.controls(v, frame.then_some(&nf), &mut live);
         c.max_partials = self.max_partials[v];
         self.voices[v].start(start, &c, len);
+        self.grain.voice_start(v);
         self.voice_on[v] = true;
         self.layer_on = true;
     }
@@ -717,10 +806,34 @@ impl Layer {
             }
             self.noise_banks[s].control(noise_lvl[s], &nb, TICK);
         }
+        if self.grain.wants() {
+            let mut vg = [VoiceGrain::default(); VOICES_PER_LAYER];
+            for v in 0..VOICES_PER_LAYER {
+                if !self.voice_on[v] {
+                    continue;
+                }
+                let r = &self.real[self.slots[v].set];
+                let mix = r[P::SRC_GRAIN_MIX];
+                vg[v] = VoiceGrain {
+                    on: true,
+                    amp: self.voices[v].loudness() * mix,
+                    size: r[P::GRAIN_SIZE],
+                    density: r[P::GRAIN_DENSITY],
+                    pos: r[P::GRAIN_POS],
+                    spray: r[P::GRAIN_SPRAY],
+                    scatter: r[P::GRAIN_SCATTER],
+                    to_grain: r[P::LFO2_TO_GRAIN],
+                    lfo2: self.voices[v].lfo2(),
+                    cents: self.voices[v].pitch_cents(),
+                };
+            }
+            self.grain.tick(&vg);
+        }
         self.space_on = self.delay.active() || self.reverb.active();
         let gain_moving = (self.gl - self.gl_t).abs() > 1e-6 || (self.gr - self.gr_t).abs() > 1e-6;
         self.layer_on = self.voice_on.iter().any(|&a| a)
             || self.noise_banks.iter().any(|n| n.on)
+            || self.grain.active()
             || self.space_on
             || gain_moving;
     }
@@ -767,6 +880,7 @@ impl Layer {
         for nb in self.noise_banks.iter_mut() {
             nb.render(bus);
         }
+        self.grain.render(bus);
         let space = self.space_on;
         let (dl, dr) = (self.gl_step, self.gr_step);
         let w = self.real[0][P::WIDTH];
@@ -922,4 +1036,57 @@ pub fn gesture_offsets(f: &[f32; CURVE_STRIDE], depth: &[f32; 5], p: &mut ParamS
     let silent = voicing > 1.5;
     let amp = (1.0 - depth[0]) + depth[0] * loud;
     if silent { amp * 0.0 } else { amp }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn states(n: usize, f: impl Fn(usize, usize) -> f32) -> Vec<f32> {
+        let mut w = vec![0.0; n * STATE_WORDS];
+        for k in 0..n {
+            for i in 0..P::COUNT {
+                w[k * STATE_WORDS + i] = f(k, i);
+            }
+        }
+        w
+    }
+
+    #[test]
+    fn a_steady_morph_marks_nothing_dirty() {
+        let mut l = Layer::new(48_000.0, 0);
+        l.load_states(&states(2, |k, _| k as f32 * 0.5), 2);
+        l.control_tick();
+        l.set_morph(0, 1, 0.25);
+        assert!(l.dirty);
+        l.control_tick();
+        assert!(!l.dirty);
+        l.set_morph(0, 1, 0.25);
+        assert!(!l.dirty, "same blend again");
+        l.set_morph(0, 1, 0.5);
+        assert!(l.dirty);
+        // Ends are exact.
+        l.set_morph(0, 1, 1.0);
+        assert!(l.base.iter().all(|&v| v == 0.5));
+        l.set_morph(0, 1, 0.0);
+        assert!(l.base.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn without_states_the_layer_is_left_alone() {
+        let mut l = Layer::new(48_000.0, 0);
+        l.set_param(SET_BASE, P::FILT_CUTOFF, 0.3);
+        l.control_tick();
+        l.set_morph(0, 1, 0.5);
+        assert!(!l.dirty);
+        assert_eq!(l.base[P::FILT_CUTOFF], 0.3);
+    }
+
+    #[test]
+    fn state_indices_past_the_loaded_ones_use_the_last() {
+        let mut l = Layer::new(48_000.0, 0);
+        l.load_states(&states(2, |k, _| k as f32 * 0.5), 2);
+        l.set_morph(5, 7, 0.5);
+        assert!(l.base.iter().all(|&v| v == 0.5));
+    }
 }

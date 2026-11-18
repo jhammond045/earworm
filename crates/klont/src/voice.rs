@@ -573,6 +573,12 @@ impl Voice {
         self.env * self.c.amp * self.ns.velocity * self.cg
     }
 
+    /// Value of the second LFO (-1..1) at the last control tick; the grain
+    /// cloud reads it for `lfo2.to_grain`.
+    pub fn lfo2(&self) -> f32 {
+        self.l2
+    }
+
     /// Shaped-noise amplitude this voice asks of its layer for the current
     /// tick: noise_mix * noise envelope * amp * velocity.
     pub fn noise_level(&self) -> f32 {

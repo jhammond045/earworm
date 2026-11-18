@@ -82,6 +82,8 @@ export const BUDGET_MIN = 256;
 export const LOAD_TRACK = 1;
 export const LOAD_LAYER = 2;
 export const LOAD_CURVE = 3;
+export const LOAD_GRAIN = 4;
+export const LOAD_STATES = 5;
 
 export const LOAD_OK = 0;
 export const LOAD_BAD_KIND = -1;
@@ -102,6 +104,13 @@ export const LOAD_NAMES: Record<number, string> = {
   [LOAD_OK]: 'ok', [LOAD_BAD_KIND]: 'bad kind', [LOAD_BAD_SLOT]: 'bad slot',
   [LOAD_BAD_MAGIC]: 'bad magic', [LOAD_TOO_BIG]: 'too big', [LOAD_MALFORMED]: 'malformed',
 };
+
+export const GRAIN_MAGIC = 0x31475745;
+export const GRAIN_MAX_SAMPLES = 480000;
+export const GRAIN_HEADER_WORDS = 4;
+export const STATES_MAGIC = 0x31535745;
+export const MAX_STATES = 8;
+export const STATE_WORDS = 96 + N_MACROS + 1 + 3;
 
 // ---- meter block
 export const M_BLOCKS = 0;

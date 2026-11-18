@@ -5,11 +5,16 @@
 //! # Track blob (`ew_load` kind LOAD_TRACK)
 //!
 //! 32-bit little-endian words. `u32` words are integers, the rest are f32.
+//! Two versions load: v1 (magic "EWT1") and v2 (magic "EWT2", M4), which adds
+//! the morph markers below. The layout shown is v2; v1 differs in that header
+//! word 6 is 0, clips are 8 words (the first eight below) and there is no
+//! morph array.
 //!
 //! ```text
 //! header, 8 words:
-//!   u32 magic TRACK_MAGIC, u32 n_sections, u32 n_clips, u32 n_events,
-//!   u32 n_warp, u32 flags (bit 0: loop the track), u32 0, u32 0
+//!   u32 magic TRACK_MAGIC or TRACK_MAGIC2, u32 n_sections, u32 n_clips,
+//!   u32 n_events, u32 n_warp, u32 flags (bit 0: loop the track),
+//!   u32 n_morph (v2; 0 in v1), u32 0
 //! sections, n_sections x 8 words:
 //!   u32 feel (FEEL_GRID or FEEL_FREE),
 //!   f32 length (ticks for grid, 960 per beat; seconds for free),
@@ -19,7 +24,9 @@
 //! clips, n_clips x 8 words:
 //!   u32 section, u32 layer, f32 loop_len (section units, > 0),
 //!   u32 first_event, u32 n_events (a run in the events array, sorted by t),
-//!   i32 curve (curve slot, -1 for none), u32 first_warp, u32 n_warp
+//!   i32 curve (curve slot, -1 for none), u32 first_warp, u32 n_warp,
+//!   (v2, 4 more words:) u32 first_morph, u32 n_morph (a run in the morph
+//!   array, sorted by t), 2 x u32 0
 //! events, n_events x 16 words (one record for notes and hits):
 //!   0 t, 1 dur (section units), 2 cents (NaN: kit slot pitch), 3 hard (0..1),
 //!   4 u32 slot (kit slot for hits), 5 strength (0..1, velocity),
@@ -27,10 +34,27 @@
 //!   13 end_click (hit shape, TDD HitShape; NaN or 0 when unused), 14 0, 15 0
 //! warp anchors, n_warp x 2 words:
 //!   f32 take_sec, f32 clip_t (section units), sorted by clip_t
+//! morph markers (v2), n_morph x 4 words:
+//!   f32 t (section units), u32 state index (< MAX_STATES), f32 len_ms (>= 0),
+//!   u32 shape (MORPH_LINE, _EASE, _LATE, _STEP, _WOBBLE)
 //! ```
 //!
 //! A clip plays in its section on its layer. At most one clip per (section,
 //! layer); a later duplicate is ignored. Events with t >= loop_len never play.
+//!
+//! # Morph lane (resolution step 1)
+//!
+//! A layer with states loaded (`LOAD_STATES`) blends two of them per control
+//! tick, chosen by the morph markers of its clip in the current section; see
+//! `Track::morph_blend`. At the clip position p (the section position modulo
+//! the clip's loop_len), marker k is the newest with t <= p, or the last
+//! marker when none is yet (the lane wraps with the loop). The blend goes from
+//! the state of the marker before k to the state of k with progress
+//! `x = clamp(ms since t_k / len_ms, 0, 1)`, then shaped: line x, ease
+//! smoothstep, late x^3, step 1 at once, wobble `x + 0.12 sin(6 pi x) (1 - x)`
+//! clamped to 0..1. Milliseconds come from the transport's rate at that tick
+//! (a tempo ramp inside one morph is not integrated). One marker means that
+//! state throughout. Markers with t >= loop_len never apply.
 //!
 //! # Transport rules
 //!
@@ -51,11 +75,17 @@
 //! - Notes end by duration: `dur_samples` is the event's dur converted at the
 //!   rate when it fires. Notes are not cut at loop or section boundaries.
 
-use crate::protocol::{MAX_CURVES, MAX_LAYERS};
+use crate::protocol::{MAX_CURVES, MAX_LAYERS, MAX_STATES};
 
 /// Ticks per beat.
 pub const PPQ: f64 = 960.0;
 pub const TRACK_MAGIC: u32 = 0x3154_5745; // "EWT1"
+pub const TRACK_MAGIC2: u32 = 0x3254_5745; // "EWT2"
+pub const MORPH_LINE: u32 = 0;
+pub const MORPH_EASE: u32 = 1;
+pub const MORPH_LATE: u32 = 2;
+pub const MORPH_STEP: u32 = 3;
+pub const MORPH_WOBBLE: u32 = 4;
 pub const FEEL_GRID: u32 = 0;
 pub const FEEL_FREE: u32 = 1;
 
@@ -63,6 +93,7 @@ pub const MAX_SECTIONS: usize = 64;
 pub const MAX_CLIPS: usize = 512;
 pub const MAX_EVENTS: usize = 16384;
 pub const MAX_WARP: usize = 16384;
+pub const MAX_MORPH: usize = 4096;
 /// Most events `advance` reports for one span; later ones are dropped and
 /// counted in `EventList::dropped`.
 pub const MAX_SPAN_EVENTS: usize = 256;
@@ -91,6 +122,26 @@ pub struct Clip {
     pub curve: i32,
     pub first_warp: u32,
     pub n_warp: u32,
+    /// Run in the morph array (always empty for a v1 blob).
+    pub first_morph: u32,
+    pub n_morph: u32,
+}
+
+/// One morph marker, as in the blob.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Morph {
+    pub t: f64,
+    pub state: u32,
+    pub len_ms: f64,
+    pub shape: u32,
+}
+
+/// Which two states a layer blends and how far: `x` is already shaped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MorphBlend {
+    pub from: u32,
+    pub to: u32,
+    pub x: f32,
 }
 
 /// One note or hit, as in the blob.
@@ -129,7 +180,9 @@ const NO_CLIP: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
 const SECTION_WORDS: usize = 8;
 const CLIP_WORDS: usize = 8;
+const CLIP_WORDS2: usize = 12;
 const WARP_WORDS: usize = 2;
+const MORPH_WORDS: usize = 4;
 
 /// Tolerance, in section units, when comparing a position with an event time
 /// or a section end. Positions are computed in closed form from an integer
@@ -172,9 +225,39 @@ fn read_section(b: &[u8], i: usize) -> Result<Section, LoadError> {
     Ok(Section { feel, length, bpm, repeats, ramp_ms, uid })
 }
 
-fn read_clip(b: &[u8], n_sections: usize, n_events: usize, n_warp: usize, i: usize) -> Result<Clip, LoadError> {
-    let o = HEADER_WORDS + n_sections * SECTION_WORDS + i * CLIP_WORDS;
+/// Sizes of the pools a blob declares, and its version.
+#[derive(Clone, Copy)]
+struct Dims {
+    sections: usize,
+    clips: usize,
+    events: usize,
+    warp: usize,
+    morph: usize,
+    v2: bool,
+}
+
+impl Dims {
+    fn clip_words(&self) -> usize {
+        if self.v2 { CLIP_WORDS2 } else { CLIP_WORDS }
+    }
+    fn ev_base(&self) -> usize {
+        HEADER_WORDS + self.sections * SECTION_WORDS + self.clips * self.clip_words()
+    }
+    fn warp_base(&self) -> usize {
+        self.ev_base() + self.events * EVENT_WORDS
+    }
+    fn morph_base(&self) -> usize {
+        self.warp_base() + self.warp * WARP_WORDS
+    }
+}
+
+fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
+    let (n_sections, n_events, n_warp) = (d.sections, d.events, d.warp);
+    let o = HEADER_WORDS + n_sections * SECTION_WORDS + i * d.clip_words();
+    let (first_morph, n_morph) = if d.v2 { (word(b, o + 8)?, word(b, o + 9)?) } else { (0, 0) };
     let clip = Clip {
+        first_morph,
+        n_morph,
         section: word(b, o)?,
         layer: word(b, o + 1)?,
         loop_len: fword(b, o + 2)? as f64,
@@ -192,6 +275,7 @@ fn read_clip(b: &[u8], n_sections: usize, n_events: usize, n_warp: usize, i: usi
         || clip.curve >= MAX_CURVES as i32
         || !in_run(clip.first_event, clip.n_events, n_events)
         || !in_run(clip.first_warp, clip.n_warp, n_warp)
+        || !in_run(clip.first_morph, clip.n_morph, d.morph)
     {
         return Err(LoadError::Malformed);
     }
@@ -232,12 +316,25 @@ fn read_warp(b: &[u8], base: usize, i: usize) -> Result<WarpAnchor, LoadError> {
     Ok(a)
 }
 
+fn read_morph(b: &[u8], base: usize, i: usize) -> Result<Morph, LoadError> {
+    let o = base + i * MORPH_WORDS;
+    let m = Morph { t: fword(b, o)? as f64, state: word(b, o + 1)?, len_ms: fword(b, o + 2)? as f64, shape: word(b, o + 3)? };
+    if !(m.t.is_finite() && m.t >= 0.0 && m.len_ms.is_finite() && m.len_ms >= 0.0)
+        || m.state as usize >= MAX_STATES
+        || m.shape > MORPH_WOBBLE
+    {
+        return Err(LoadError::Malformed);
+    }
+    Ok(m)
+}
+
 /// The compiled arrangement: fixed-capacity pools filled by `load`.
 pub struct Track {
     sections: Vec<Section>,
     clips: Vec<Clip>,
     events: Vec<Event>,
     warp: Vec<WarpAnchor>,
+    morph: Vec<Morph>,
     looping: bool,
     /// Clip index per (section, layer), NO_CLIP when none.
     lut: Vec<u32>,
@@ -257,51 +354,61 @@ impl Track {
             clips: Vec::with_capacity(MAX_CLIPS),
             events: Vec::with_capacity(MAX_EVENTS),
             warp: Vec::with_capacity(MAX_WARP),
+            morph: Vec::with_capacity(MAX_MORPH),
             looping: false,
             lut: vec![NO_CLIP; MAX_SECTIONS * MAX_LAYERS],
         }
     }
 
-    /// Parse a blob into the pools. On error the previous contents are kept.
-    /// Validates counts against the MAX_* limits and every index (section,
-    /// layer < protocol::MAX_LAYERS, event and warp runs in range, lengths and
-    /// loop_len finite and > 0, repeats >= 1). Events inside a clip and warp
-    /// anchors inside a clip must be sorted; the blob must be exactly the
-    /// size its header implies.
+    /// Parse a blob (v1 or v2) into the pools. On error the previous contents
+    /// are kept. Validates counts against the MAX_* limits and every index
+    /// (section, layer < protocol::MAX_LAYERS, event, warp and morph runs in
+    /// range, lengths and loop_len finite and > 0, repeats >= 1, morph state
+    /// < MAX_STATES, shape known). Events, warp anchors and morph markers inside
+    /// a clip must be sorted; the blob must be exactly the size its header
+    /// implies.
     pub fn load(&mut self, bytes: &[u8]) -> Result<(), LoadError> {
         if bytes.len() < HEADER_WORDS * 4 {
             return Err(LoadError::Malformed);
         }
-        if word(bytes, 0)? != TRACK_MAGIC {
+        let magic = word(bytes, 0)?;
+        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 {
             return Err(LoadError::BadMagic);
         }
-        let ns = word(bytes, 1)? as usize;
-        let nc = word(bytes, 2)? as usize;
-        let ne = word(bytes, 3)? as usize;
-        let nw = word(bytes, 4)? as usize;
+        let v2 = magic == TRACK_MAGIC2;
+        let d = Dims {
+            sections: word(bytes, 1)? as usize,
+            clips: word(bytes, 2)? as usize,
+            events: word(bytes, 3)? as usize,
+            warp: word(bytes, 4)? as usize,
+            morph: if v2 { word(bytes, 6)? as usize } else { 0 },
+            v2,
+        };
         let flags = word(bytes, 5)?;
-        if ns > MAX_SECTIONS || nc > MAX_CLIPS || ne > MAX_EVENTS || nw > MAX_WARP {
+        if d.sections > MAX_SECTIONS || d.clips > MAX_CLIPS || d.events > MAX_EVENTS || d.warp > MAX_WARP || d.morph > MAX_MORPH {
             return Err(LoadError::TooBig);
         }
-        let words = HEADER_WORDS + ns * SECTION_WORDS + nc * CLIP_WORDS + ne * EVENT_WORDS + nw * WARP_WORDS;
+        let words = d.morph_base() + d.morph * MORPH_WORDS;
         if bytes.len() != words * 4 {
             return Err(LoadError::Malformed);
         }
-        let ev_base = HEADER_WORDS + ns * SECTION_WORDS + nc * CLIP_WORDS;
-        let warp_base = ev_base + ne * EVENT_WORDS;
+        let (ev_base, warp_base, morph_base) = (d.ev_base(), d.warp_base(), d.morph_base());
 
         // Check pass: nothing is modified.
-        for i in 0..ns {
+        for i in 0..d.sections {
             read_section(bytes, i)?;
         }
-        for i in 0..ne {
+        for i in 0..d.events {
             read_event(bytes, ev_base, i)?;
         }
-        for i in 0..nw {
+        for i in 0..d.warp {
             read_warp(bytes, warp_base, i)?;
         }
-        for i in 0..nc {
-            let c = read_clip(bytes, ns, ne, nw, i)?;
+        for i in 0..d.morph {
+            read_morph(bytes, morph_base, i)?;
+        }
+        for i in 0..d.clips {
+            let c = read_clip(bytes, &d, i)?;
             let mut last = 0.0;
             for k in 0..c.n_events as usize {
                 let e = read_event(bytes, ev_base, c.first_event as usize + k)?;
@@ -318,6 +425,14 @@ impl Track {
                 }
                 last = a.clip_t;
             }
+            let mut last = 0.0;
+            for k in 0..c.n_morph as usize {
+                let m = read_morph(bytes, morph_base, c.first_morph as usize + k)?;
+                if m.t < last {
+                    return Err(LoadError::Malformed);
+                }
+                last = m.t;
+            }
         }
 
         // Copy pass: cannot fail now, and never grows past capacity.
@@ -325,15 +440,16 @@ impl Track {
         self.clips.clear();
         self.events.clear();
         self.warp.clear();
+        self.morph.clear();
         self.lut.fill(NO_CLIP);
         self.looping = flags & 1 != 0;
-        for i in 0..ns {
+        for i in 0..d.sections {
             if let Ok(s) = read_section(bytes, i) {
                 self.sections.push(s);
             }
         }
-        for i in 0..nc {
-            if let Ok(c) = read_clip(bytes, ns, ne, nw, i) {
+        for i in 0..d.clips {
+            if let Ok(c) = read_clip(bytes, &d, i) {
                 let slot = c.section as usize * MAX_LAYERS + c.layer as usize;
                 if self.lut[slot] == NO_CLIP {
                     self.lut[slot] = i as u32;
@@ -341,17 +457,65 @@ impl Track {
                 self.clips.push(c);
             }
         }
-        for i in 0..ne {
+        for i in 0..d.events {
             if let Ok(e) = read_event(bytes, ev_base, i) {
                 self.events.push(e);
             }
         }
-        for i in 0..nw {
+        for i in 0..d.warp {
             if let Ok(a) = read_warp(bytes, warp_base, i) {
                 self.warp.push(a);
             }
         }
+        for i in 0..d.morph {
+            if let Ok(m) = read_morph(bytes, morph_base, i) {
+                self.morph.push(m);
+            }
+        }
         Ok(())
+    }
+
+    /// The morph markers of a clip, sorted by t.
+    pub fn clip_morph(&self, clip: &Clip) -> &[Morph] {
+        let a = clip.first_morph as usize;
+        &self.morph[a..a + clip.n_morph as usize]
+    }
+
+    /// Step 1 of resolution for the layer playing clip `clip_i`, at section
+    /// position `pos`. `ms_per_unit` converts section units to milliseconds at
+    /// the current rate (0 when the transport has no rate: every morph then
+    /// completes at once). None when the clip has no marker that applies.
+    pub fn morph_blend(&self, clip_i: usize, pos: f64, ms_per_unit: f64) -> Option<MorphBlend> {
+        let clip = self.clips.get(clip_i)?;
+        let all = self.clip_morph(clip);
+        let len = clip.loop_len;
+        // Markers at or past the loop end never apply (sorted: a prefix).
+        let m = &all[..all.partition_point(|m| m.t < len)];
+        let n = m.len();
+        if n == 0 {
+            return None;
+        }
+        let w = ((pos + EPS) / len).floor().max(0.0);
+        let p = (pos - w * len).max(0.0);
+        let (k, since) = match m.iter().rposition(|mk| mk.t <= p + EPS) {
+            Some(k) => (k, (p - m[k].t).max(0.0)),
+            None => (n - 1, p + len - m[n - 1].t),
+        };
+        let prev = (k + n - 1) % n;
+        let mk = m[k];
+        let ms = since * ms_per_unit;
+        let raw = if mk.shape == MORPH_STEP || mk.len_ms <= 0.0 || !(ms_per_unit > 0.0) {
+            1.0
+        } else {
+            (ms / mk.len_ms).clamp(0.0, 1.0)
+        };
+        let x = match mk.shape {
+            MORPH_EASE => raw * raw * (3.0 - 2.0 * raw),
+            MORPH_LATE => raw * raw * raw,
+            MORPH_WOBBLE => (raw + 0.12 * (6.0 * std::f64::consts::PI * raw).sin() * (1.0 - raw)).clamp(0.0, 1.0),
+            _ => raw,
+        };
+        Some(MorphBlend { from: m[prev].state, to: mk.state, x: x as f32 })
     }
     pub fn n_sections(&self) -> usize {
         self.sections.len()
@@ -1262,4 +1426,124 @@ mod tests {
         assert_eq!(tr.section(), 0);
     }
 
+
+    // ---- v2: morph markers
+
+    /// (t, state, len_ms, shape)
+    type Mk = (f32, u32, f32, u32);
+
+    /// A v2 blob: one grid section of `len` ticks and one clip per entry of
+    /// `clips` (layer = index, loop_len = `len`), each with the given markers.
+    fn blob2(len: f32, clips: &[Vec<Mk>]) -> Vec<u32> {
+        let nm: usize = clips.iter().map(|c| c.len()).sum();
+        let mut w: Vec<u32> = vec![TRACK_MAGIC2, 1, clips.len() as u32, 0, 0, 0, nm as u32, 0];
+        w.extend([FEEL_GRID, len.to_bits(), 120f32.to_bits(), 1, 0, 0, 0, 0]);
+        let mut first = 0u32;
+        for (i, c) in clips.iter().enumerate() {
+            w.extend([0, i as u32, len.to_bits(), 0, 0, (-1i32) as u32, 0, 0, first, c.len() as u32, 0, 0]);
+            first += c.len() as u32;
+        }
+        for c in clips {
+            for &(t, st, ms, sh) in c {
+                w.extend([t.to_bits(), st, ms.to_bits(), sh]);
+            }
+        }
+        w
+    }
+
+    fn bytes(w: &[u32]) -> Vec<u8> {
+        w.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn v2_loads_markers_and_v1_still_loads() {
+        let mut t = Track::new();
+        let w = blob2(3840.0, &[vec![(0.0, 0, 0.0, MORPH_LINE), (1920.0, 1, 500.0, MORPH_EASE)], vec![]]);
+        t.load(&bytes(&w)).unwrap();
+        assert_eq!(t.n_clips(), 2);
+        assert_eq!(t.clip(0).n_morph, 2);
+        assert_eq!(t.clip_morph(t.clip(0))[1], Morph { t: 1920.0, state: 1, len_ms: 500.0, shape: MORPH_EASE });
+        assert_eq!(t.clip(1).n_morph, 0);
+        assert!(t.morph_blend(1, 10.0, 1.0).is_none());
+        // A v1 blob replaces it and has no markers.
+        let secs = [grid(4.0, 120.0, 1, 0.0)];
+        t.load(&blob(&secs, &[clip(0, 0, 3840.0, &[0.0])], false)).unwrap();
+        assert_eq!((t.n_clips(), t.clip(0).n_morph), (1, 0));
+        assert!(t.morph_blend(0, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn malformed_v2_is_rejected_and_keeps_the_previous_track() {
+        let good = blob2(3840.0, &[vec![(0.0, 0, 0.0, 0), (960.0, 1, 100.0, 1)]]);
+        let mut t = Track::new();
+        t.load(&bytes(&good)).unwrap();
+        let first_marker = 8 + 8 + 12;
+        let bad: Vec<(&str, Vec<u32>, LoadError)> = vec![
+            ("state out of range", { let mut w = good.clone(); w[first_marker + 1] = MAX_STATES as u32; w }, LoadError::Malformed),
+            ("unknown shape", { let mut w = good.clone(); w[first_marker + 3] = 9; w }, LoadError::Malformed),
+            ("negative length", { let mut w = good.clone(); w[first_marker + 2] = (-5f32).to_bits(); w }, LoadError::Malformed),
+            ("NaN time", { let mut w = good.clone(); w[first_marker] = f32::NAN.to_bits(); w }, LoadError::Malformed),
+            ("unsorted", { let mut w = good.clone(); w[first_marker + 4] = 0f32.to_bits(); w[first_marker] = 5f32.to_bits(); w }, LoadError::Malformed),
+            ("run past the array", { let mut w = good.clone(); w[8 + 8 + 9] = 3; w }, LoadError::Malformed),
+            ("short", good[..good.len() - 1].to_vec(), LoadError::Malformed),
+            ("long", { let mut w = good.clone(); w.push(0); w }, LoadError::Malformed),
+            ("too many markers", { let mut w = good.clone(); w[6] = MAX_MORPH as u32 + 1; w }, LoadError::TooBig),
+        ];
+        for (what, w, err) in bad {
+            assert_eq!(t.load(&bytes(&w)), Err(err), "{what}");
+            assert_eq!(t.n_clips(), 1, "{what}");
+            assert_eq!(t.clip_morph(t.clip(0)).len(), 2, "{what}");
+        }
+        let mut w = good.clone();
+        w[0] = 0x3354_5745;
+        assert_eq!(t.load(&bytes(&w)), Err(LoadError::BadMagic));
+    }
+
+    #[test]
+    fn morph_blend_follows_the_lane() {
+        // 120 bpm: 1 ms is 1.92 ticks.
+        let ms = 1.0 / 1.92;
+        let w = blob2(3840.0, &[vec![(0.0, 0, 0.0, MORPH_LINE), (1920.0, 1, 500.0, MORPH_LINE), (2880.0, 2, 200.0, MORPH_STEP)]]);
+        let mut t = Track::new();
+        t.load(&bytes(&w)).unwrap();
+        let at = |p: f64| t.morph_blend(0, p, ms).unwrap();
+        assert_eq!(at(100.0), MorphBlend { from: 2, to: 0, x: 1.0 }); // len 0 on the first marker
+        let b = at(1920.0 + 480.0); // 250 ms into the 500 ms line
+        assert_eq!((b.from, b.to), (0, 1));
+        assert!((b.x - 0.5).abs() < 1e-3, "{}", b.x);
+        assert_eq!(at(1920.0 + 2000.0).x, 1.0);
+        assert_eq!(at(2880.0 + 1.0), MorphBlend { from: 1, to: 2, x: 1.0 }); // step: at once
+        // The position wraps with the loop.
+        assert_eq!(at(3840.0 + 1920.0 + 480.0).x, b.x);
+        // No rate: everything completes.
+        assert_eq!(t.morph_blend(0, 1920.0 + 10.0, 0.0).unwrap().x, 1.0);
+    }
+
+    #[test]
+    fn morph_shapes() {
+        let mk = |shape| {
+            let w = blob2(3840.0, &[vec![(0.0, 0, 0.0, 0), (1000.0, 1, 1000.0, shape)]]);
+            let mut t = Track::new();
+            t.load(&bytes(&w)).unwrap();
+            // 1000 ms per 1920 ticks: half way is 500 ms in.
+            t.morph_blend(0, 1000.0 + 960.0, 1000.0 / 1920.0).unwrap().x
+        };
+        assert!((mk(MORPH_LINE) - 0.5).abs() < 1e-6);
+        assert!((mk(MORPH_EASE) - 0.5).abs() < 1e-6);
+        assert!((mk(MORPH_LATE) - 0.125).abs() < 1e-6);
+        assert_eq!(mk(MORPH_STEP), 1.0);
+        // wobble: 0.5 + 0.12 sin(3 pi) * 0.5 = 0.5 (sin(3pi) = 0)
+        assert!((mk(MORPH_WOBBLE) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn one_marker_means_that_state_throughout() {
+        let w = blob2(3840.0, &[vec![(960.0, 3, 500.0, MORPH_LINE)]]);
+        let mut t = Track::new();
+        t.load(&bytes(&w)).unwrap();
+        for p in [0.0, 500.0, 960.0, 1000.0, 3000.0] {
+            let b = t.morph_blend(0, p, 0.5).unwrap();
+            assert_eq!((b.from, b.to), (3, 3), "at {p}");
+        }
+    }
 }

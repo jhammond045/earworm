@@ -3,6 +3,7 @@
 // All words are 32-bit little endian.
 
 export const TRACK_MAGIC = 0x31545745; // "EWT1"
+export const TRACK_MAGIC2 = 0x32545745; // "EWT2": v1 plus morph markers
 export const CURVE_MAGIC = 0x31435745; // "EWC1"
 export const FEEL_GRID = 0;
 export const FEEL_FREE = 1;
@@ -11,6 +12,15 @@ export const PPQ = 960;
 export const TRACK_HEADER_WORDS = 8;
 export const SECTION_WORDS = 8;
 export const CLIP_WORDS = 8;
+export const CLIP_WORDS2 = 12;
+export const MORPH_WORDS = 4;
+export const MORPH_LINE = 0;
+export const MORPH_EASE = 1;
+export const MORPH_LATE = 2;
+export const MORPH_STEP = 3;
+export const MORPH_WOBBLE = 4;
+export const MAX_MORPH = 4096;
+export const MAX_STATES = 8;
 export const EVENT_WORDS = 16;
 export const WARP_WORDS = 2;
 export const CURVE_STRIDE = 25;
@@ -65,6 +75,18 @@ export interface TrackWarpAnchor {
   clipT: number;
 }
 
+/** A morph marker (resolution step 1, crates/klont/src/seq.rs "Morph lane"). */
+export interface TrackMorph {
+  /** Section units; markers are sorted by t here. */
+  t: number;
+  /** State index 0..MAX_STATES-1. */
+  state: number;
+  /** Blend time in ms, >= 0. 0 or shape step: at once. */
+  lenMs: number;
+  /** MORPH_LINE, _EASE, _LATE, _STEP or _WOBBLE. */
+  shape: number;
+}
+
 export interface TrackClip {
   section: number;
   layer: number;
@@ -73,6 +95,8 @@ export interface TrackClip {
   curve?: number;
   events: TrackEvent[];
   warp?: TrackWarpAnchor[];
+  /** Morph markers for the layer's states. Any marker in the track makes the blob v2. */
+  morph?: TrackMorph[];
 }
 
 export interface TrackInput {
@@ -165,28 +189,47 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       return a;
     });
     warp.sort((a, b) => a.clipT - b.clipT);
-    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp };
+    const morph = (c.morph ?? []).map((m, k) => {
+      const t = finite(m.t, `clip ${i} morph ${k} t`);
+      if (t < 0) fail(`clip ${i} morph ${k} t must be >= 0`);
+      const lenMs = finite(m.lenMs, `clip ${i} morph ${k} lenMs`);
+      if (lenMs < 0) fail(`clip ${i} morph ${k} lenMs must be >= 0`);
+      return {
+        t,
+        state: int(m.state, 0, MAX_STATES - 1, `clip ${i} morph ${k} state`),
+        lenMs,
+        shape: int(m.shape, MORPH_LINE, MORPH_WOBBLE, `clip ${i} morph ${k} shape`),
+      };
+    });
+    morph.sort((a, b) => a.t - b.t);
+    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, morph };
   });
 
   const nEvents = clips.reduce((n, c) => n + c.events.length, 0);
   const nWarp = clips.reduce((n, c) => n + c.warp.length, 0);
   if (nEvents > MAX_EVENTS) fail(`more than ${MAX_EVENTS} events`);
   if (nWarp > MAX_WARP) fail(`more than ${MAX_WARP} warp anchors`);
+  const nMorph = clips.reduce((n, c) => n + c.morph.length, 0);
+  if (nMorph > MAX_MORPH) fail(`more than ${MAX_MORPH} morph markers`);
+  // v1 bytes when there are no markers, so existing tracks and fixtures stay byte-identical.
+  const v2 = nMorph > 0;
 
   const w = new Words(
     TRACK_HEADER_WORDS +
       sections.length * SECTION_WORDS +
-      clips.length * CLIP_WORDS +
+      clips.length * (v2 ? CLIP_WORDS2 : CLIP_WORDS) +
       nEvents * EVENT_WORDS +
-      nWarp * WARP_WORDS,
+      nWarp * WARP_WORDS +
+      nMorph * MORPH_WORDS,
   );
-  w.u(TRACK_MAGIC);
+  w.u(v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
   w.u(sections.length);
   w.u(clips.length);
   w.u(nEvents);
   w.u(nWarp);
   w.u(t.loop ? 1 : 0);
-  w.zeros(2);
+  w.u(nMorph);
+  w.zeros(1);
   for (const s of sections) {
     w.u(s.grid ? FEEL_GRID : FEEL_FREE);
     w.f(s.length);
@@ -198,6 +241,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
   }
   let fe = 0;
   let fw = 0;
+  let fm = 0;
   for (const c of clips) {
     w.u(c.section);
     w.u(c.layer);
@@ -207,8 +251,14 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     w.i(c.curve);
     w.u(fw);
     w.u(c.warp.length);
+    if (v2) {
+      w.u(fm);
+      w.u(c.morph.length);
+      w.zeros(2);
+    }
     fe += c.events.length;
     fw += c.warp.length;
+    fm += c.morph.length;
   }
   for (const c of clips) {
     for (const e of c.events) {
@@ -233,6 +283,14 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     for (const a of c.warp) {
       w.f(a.takeSec);
       w.f(a.clipT);
+    }
+  }
+  for (const c of clips) {
+    for (const m of c.morph) {
+      w.f(m.t);
+      w.u(m.state);
+      w.f(m.lenMs);
+      w.u(m.shape);
     }
   }
   return w.buf;

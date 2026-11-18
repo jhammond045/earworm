@@ -136,6 +136,10 @@ pub const LOAD_TRACK: u32 = 1;
 pub const LOAD_LAYER: u32 = 2;
 /// Curve table; slot = curve id 0..MAX_CURVES. Layout in `curve.rs`.
 pub const LOAD_CURVE: u32 = 3;
+/// Grain source; slot = layer. Layout below.
+pub const LOAD_GRAIN: u32 = 4;
+/// Morph states; slot = layer. Layout below.
+pub const LOAD_STATES: u32 = 5;
 
 pub const LOAD_OK: i32 = 0;
 pub const LOAD_BAD_KIND: i32 = -1;
@@ -161,6 +165,28 @@ pub const LAYER_OFF_BASE: usize = LAYER_OFF_FIELDS + LAYER_FIELDS;
 pub const LAYER_OFF_MACROS: usize = LAYER_OFF_BASE + 96;
 pub const LAYER_OFF_INFLUENCE: usize = LAYER_OFF_MACROS + N_MACROS;
 pub const LAYER_OFF_KIT: usize = LAYER_OFF_INFLUENCE + 96;
+
+/// Grain source blob (`LOAD_GRAIN`): 32-bit words.
+/// ```text
+/// u32 magic GRAIN_MAGIC, f32 sample_rate (of the data), f32 ref_cents (cents
+/// above C0 of the source's pitch; NaN = unpitched), u32 n_samples (0 clears
+/// the source), then n f32 samples
+/// ```
+/// Each layer owns two buffers of GRAIN_MAX_SAMPLES floats (3.8 MB per layer,
+/// 30.7 MB for eight), allocated at init so loading never allocates.
+pub const GRAIN_MAGIC: u32 = 0x3147_5745; // "EWG1"
+pub const GRAIN_MAX_SAMPLES: usize = 480_000;
+pub const GRAIN_HEADER_WORDS: usize = 4;
+
+/// States blob (`LOAD_STATES`): 32-bit words.
+/// ```text
+/// u32 magic STATES_MAGIC, u32 n_states (0..=MAX_STATES; 0 clears the states),
+/// then n_states x STATE_WORDS f32: 96 base (normalized), 8 macros (0..1),
+/// 1 Influence amount (0..1), 3 zero
+/// ```
+pub const STATES_MAGIC: u32 = 0x3153_5745; // "EWS1"
+pub const MAX_STATES: usize = 8;
+pub const STATE_WORDS: usize = 96 + N_MACROS + 1 + 3;
 
 // ---------------------------------------------------------------- meter block
 

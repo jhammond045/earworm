@@ -9,7 +9,7 @@ Format: id | group | real range (0 to 1) | neutral | meaning. The scale says how
 
 - src.harm_mix | tone | 0.0 to 1.0 (lin) | neutral 1.0 | Level of the partial bank.
 - src.noise_mix | tone | 0.0 to 1.0 (lin) | neutral 0.1 | Level of the shaped noise.
-- src.grain_mix | tone | 0.0 to 1.0 (lin) | neutral 0.0 | Level of the grain cloud (not played until M4).
+- src.grain_mix | tone | 0.0 to 1.0 (lin) | neutral 0.0 | Level of the grain cloud.
 - src.tilt | tone | -24.0 to 6.0 dB/oct (lin) | neutral -6.0 | Slope of partial levels. Lower is duller.
 - src.oddeven | tone | -1.0 to 1.0 (bipolar) | neutral 0.0 | Odd against even partials. Positive is hollow.
 - src.stretch | tone | 0.0 to 0.01 (lin) | neutral 0.0 | Inharmonicity B in f_k = k f0 sqrt(1 + B k^2).
@@ -20,11 +20,11 @@ Format: id | group | real range (0 to 1) | neutral | meaning. The scale says how
 - src.f1_gain | tone | 0.0 to 24.0 dB (lin) | neutral 0.0 | First formant boost.
 - src.f2_freq | tone | 700.0 to 3500.0 Hz (log) | neutral 1500.0 | Second formant centre.
 - src.f2_gain | tone | 0.0 to 24.0 dB (lin) | neutral 0.0 | Second formant boost.
-- grain.size | tone | 0.01 to 0.5 s (log) | neutral 0.08 | Grain length (not played until M4).
-- grain.density | motion | 1.0 to 100.0 1/s (log) | neutral 20.0 | Grains per second (not played until M4).
-- grain.pos | tone | 0.0 to 1.0 (lin) | neutral 0.5 | Read position in the source (not played until M4).
-- grain.spray | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Random spread of the read position (not played until M4).
-- grain.scatter | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Random spread of grain timing (not played until M4).
+- grain.size | tone | 0.01 to 0.5 s (log) | neutral 0.08 | Grain length.
+- grain.density | motion | 1.0 to 100.0 1/s (log) | neutral 20.0 | Grains per second.
+- grain.pos | tone | 0.0 to 1.0 (lin) | neutral 0.5 | Read position in the source.
+- grain.spray | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Random spread of the read position.
+- grain.scatter | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Random spread of grain timing.
 - fold.amt | grit | 0.0 to 1.0 (lin) | neutral 0.0 | Wavefolder drive.
 - fold.bias | grit | -1.0 to 1.0 (bipolar) | neutral 0.0 | Wavefolder offset. Adds even harmonics.
 - clang.amt | grit | 0.0 to 1.0 (lin) | neutral 0.0 | Metallic phase and ring modulation.
@@ -59,7 +59,7 @@ Format: id | group | real range (0 to 1) | neutral | meaning. The scale says how
 - lfo2.rate | motion | 0.05 to 20.0 Hz (log) | neutral 0.5 | Second LFO rate.
 - lfo2.to_pitch | motion | 0.0 to 100.0 cents (lin) | neutral 0.0 | Second LFO to pitch.
 - lfo2.to_filter | motion | 0.0 to 4.0 oct (lin) | neutral 0.0 | Second LFO to cutoff.
-- lfo2.to_grain | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Second LFO to grain position (not played until M4).
+- lfo2.to_grain | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Second LFO to grain position.
 - chaos.rate | motion | 0.1 to 30.0 Hz (log) | neutral 2.0 | Speed of the random wander.
 - chaos.amt | motion | 0.0 to 1.0 (lin) | neutral 0.0 | Random wander of pitch, cutoff and level.
 - delay.time | space | 0.01 to 2.0 s (log) | neutral 0.375 | Echo time.

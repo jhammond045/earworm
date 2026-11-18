@@ -7,7 +7,11 @@ import {
   EVENT_WORDS,
   FEEL_FREE,
   FEEL_GRID,
+  MORPH_EASE,
+  MORPH_LINE,
+  MORPH_STEP,
   TRACK_MAGIC,
+  TRACK_MAGIC2,
   encodeCurve,
   encodeTrack,
   type TrackInput,
@@ -143,6 +147,59 @@ describe('encodeTrack layout', () => {
   it('writes the empty track', () => {
     const e = encodeTrack({ sections: [], clips: [] });
     expect(Array.from(words(e))).toEqual([TRACK_MAGIC, 0, 0, 0, 0, 0, 0, 0]);
+  });
+});
+
+describe('encodeTrack morph markers (v2)', () => {
+  const withMorph = (): TrackInput => ({
+    sections: [{ feel: 'grid', length: 3840, bpm: 120 }],
+    clips: [
+      {
+        section: 0, layer: 0, loopLen: 3840, events: [{ t: 0, dur: 100, cents: 4800 }],
+        morph: [{ t: 1920, state: 1, lenMs: 500, shape: MORPH_EASE }, { t: 0, state: 0, lenMs: 0, shape: MORPH_LINE }],
+      },
+      { section: 0, layer: 1, loopLen: 3840, events: [], morph: [{ t: 10, state: 2, lenMs: 250.5, shape: MORPH_STEP }] },
+    ],
+  });
+
+  it('writes the v2 header, 12-word clips and the marker array', () => {
+    const b = encodeTrack(withMorph());
+    const u = words(b), f = floats(b);
+    expect(b.byteLength).toBe((8 + 8 + 2 * 12 + 16 + 3 * 4) * 4);
+    expect(Array.from(u.slice(0, 8))).toEqual([TRACK_MAGIC2, 1, 2, 1, 0, 0, 3, 0]);
+    const c = 8 + 8;
+    expect(Array.from(u.slice(c, c + 12))).toEqual([0, 0, f32bits(3840), 0, 1, 0xffffffff, 0, 0, 0, 2, 0, 0]);
+    expect(Array.from(u.slice(c + 12, c + 24))).toEqual([0, 1, f32bits(3840), 1, 0, 0xffffffff, 0, 0, 2, 1, 0, 0]);
+    const m = c + 24 + 16;
+    // Sorted by t inside the clip; each marker is t, state, len_ms, shape.
+    expect([f[m], u[m + 1], f[m + 2], u[m + 3]]).toEqual([0, 0, 0, MORPH_LINE]);
+    expect([f[m + 4], u[m + 5], f[m + 6], u[m + 7]]).toEqual([1920, 1, 500, MORPH_EASE]);
+    expect([f[m + 8], u[m + 9], f[m + 10], u[m + 11]]).toEqual([10, 2, 250.5, MORPH_STEP]);
+  });
+
+  it('writes v1 bytes when no clip has a marker', () => {
+    const t = withMorph();
+    for (const c of t.clips) c.morph = [];
+    const a = new Uint8Array(encodeTrack(t));
+    for (const c of t.clips) delete c.morph;
+    expect(Buffer.from(encodeTrack(t)).equals(Buffer.from(a))).toBe(true);
+    expect(words(a.buffer.slice(0) as ArrayBuffer)[0]).toBe(TRACK_MAGIC);
+  });
+
+  it('rejects what the engine would reject', () => {
+    const bad: Array<(t: TrackInput) => void> = [
+      (t) => (t.clips[0].morph![0].state = 8),
+      (t) => (t.clips[0].morph![0].state = 0.5),
+      (t) => (t.clips[0].morph![0].shape = 5),
+      (t) => (t.clips[0].morph![0].lenMs = -1),
+      (t) => (t.clips[0].morph![0].t = -1),
+      (t) => (t.clips[0].morph![0].t = NaN),
+    ];
+    for (const [i, f] of bad.entries()) {
+      const t = withMorph();
+      f(t);
+      expect(() => encodeTrack(t), `case ${i}`).toThrow(RangeError);
+    }
   });
 });
 

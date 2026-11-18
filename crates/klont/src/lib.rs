@@ -8,6 +8,7 @@
 
 pub mod curve;
 pub mod engine;
+pub mod grain;
 pub mod layer;
 pub mod live;
 pub mod protocol;

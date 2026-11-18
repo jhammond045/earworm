@@ -12,7 +12,7 @@
     },
     "src.grain_mix": {
       "type": "number",
-      "description": "Level of the grain cloud (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+      "description": "Level of the grain cloud. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
     },
     "src.tilt": {
       "type": "number",
@@ -56,23 +56,23 @@
     },
     "grain.size": {
       "type": "number",
-      "description": "Grain length (not played until M4). Normalized 0 to 1; real range 0.01 to 0.5 s, neutral 0.08."
+      "description": "Grain length. Normalized 0 to 1; real range 0.01 to 0.5 s, neutral 0.08."
     },
     "grain.density": {
       "type": "number",
-      "description": "Grains per second (not played until M4). Normalized 0 to 1; real range 1.0 to 100.0 1/s, neutral 20.0."
+      "description": "Grains per second. Normalized 0 to 1; real range 1.0 to 100.0 1/s, neutral 20.0."
     },
     "grain.pos": {
       "type": "number",
-      "description": "Read position in the source (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.5."
+      "description": "Read position in the source. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.5."
     },
     "grain.spray": {
       "type": "number",
-      "description": "Random spread of the read position (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+      "description": "Random spread of the read position. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
     },
     "grain.scatter": {
       "type": "number",
-      "description": "Random spread of grain timing (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+      "description": "Random spread of grain timing. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
     },
     "fold.amt": {
       "type": "number",
@@ -212,7 +212,7 @@
     },
     "lfo2.to_grain": {
       "type": "number",
-      "description": "Second LFO to grain position (not played until M4). Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
+      "description": "Second LFO to grain position. Normalized 0 to 1; real range 0.0 to 1.0, neutral 0.0."
     },
     "chaos.rate": {
       "type": "number",
