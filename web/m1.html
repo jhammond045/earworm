@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm M1: Player</title>
+<link rel="stylesheet" href="/src/common/style.css">
+<style>
+  .layer { display: grid; grid-template-columns: 6em 5em minmax(80px, 1fr) 5em minmax(80px, 8em) 5.5em; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .layer .meter { position: relative; height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; }
+  .layer .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent); }
+  .layer input[type=range] { width: 100%; }
+  .stats { display: grid; gap: 4px 16px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+  .stats div span { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Earworm M1: Player</h1>
+  <p class="muted">The 8-layer demo song on the klont engine. Start creates the audio context and loads the song.</p>
+  <div id="error" class="alert" hidden></div>
+  <div class="bar">
+    <button id="start" class="primary">Start</button>
+    <button id="play" disabled>Play</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="export" disabled>Export WAV</button>
+    <span id="exportStatus" class="mono small muted"></span>
+  </div>
+  <p id="transport" class="mono small muted">Not started.</p>
+  <p id="position" class="mono">Section -, repeat -, position -, - bpm</p>
+
+  <h2>Layers</h2>
+  <div id="layers"></div>
+
+  <h2>Engine</h2>
+  <div id="stats" class="stats mono small"></div>
+</main>
+<script type="module" src="/src/m1/player.ts"></script>
+</body>
+</html>

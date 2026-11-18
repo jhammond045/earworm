@@ -26,6 +26,8 @@ export default defineConfig({
         influence: page('influence.html'),
         influenceTest: page('influence-test.html'),
         delay: page('delay.html'),
+        m1: page('m1.html'),
+        bench: page('bench.html'),
       },
     },
   },

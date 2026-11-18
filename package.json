@@ -8,7 +8,8 @@
     "build:wasm": "sh scripts/build-wasm.sh",
     "test": "vitest run --root web && cargo test --workspace",
     "typecheck": "tsc -p web --noEmit",
-    "gen:params": "node tools/paramgen/paramgen.ts"
+    "gen:params": "node tools/paramgen/paramgen.ts",
+    "gen:demo": "WRITE_DEMO=1 vitest run --root web src/m1/demo.test.ts"
   },
   "devDependencies": {
     "@types/audioworklet": "0.0.102",

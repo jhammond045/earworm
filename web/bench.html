@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm M1: Benchmark</title>
+<link rel="stylesheet" href="/src/common/style.css">
+<style>
+  td.num, th.num { text-align: right; }
+  .pass { color: #1a7f37; font-weight: 600; }
+  .fail { color: var(--bad-fg); font-weight: 600; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Earworm M1: Benchmark</h1>
+  <p>Measures how fast the engine renders and how much of one core 8 layers need. Written for the reference laptop (2020 M1 MacBook Air, Chrome). Close other tabs and apps, plug in the charger, then press the buttons in order. Each test takes from a few seconds to a minute; the page stays usable.</p>
+  <div class="panel mono small" id="env"></div>
+  <div id="error" class="alert" hidden></div>
+
+  <div class="bar">
+    <button id="b1" class="primary">1. Offline: worst case</button>
+    <button id="b2">2. Offline: demo song</button>
+    <button id="b3">3. Block timing</button>
+    <button id="b4">4. Live: 8 layers (60 s)</button>
+    <button id="dl">Download JSON</button>
+  </div>
+  <p id="status" class="mono small muted">Ready.</p>
+
+  <h2>1. Worst case, 10 s per budget</h2>
+  <p class="small muted">8 layers x 8 held voices, all 64 partials audible, vibrato on every voice, delay and reverb on every layer. Target: more than 4x realtime (the TDD "8 layers playing" row).</p>
+  <div id="r1"></div>
+  <h2>2. Demo song, offline</h2>
+  <div id="r2"></div>
+  <h2>3. Block timing (128-frame blocks)</h2>
+  <div id="r3"></div>
+  <h2>4. Live, 8 layers</h2>
+  <div id="r4"></div>
+  <h2>Result</h2>
+  <div id="gate" class="panel"></div>
+</main>
+<script type="module" src="/src/m1/bench.ts"></script>
+</body>
+</html>
