@@ -14,7 +14,8 @@
 //!   u32 feel (FEEL_GRID or FEEL_FREE),
 //!   f32 length (ticks for grid, 960 per beat; seconds for free),
 //!   f32 bpm (grid; ignored for free), u32 repeats (>= 1),
-//!   f32 ramp_ms (tempo ramp from the previous section's bpm), 3 x u32 0
+//!   f32 ramp_ms (tempo ramp from the previous section's bpm),
+//!   u32 uid (stable id of the section, 0 = none), 2 x u32 0
 //! clips, n_clips x 8 words:
 //!   u32 section, u32 layer, f32 loop_len (section units, > 0),
 //!   u32 first_event, u32 n_events (a run in the events array, sorted by t),
@@ -75,6 +76,9 @@ pub struct Section {
     pub bpm: f64,
     pub repeats: u32,
     pub ramp_ms: f64,
+    /// Stable id across track reloads, so the transport stays on the same
+    /// section when sections before it are added, removed or moved. 0 = none.
+    pub uid: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -151,6 +155,7 @@ fn read_section(b: &[u8], i: usize) -> Result<Section, LoadError> {
     let bpm = fword(b, o + 2)? as f64;
     let repeats = word(b, o + 3)?;
     let ramp_ms = fword(b, o + 4)? as f64;
+    let uid = word(b, o + 5)?;
     if feel != FEEL_GRID && feel != FEEL_FREE {
         return Err(LoadError::Malformed);
     }
@@ -164,7 +169,7 @@ fn read_section(b: &[u8], i: usize) -> Result<Section, LoadError> {
         return Err(LoadError::Malformed);
     }
     let bpm = if feel == FEEL_GRID { bpm } else { 0.0 };
-    Ok(Section { feel, length, bpm, repeats, ramp_ms })
+    Ok(Section { feel, length, bpm, repeats, ramp_ms, uid })
 }
 
 fn read_clip(b: &[u8], n_sections: usize, n_events: usize, n_warp: usize, i: usize) -> Result<Clip, LoadError> {
@@ -580,9 +585,28 @@ impl Transport {
         self.set_segment(track, p);
         self.set_cursors(track, false);
     }
+    pub fn queued_jump(&self) -> Option<usize> {
+        self.jump
+    }
     pub fn queue_jump(&mut self, section: usize) {
         self.jump = Some(section);
     }
+    /// Before `track_changed`: point the current section and the queued jump
+    /// at the sections with the same uids in the new track, so adding,
+    /// removing or moving sections before the playhead keeps the same music
+    /// playing. A uid of 0, or one the new track lacks, leaves the index as is.
+    pub fn follow_uids(&mut self, track: &Track, cur_uid: u32, jump_uid: u32) {
+        let find = |uid: u32| (uid != 0).then(|| (0..track.n_sections()).find(|&i| track.section(i).uid == uid)).flatten();
+        if let Some(i) = find(cur_uid) {
+            self.section = i;
+        }
+        if self.jump.is_some() {
+            if let Some(i) = find(jump_uid) {
+                self.jump = Some(i);
+            }
+        }
+    }
+
     /// A new track was loaded: keep playing, clamping the section, repeat
     /// and position into it. The tempo takes the new section's value (no
     /// ramp), and events at or after the position still fire.
@@ -1153,7 +1177,7 @@ mod tests {
         t.load(&blob(&secs, &[c, dup], true)).unwrap();
         assert!(t.looping());
         assert_eq!(t.n_sections(), 2);
-        assert_eq!(*t.section(0), Section { feel: 0, length: 960.0, bpm: 100.0, repeats: 2, ramp_ms: 250.0 });
+        assert_eq!(*t.section(0), Section { feel: 0, length: 960.0, bpm: 100.0, repeats: 2, ramp_ms: 250.0, uid: 0 });
         assert_eq!(t.section(1).feel, FEEL_FREE);
         assert_eq!(t.section(1).length, 2.5);
         assert_eq!(t.clip_index_for(0, 1), Some(0));
@@ -1207,4 +1231,35 @@ mod tests {
             assert_eq!(t.n_events(), 1);
         }
     }
+    fn with_uids(mut b: Vec<u8>, uids: &[u32]) -> Vec<u8> {
+        for (i, u) in uids.iter().enumerate() {
+            let o = (8 + i * 8 + 5) * 4;
+            b[o..o + 4].copy_from_slice(&u.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn reload_follows_section_uids() {
+        // Playing the third section (uid 30) with a jump queued to uid 10; then the
+        // first section is removed and the rest reordered. The transport must stay
+        // on uid 30 at the same position, and the jump must still go to uid 10.
+        let mut t = Track::new();
+        t.load(&with_uids(blob(&[grid(4.0, 120.0, 1, 0.0), grid(4.0, 120.0, 1, 0.0), grid(8.0, 120.0, 1, 0.0), free(2.0)], &[], true), &[20, 10, 30, 40])).unwrap();
+        let mut tr = Transport::new(SR);
+        tr.seek(&t, 2, 1000.0);
+        tr.play();
+        tr.queue_jump(1);
+        let (cur, jump) = (t.section(2).uid, t.section(1).uid);
+        t.load(&with_uids(blob(&[grid(8.0, 120.0, 1, 0.0), grid(4.0, 120.0, 1, 0.0), free(2.0)], &[], true), &[30, 10, 40])).unwrap();
+        tr.follow_uids(&t, cur, jump);
+        tr.track_changed(&t);
+        assert_eq!(tr.section(), 0);
+        assert!((tr.pos() - 1000.0).abs() < 1e-6);
+        assert_eq!(tr.queued_jump(), Some(1));
+        // A uid the new track lacks leaves the index as it was (then clamped).
+        tr.follow_uids(&t, 99, 0);
+        assert_eq!(tr.section(), 0);
+    }
+
 }

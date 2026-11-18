@@ -35,6 +35,8 @@ export interface TrackSection {
   repeats?: number;
   /** Tempo ramp from the previous section's bpm. Default 0. */
   rampMs?: number;
+  /** Stable id (1..2^32-1) so the engine stays on this section when others are added, removed or moved. 0 or missing: none. */
+  uid?: number;
 }
 
 /** A note or a hit. Unused fields are written as 0 (cents as NaN). */
@@ -134,7 +136,8 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     if (grid && !(bpm > 0)) fail(`section ${i} bpm must be > 0`);
     const rampMs = finite(s.rampMs ?? 0, `section ${i} rampMs`);
     if (rampMs < 0) fail(`section ${i} rampMs must be >= 0`);
-    return { grid, length, bpm, repeats, rampMs };
+    const uid = int(s.uid ?? 0, 0, 0xffffffff, `section ${i} uid`);
+    return { grid, length, bpm, repeats, rampMs, uid };
   });
 
   const seen = new Set<number>();
@@ -190,7 +193,8 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     w.f(s.bpm);
     w.u(s.repeats);
     w.f(s.rampMs);
-    w.zeros(3);
+    w.u(s.uid);
+    w.zeros(2);
   }
   let fe = 0;
   let fw = 0;

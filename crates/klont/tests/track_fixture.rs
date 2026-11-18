@@ -18,8 +18,8 @@ fn every_field() {
     let t = load();
     assert!(t.looping());
     assert_eq!(t.n_sections(), 2);
-    assert_eq!(*t.section(0), Section { feel: FEEL_GRID, length: 3840.0, bpm: 120.0, repeats: 2, ramp_ms: 0.0 });
-    assert_eq!(*t.section(1), Section { feel: FEEL_FREE, length: 2.5, bpm: 0.0, repeats: 1, ramp_ms: 0.0 });
+    assert_eq!(*t.section(0), Section { feel: FEEL_GRID, length: 3840.0, bpm: 120.0, repeats: 2, ramp_ms: 0.0, uid: 0 });
+    assert_eq!(*t.section(1), Section { feel: FEEL_FREE, length: 2.5, bpm: 0.0, repeats: 1, ramp_ms: 0.0, uid: 0 });
     assert_eq!((t.n_clips(), t.n_events()), (3, 9));
 
     let want_clips = [

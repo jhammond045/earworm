@@ -201,15 +201,21 @@ impl Engine {
 
     fn load_inner(&mut self, slot: u32, kind: u32, bytes: &[u8]) -> i32 {
         match kind {
-            LOAD_TRACK => match self.track.load(bytes) {
+            LOAD_TRACK => {
+                let uid = |i: usize| if i < self.track.n_sections() { self.track.section(i).uid } else { 0 };
+                let cur_uid = uid(self.transport.section());
+                let jump_uid = self.transport.queued_jump().map_or(0, uid);
+                match self.track.load(bytes) {
                 Ok(()) => {
+                    self.transport.follow_uids(&self.track, cur_uid, jump_uid);
                     self.transport.track_changed(&self.track);
                     LOAD_OK
                 }
                 Err(crate::seq::LoadError::BadMagic) => LOAD_BAD_MAGIC,
                 Err(crate::seq::LoadError::TooBig) => LOAD_TOO_BIG,
                 Err(crate::seq::LoadError::Malformed) => LOAD_MALFORMED,
-            },
+                }
+            }
             LOAD_LAYER => {
                 let s = slot as usize;
                 if s >= MAX_LAYERS {

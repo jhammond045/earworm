@@ -189,6 +189,7 @@ export class Compiler {
       bpm: s.feel === 'grid' ? s.bpm : undefined,
       repeats: Math.max(1, Math.round(s.repeats)),
       rampMs: s.rampMs,
+      uid: sectionUid(s.id),
     }));
     const clips: TrackClip[] = [];
     doc.sections.forEach((s, si) => {
@@ -210,4 +211,16 @@ export class Compiler {
     });
     return { sections, clips, loop: doc.loop };
   }
+}
+
+/** Stable nonzero 32-bit id of a section for the engine (FNV-1a of its id), so the transport
+ *  stays on the same section when sections before it are added, removed or moved while playing.
+ *  A collision only means the engine may pick the other section of the pair after a reload. */
+export function sectionUid(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h || 1;
 }
