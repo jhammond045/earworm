@@ -1,6 +1,8 @@
 // Pure signal-processing helpers for the delay page. No DOM, no audio nodes,
 // so they can be tested against synthetic signals.
 
+import { LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_LEVEL, MSG_ARM, MSG_SET_LAYER, MSG_SET_TUNE, TUNE_SNAP } from '../m1/protocol';
+
 export type Arr = ArrayLike<number>;
 
 export function median(xs: Arr): number {
@@ -278,8 +280,12 @@ export interface BurstDelay {
 }
 
 /** Level and pitch delay per hum burst, from the engine's view of the mic
- *  and its output on the same sample clock. */
-export function analyseEngineCapture(mic: Arr, out: Arr, sr: number): BurstDelay[] {
+ *  and its output on the same sample clock. Pitch lock needs 3 windows with
+ *  f0 within 50 cents; by default clarity 0.95, falling back to 0.8. The M2
+ *  engine's output reaches 0.9 clarity about 30 ms in but 0.95 only after
+ *  about 60 ms (the voice settling, not a wrong pitch: f0 is right from about
+ *  25 ms), so it passes `clarity: 0.8` to read the pitch itself. */
+export function analyseEngineCapture(mic: Arr, out: Arr, sr: number, opts: { clarity?: number } = {}): BurstDelay[] {
   const w = (s: number) => Math.round(s * sr);
   const ms = (samples: number) => (samples / sr) * 1000;
   const fin = (x: number) => (Number.isFinite(x) ? x : null);
@@ -299,8 +305,10 @@ export function analyseEngineCapture(mic: Arr, out: Arr, sr: number): BurstDelay
       r.inputF0 = fin(f0);
       if (Number.isFinite(f0)) {
         const from = micOn - w(0.01), to = micOn + w(0.6);
-        let lock = pitchLockIndex(out, sr, from, to, f0);
-        if (lock < 0) lock = pitchLockIndex(out, sr, from, to, f0, 50, 3, 2, 0.8);
+        let lock = opts.clarity != null
+          ? pitchLockIndex(out, sr, from, to, f0, 50, 3, 2, opts.clarity)
+          : pitchLockIndex(out, sr, from, to, f0);
+        if (lock < 0 && opts.clarity == null) lock = pitchLockIndex(out, sr, from, to, f0, 50, 3, 2, 0.8);
         if (lock >= 0) r.pitchDelayMs = ms(lock - micOn);
       }
     }
@@ -308,3 +316,31 @@ export function analyseEngineCapture(mic: Arr, out: Arr, sr: number): BurstDelay
   }
   return res;
 }
+
+/** Hum at -26 dB plus sparse decaying reflections (deterministic): a crude
+ *  speaker-in-a-room model, the same input for every no-mic engine test. */
+export function roomHum(sr: number): Float32Array {
+  const dry = synthHum(sr).samples.map((v) => v * 0.05);
+  const y = Float32Array.from(dry);
+  let seed = 1;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  const n = Math.round(0.3 * sr);
+  for (let k = Math.round(0.003 * sr); k < n; k++) {
+    const g = (rnd() * 2 - 1) * Math.exp((-6.9 * k) / n);
+    if (rnd() >= 0.02) continue;
+    for (let i = k; i < dry.length; i++) y[i] += 0.3 * g * dry[i - k];
+  }
+  return y;
+}
+
+/** The M2 engine's settings for the delay test, as control messages
+ *  [type, layer, index, param, value] for layer 0: melody armed, Mouth depth
+ *  0, loud depth 1, snap 0, level -60 dB (the engine is never heard; output peak is still
+ *  about 1e-3 for the test hum, far above the analysis minPeak of 1e-7). */
+export const KLONT_TEST_SETTINGS: [type: number, layer: number, index: number, param: number, value: number][] = [
+  [MSG_SET_LAYER, 0, 0, LAYER_DEPTH_MOUTH, 0],
+  [MSG_SET_LAYER, 0, 0, LAYER_DEPTH_LOUD, 1],
+  [MSG_SET_TUNE, 0, 0, TUNE_SNAP, 0],
+  [MSG_SET_LAYER, 0, 0, LAYER_LEVEL, -60],
+  [MSG_ARM, 0, 0, 0, 1],
+];
