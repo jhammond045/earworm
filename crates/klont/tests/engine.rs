@@ -384,3 +384,33 @@ fn curve_loudness_shapes_a_stored_note() {
     let loud = rms(&l[30_000..45_000]);
     assert!(loud > 0.01 && quiet < loud * 0.05, "quiet {quiet} loud {loud}");
 }
+
+#[test]
+fn clock_counts_processed_samples_and_reports_tempo() {
+    let mut e = song(256);
+    let clock = |e: &Engine| e.meter()[M_CLOCK_HI] as u64 * (1 << 20) + e.meter()[M_CLOCK_LO] as u64;
+    // song() ran render(1), and render counts toward the clock too.
+    let mut total = 1u64;
+    for &n in &[128usize, 100, 256, 7, 128] {
+        e.input_mut()[..n].fill(0.0);
+        e.process(n);
+        total += n as u64;
+        assert_eq!(clock(&e), total);
+    }
+    // The song has been playing for these samples: position agrees with the clock.
+    let ups = 120.0 * PPQ as f64 / (60.0 * SR as f64);
+    assert!((e.meter()[M_UNITS_PER_SAMPLE] as f64 - ups).abs() < 1e-6, "{}", e.meter()[M_UNITS_PER_SAMPLE]);
+    assert!((e.meter()[M_SECTION_POS] as f64 - (total - 1) as f64 * ups).abs() < 0.5);
+    // A long run crosses the 2^20 split: HI becomes 1 and the sum still matches.
+    while total < (1 << 20) + 1000 {
+        e.input_mut()[..256].fill(0.0);
+        e.process(256);
+        total += 256;
+    }
+    assert_eq!(e.meter()[M_CLOCK_HI], 1.0);
+    assert_eq!(clock(&e), total);
+    // Stopped: no motion reported.
+    e.push(MSG_STOP, 0, 0, 0, 0.0, 0);
+    e.process(128);
+    assert_eq!(e.meter()[M_UNITS_PER_SAMPLE], 0.0);
+}

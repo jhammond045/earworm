@@ -62,6 +62,8 @@ pub struct Engine {
     load_status: i32,
     selected: usize,
     blocks: u32,
+    /// Samples processed since init (process and render both add to it).
+    clock: u64,
     peak: (f32, f32),
     dc: (DcBlocker, DcBlocker),
 }
@@ -122,6 +124,7 @@ impl Engine {
             load_status: LOAD_OK,
             selected: 0,
             blocks: 0,
+            clock: 0,
             peak: (0.0, 0.0),
             dc: (DcBlocker::new(sr), DcBlocker::new(sr)),
         });
@@ -471,6 +474,7 @@ impl Engine {
             self.out_r[i] = r;
         }
         self.peak = (pl, pr);
+        self.clock += frames as u64;
         self.write_meters();
         frames
     }
@@ -603,6 +607,10 @@ impl Engine {
         m[M_SECTION_POS] = self.transport.pos() as f32;
         m[M_REPEAT] = self.transport.repeat() as f32;
         m[M_BPM] = self.transport.bpm() as f32;
+        m[M_CLOCK_LO] = (self.clock & ((1 << 20) - 1)) as f32;
+        m[M_CLOCK_HI] = (self.clock >> 20) as f32;
+        m[M_UNITS_PER_SAMPLE] =
+            if self.transport.playing() { self.transport.units_per_sample() as f32 } else { 0.0 };
         m[M_LOAD] = self.host_load;
         m[M_BUDGET] = if self.budget_fixed > 0 { self.budget_fixed as f32 } else { self.budget.floor() };
         let (mut parts, mut voices, mut steals) = (0usize, 0usize, 0u32);

@@ -209,6 +209,17 @@ pub const M_DELAY_LEVEL: usize = 253; // nominal analysis delay, s
 pub const M_DELAY_PITCH: usize = 254;
 pub const M_LIVE_SLOT: usize = 255; // kit slot of the last live hit, -1 none
 pub const M_LIVE_HITS: usize = 256; // live hits since init
+/// Engine clock, low part: samples processed since init, modulo 2^20. The clock
+/// is a u64 counter advanced by the frames of every `ew_process` call. `ew_render`
+/// advances it too (offline renders count their samples), so a host that mixes
+/// both must not compare marks across a render. Value = HI * 2^20 + LO, both
+/// exact in f32. The count is taken at the end of the call, so it names the next
+/// sample to be processed, and `M_SECTION_POS` is the transport position there.
+pub const M_CLOCK_LO: usize = 257;
+/// Engine clock, high part: the sample count divided by 2^20, floored.
+pub const M_CLOCK_HI: usize = 258;
+/// Transport units (ticks or seconds) per sample at the end of the call; 0 when stopped.
+pub const M_UNITS_PER_SAMPLE: usize = 259;
 pub const M_VOWEL: usize = 264; // 16 slots: live vowel shape, dB
 pub const METER_LEN: usize = 280;
 

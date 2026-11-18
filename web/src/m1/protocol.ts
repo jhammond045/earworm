@@ -142,6 +142,9 @@ export const M_DELAY_LEVEL = 253;
 export const M_DELAY_PITCH = 254;
 export const M_LIVE_SLOT = 255;
 export const M_LIVE_HITS = 256;
+export const M_CLOCK_LO = 257;
+export const M_CLOCK_HI = 258;
+export const M_UNITS_PER_SAMPLE = 259;
 export const M_VOWEL = 264;
 export const METER_LEN = 280;
 
