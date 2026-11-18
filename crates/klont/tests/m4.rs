@@ -429,3 +429,53 @@ fn v1_tracks_still_load_and_play() {
     let out = render(&mut e, 12_000, 512);
     assert!(rms(&out) > 0.01);
 }
+
+/// Cost of the grain cloud at its worst: every layer with a source, 8 notes held, 100 grains per
+/// second per voice and long grains, so each layer's 32-grain pool stays full. Ignored by default;
+/// run with `cargo test --release -p klont --test m4 grain_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn grain_cost() {
+    let secs = 10.0;
+    let src: Vec<f32> = (0..480_000).map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / SR).sin() * 0.3).collect();
+    for layers in [1usize, 8] {
+        let mut e = Engine::new(SR, 128);
+        let notes: Vec<(f32, f32, f32)> = (0..8).map(|k| (0.0, 40.0, 4800.0 + 100.0 * k as f32)).collect();
+        for l in 0..layers {
+            let s = |e: &mut Engine, p: usize, real: f32| e.push(MSG_SET_PARAM, l as u8, SET_BASE, p as u16, P::to_norm(p, real), 0);
+            s(&mut e, P::SRC_GRAIN_MIX, 1.0);
+            s(&mut e, P::GRAIN_DENSITY, 100.0);
+            s(&mut e, P::GRAIN_SIZE, 0.5);
+            s(&mut e, P::GRAIN_SPRAY, 0.5);
+            assert_eq!(e.load_bytes(l as u32, LOAD_GRAIN, &grain_blob(SR, 5700.0, &src)), LOAD_OK);
+        }
+        // One clip per layer, all playing the same 8-note chord.
+        let mut w: Vec<u32> = vec![TRACK_MAGIC, 1, layers as u32, (8 * layers) as u32, 0, 1, 0, 0];
+        w.extend([FEEL_GRID, (41.0 * PPQ as f32).to_bits(), 120f32.to_bits(), 1, 0, 0, 0, 0]);
+        for l in 0..layers {
+            w.extend([0, l as u32, (41.0 * PPQ as f32).to_bits(), (8 * l) as u32, 8, (-1i32) as u32, 0, 0]);
+        }
+        for _ in 0..layers {
+            for &(t, d, c) in &notes {
+                let mut r = [0u32; 16];
+                r[0] = (t * PPQ as f32).to_bits();
+                r[1] = (d * PPQ as f32).to_bits();
+                r[2] = c.to_bits();
+                r[5] = 1f32.to_bits();
+                for x in r.iter_mut().skip(6).take(8) {
+                    *x = f32::NAN.to_bits();
+                }
+                w.extend(r);
+            }
+        }
+        assert_eq!(e.load_bytes(0, LOAD_TRACK, &bytes(&w)), LOAD_OK);
+        e.push(MSG_PLAY, 0, 0, 0, 0.0, 0);
+        render(&mut e, 4800, 128);
+        let n = (secs * SR) as usize;
+        let t0 = std::time::Instant::now();
+        let out = render(&mut e, n, 128);
+        let dt = t0.elapsed().as_secs_f64();
+        assert!(rms(&out) > 1e-3);
+        println!("grain cost: {layers} layer(s) x 8 voices with full grain clouds: {:.1}x real time ({:.1}% of a core)", secs as f64 / dt, 100.0 * dt / secs as f64);
+    }
+}
