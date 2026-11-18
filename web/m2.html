@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm M2: Capture</title>
+<link rel="stylesheet" href="/src/common/style.css">
+<style>
+  .stats { display: grid; gap: 4px 16px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  .stats div span { color: var(--muted); }
+  #hold { min-width: 14em; min-height: 56px; font-size: 1.1rem; touch-action: none; user-select: none; }
+  #hold.down { background: #d9402b; color: #fff; border-color: #d9402b; }
+  canvas.ribbon { height: 160px; }
+  canvas.take { height: 220px; }
+  canvas.vowel { height: 48px; }
+  pre#result { max-height: 14em; overflow: auto; margin: 6px 0; font-size: 0.8rem; }
+  .gate b { font-variant-numeric: tabular-nums; }
+  .slots { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .slots button { min-width: 8.5em; touch-action: none; user-select: none; }
+  .slots button.down { background: #d9402b; color: #fff; border-color: #d9402b; }
+</style>
+</head>
+<body>
+<main>
+  <p><a href="index.html">Earworm M0</a></p>
+  <h1>Earworm M2: Capture</h1>
+  <p class="muted">Sing or beatbox with Live follow, hold to capture, and the take loops on the M1 engine as notes or hits.
+    This page is also where the M2 gate is judged by ear: 50 ms follow, hums kept.</p>
+  <div class="note">Use wired headphones. There is no feedback protection: nothing mutes or checks the mic, so a speaker in the room will feed back.</div>
+  <div id="error" class="alert" hidden></div>
+  <div class="bar">
+    <button id="start" class="primary">Start (asks for the mic)</button>
+    <label>Layer type
+      <select id="kind" disabled>
+        <option value="melody">Melody (layer 0)</option>
+        <option value="beat">Beat (layer 1)</option>
+      </select>
+    </label>
+    <button id="hold" disabled>Hold to capture (Space)</button>
+    <button id="playloop" disabled>Play loop</button>
+    <button id="stoploop" disabled>Stop loop</button>
+  </div>
+  <p id="transport" class="mono small muted">Not started.</p>
+  <p id="status" class="mono">Idle.</p>
+
+  <h2>Take</h2>
+  <canvas id="take" class="take" aria-label="Take: pitch, notes and hits"></canvas>
+  <pre id="result" class="mono panel" hidden></pre>
+
+  <h2>Live</h2>
+  <canvas id="ribbon" class="ribbon" aria-label="Live pitch ribbon"></canvas>
+  <div id="meters" class="stats mono small"></div>
+  <canvas id="vowel" class="vowel" aria-label="Live vowel bands"></canvas>
+
+  <h2>Sound and gesture</h2>
+  <div class="grid" id="soundCtl"></div>
+  <div class="grid" id="depthCtl"></div>
+
+  <h2>Tune</h2>
+  <div class="grid" id="tuneCtl"></div>
+  <p class="muted small">Changing a Tune setting runs the tuning again on the take and reloads the pitch curve only. Root, scale and ref are filled from the second pass after each take and can be edited.</p>
+
+  <div id="kitPanel" class="panel" hidden>
+    <h2 style="margin-top:0">Teach my kit (beats)</h2>
+    <p class="muted small">Hold a slot button and repeat one sound (tick, pop, hiss...) for a second or two. Live follow then sends that sound to the slot.</p>
+    <div class="slots" id="slots"></div>
+    <div class="bar"><button id="clearKit">Clear kit</button><span id="kitStatus" class="mono small muted">No taught slots. Live hits use brightness thirds.</span></div>
+  </div>
+
+  <h2>Gate</h2>
+  <div class="panel gate">
+    <p id="follow" class="mono">No take yet.</p>
+    <p id="device" class="mono small muted"></p>
+    <p class="small">Device delay is only what Chrome reports. The measured round trip is on <a href="delay.html">delay.html</a>. Total from voice to ear is engine follow plus that round trip.</p>
+    <div class="bar">
+      <button id="playboth" disabled>Play voice + synth</button>
+      <label><input type="checkbox" id="mixed"> mixed to both ears (default: voice left, synth right)</label>
+      <button id="stopboth" disabled>Stop</button>
+    </div>
+    <div class="bar">
+      <button id="keep" disabled>Keep</button>
+      <button id="redo" disabled>Redo</button>
+      <span id="tally" class="mono">kept 0 of 0 (0%) against the 80% target</span>
+      <button id="dl-json">Download JSON</button>
+      <button id="reset-tally">Reset</button>
+    </div>
+    <div class="bar">
+      <button id="save" disabled>Save take (WAV, frames, result)</button>
+      <input id="saveName" type="text" placeholder="name, e.g. hum-01" size="16" aria-label="take name">
+    </div>
+  </div>
+</main>
+<script type="module" src="/src/m2/capture.ts"></script>
+</body>
+</html>

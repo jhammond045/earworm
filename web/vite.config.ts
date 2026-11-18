@@ -28,6 +28,7 @@ export default defineConfig({
         delay: page('delay.html'),
         m1: page('m1.html'),
         bench: page('bench.html'),
+        m2: page('m2.html'),
       },
     },
   },
