@@ -51,6 +51,9 @@ struct Slot {
     cents: f32,
     /// Live triggers: the cents value of the NOTE_ON, for NOTE_OFF matching.
     live_key: f32,
+    /// Started by Live follow (the mic): melody and texture voices read the
+    /// live frame every tick, and only the engine releases them.
+    follow: bool,
     /// Samples until note off; u32::MAX holds until a NOTE_OFF.
     left: u32,
     seq: bool,
@@ -84,6 +87,7 @@ impl Default for Slot {
             set: 0,
             cents: 4800.0,
             live_key: f32::NAN,
+            follow: false,
             left: 0,
             seq: false,
             age: 0,
@@ -226,6 +230,10 @@ pub struct Layer {
     age: u64,
     /// Normalized values after step 5 for the loudest voice (meters).
     pub live: ParamSet,
+    /// Live follow: the frame record the live voice reads each tick, and the
+    /// gate envelope that scales its amplitude.
+    follow_rec: [f32; CURVE_STRIDE],
+    follow_gain: f32,
 }
 
 impl Layer {
@@ -284,6 +292,8 @@ impl Layer {
             max_partials: [crate::voice::MAX_PARTIALS; VOICES_PER_LAYER],
             age: 0,
             live: neutral,
+            follow_rec: [0.0; CURVE_STRIDE],
+            follow_gain: 0.0,
         };
         l.resolve();
         for s in 0..SETS {
@@ -461,10 +471,49 @@ impl Layer {
         self.start_voice(slot, &start, track, curves, len);
     }
 
+    /// Live follow: the mic starts a voice. Beat layers play a hit on
+    /// `kit_slot`; melody and texture layers start the live voice that reads
+    /// the frame given to `follow_set` every tick. Releases the previous
+    /// follow voice. `hard` is the onset hardness.
+    pub fn follow_start(&mut self, kit_slot: usize, velocity: f32, hard: f32, track: &Track, curves: &CurvePool, len: usize) {
+        self.follow_release();
+        if self.mute {
+            return;
+        }
+        let mut slot = Slot { left: u32::MAX, follow: true, velocity: velocity.clamp(0.0, 1.0), ..Slot::default() };
+        if self.kind == KIND_BEAT {
+            let k = kit_slot.min(KIT_SLOTS - 1);
+            slot.set = 1 + k;
+            slot.cents = self.kit_cents[k];
+        }
+        let e = Event { hard, ..Event::default() };
+        let start = self.hit_start(&mut slot, &e);
+        self.start_voice(slot, &start, track, curves, len);
+    }
+
+    /// Release the voice Live follow started, if it still sounds.
+    pub fn follow_release(&mut self) {
+        for v in 0..VOICES_PER_LAYER {
+            if self.slots[v].follow && self.slots[v].left == u32::MAX {
+                self.slots[v].left = 0;
+                if self.voices[v].active() {
+                    self.voices[v].release();
+                }
+            }
+        }
+    }
+
+    /// Live follow: the record and amplitude scale the live voice reads from
+    /// the next tick on.
+    pub fn follow_set(&mut self, rec: &[f32; CURVE_STRIDE], gain: f32) {
+        self.follow_rec = *rec;
+        self.follow_gain = gain;
+    }
+
     pub fn note_off_live(&mut self, cents: f32) {
         for v in 0..VOICES_PER_LAYER {
             let s = &mut self.slots[v];
-            if !s.seq && s.left == u32::MAX && (s.live_key == cents || (s.live_key.is_nan() && cents.is_nan())) {
+            if !s.seq && !s.follow && s.left == u32::MAX && (s.live_key == cents || (s.live_key.is_nan() && cents.is_nan())) {
                 s.left = 0;
                 self.voices[v].release();
             }
@@ -619,6 +668,13 @@ impl Layer {
     /// end). False when it has none.
     fn read_frame(&self, v: usize, track: &Track, curves: &CurvePool, out: &mut [f32; CURVE_STRIDE]) -> bool {
         let s = &self.slots[v];
+        if s.follow {
+            if self.kind == KIND_BEAT {
+                return false;
+            }
+            *out = self.follow_rec;
+            return true;
+        }
         if s.curve < 0 || !s.seq {
             return false;
         }
@@ -765,6 +821,9 @@ impl Layer {
         }
         if let Some(f) = frame {
             amp = gesture_offsets(f, &self.depth, live, &mut slot.vmix, TICK as f32 / self.sr);
+            if slot.follow {
+                amp *= self.follow_gain;
+            }
             if f[TUNED].is_finite() {
                 cents = f[TUNED];
             } else if f[frame::PITCH].is_finite() {

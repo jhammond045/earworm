@@ -92,6 +92,37 @@ fn main() {
         ));
     }
 
+    // Live tier: cost of `process` per block with a voiced input, disarmed
+    // (tier only) and with a melody layer armed (tier plus a live voice).
+    let hum: Vec<f32> = (0..(SR as usize)).map(|i| {
+        let t = i as f32 / SR;
+        (1..=12).map(|k| (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() / k as f32).sum::<f32>() * 0.15
+    }).collect();
+    let mut live_us = [0.0f64; 2];
+    for (n, armed) in [false, true].into_iter().enumerate() {
+        let mut e = Engine::new(SR, BLOCK);
+        if armed {
+            e.push(MSG_ARM, 0, 0, 0, 1.0, 0);
+        }
+        let blocks = 20_000usize;
+        let run = |e: &mut Engine, count: usize| {
+            for b in 0..count {
+                let o = (b * BLOCK) % (hum.len() - BLOCK);
+                e.input_mut()[..BLOCK].copy_from_slice(&hum[o..o + BLOCK]);
+                e.process(BLOCK);
+            }
+        };
+        run(&mut e, 2000);
+        let t = Instant::now();
+        run(&mut e, blocks);
+        live_us[n] = t.elapsed().as_secs_f64() * 1e6 / blocks as f64;
+    }
+    let budget_us = BLOCK as f64 / SR as f64 * 1e6;
+    println!(
+        "live tier per {BLOCK}-sample block: {:.1} us disarmed, {:.1} us with a melody layer armed (block is {:.0} us)",
+        live_us[0], live_us[1], budget_us
+    );
+
     let mut demo_json = String::from("null");
     let read = |f: &str| std::fs::read(format!("{demo}/{f}"));
     match read("track.bin") {
@@ -119,6 +150,11 @@ fn main() {
         Err(_) => println!("demo track: {demo}/track.bin not found (run `pnpm gen:demo`), skipped"),
     }
     if json {
-        println!("{{\"worst_case\":[{}],\"demo\":{demo_json}}}", rows.join(","));
+        println!(
+            "{{\"worst_case\":[{}],\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}}}}",
+            rows.join(","),
+            live_us[0],
+            live_us[1]
+        );
     }
 }

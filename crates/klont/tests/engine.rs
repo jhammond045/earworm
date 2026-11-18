@@ -277,6 +277,49 @@ fn eight_layers_render_without_allocating() {
     assert_eq!(ALLOCS.load(Ordering::Relaxed), 0, "allocations while rendering");
 }
 
+/// Mic in, tier, tuner, frames, an armed layer started and released over and
+/// over (melody, then beat): nothing allocates.
+#[test]
+fn live_follow_process_does_not_allocate() {
+    let mut e = Engine::new(SR, 128);
+    e.push(MSG_SET_LAYER, 1, 0, LAYER_KIND, KIND_BEAT as f32, 0);
+    e.push(MSG_SET_TUNE, 0, 0, TUNE_SNAP, 0.5, 0);
+    e.push(MSG_SET_LIVE_KIT, 1, 2, LIVE_KIT_TAUGHT, 1.0, 0);
+    e.push(MSG_ARM, 0, 0, 0, 1.0, 0);
+    // 220 Hz bursts with gaps so the gate opens and closes, and clicks for onsets.
+    let sample = |n: usize| -> f32 {
+        let t = n as f32 / SR;
+        let on = (t * 2.5).fract() < 0.6;
+        if on { 0.3 * (std::f32::consts::TAU * 220.0 * t).sin() * (1.0 + 0.5 * (std::f32::consts::TAU * 880.0 * t).sin()) } else { 0.0 }
+    };
+    let mut n = 0usize;
+    let mut feed = |e: &mut Engine| {
+        for i in 0..128 {
+            e.input_mut()[i] = sample(n + i);
+        }
+        n += 128;
+        e.process(128);
+    };
+    for _ in 0..600 {
+        feed(&mut e);
+    }
+    ALLOCS.store(0, Ordering::Relaxed);
+    ARMED.with(|a| a.set(true));
+    for i in 0..4000 {
+        if i == 1500 {
+            e.push(MSG_ARM, 1, 0, 0, 1.0, 0);
+        }
+        if i == 2500 {
+            e.push(MSG_RESET_SINGER, 0, 0, 0, 0.0, 0);
+            e.push(MSG_SET_TUNE, 1, 0, TUNE_OCTAVE, 1.0, 0);
+        }
+        feed(&mut e);
+    }
+    ARMED.with(|a| a.set(false));
+    assert_eq!(ALLOCS.load(Ordering::Relaxed), 0, "allocations in live process");
+    assert!(e.meter()[M_LIVE_HITS] > 0.0, "beat layer never fired");
+}
+
 #[test]
 fn bad_loads_are_rejected_and_reported() {
     let mut e = Engine::new(SR, 128);

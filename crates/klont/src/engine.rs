@@ -8,6 +8,7 @@
 
 use crate::curve::CurvePool;
 use crate::layer::Layer;
+use crate::live::{Action, LiveCapture};
 use crate::protocol::*;
 use crate::seq::{EventList, Track, Transport};
 use crate::voice::{MAX_PARTIALS, TICK};
@@ -23,6 +24,9 @@ struct LiveMsg {
     slot: u8,
     cents: f32,
     velocity: f32,
+    /// Live follow: 0 none, 1 start the live voice or hit, 2 release it.
+    follow: u8,
+    hard: f32,
 }
 
 pub struct Engine {
@@ -44,6 +48,12 @@ pub struct Engine {
     transport: Transport,
     events: EventList,
     live: Vec<LiveMsg>,
+    capture: LiveCapture,
+    /// Position of the current control tick in the call, and the call length.
+    call_pos: usize,
+    call_len: usize,
+    /// Set by `process`; `render` runs without the live tier.
+    live_on: bool,
     tick_phase: usize,
 
     budget: f32,
@@ -91,13 +101,20 @@ impl Engine {
                 staging: 0,
                 staging_cap: 0,
                 host_load: 0,
+                frames: 0,
+                frames_cap: 0,
+                frames_count: 0,
             },
             layers: (0..MAX_LAYERS).map(|i| Layer::new(sr, i)).collect(),
             track: Box::new(Track::new()),
             curves: Box::new(CurvePool::new()),
             transport: Transport::new(sr),
             events: EventList::new(),
-            live: Vec::with_capacity(CONTROL_CAP),
+            live: Vec::with_capacity(CONTROL_CAP + 4),
+            capture: LiveCapture::new(sr, max_block),
+            call_pos: 0,
+            call_len: 1,
+            live_on: false,
             tick_phase: 0,
             budget: BUDGET_MAX as f32,
             budget_fixed: 0,
@@ -122,7 +139,12 @@ impl Engine {
             staging: addr(e.staging.as_ptr()),
             staging_cap: STAGING_BYTES as u32,
             host_load: addr(&e.host_load as *const f32 as *const u8),
+            frames: addr(e.capture.frames.as_ptr() as *const u8),
+            frames_cap: e.capture.frames_cap as u32,
+            frames_count: addr(&e.capture.frames_count as *const u32 as *const u8),
         };
+        e.meter[M_LIVE_SLOT] = -1.0;
+        e.meter[M_ARMED] = -1.0;
         e
     }
 
@@ -140,6 +162,10 @@ impl Engine {
     }
     pub fn input_mut(&mut self) -> &mut [f32] {
         &mut self.input
+    }
+    /// Frame records made by the last `process` (CURVE_STRIDE floats each).
+    pub fn frame_records(&self) -> &[f32] {
+        &self.capture.frames[..self.capture.frames_count as usize * crate::curve::CURVE_STRIDE]
     }
     pub fn set_host_load(&mut self, load: f32) {
         self.host_load = load;
@@ -241,8 +267,30 @@ impl Engine {
                 MSG_SET_LAYER if lay => self.layers[layer].set_field(param, value),
                 MSG_NOTE_ON | MSG_NOTE_OFF if lay => {
                     let velocity = if param == 0 { 1.0 } else { (param as f32 / 1000.0).min(1.0) };
-                    self.live.push(LiveMsg { time, on: ty == MSG_NOTE_ON, layer: layer as u8, slot: index, cents: value, velocity });
+                    self.live.push(LiveMsg {
+                        time,
+                        on: ty == MSG_NOTE_ON,
+                        layer: layer as u8,
+                        slot: index,
+                        cents: value,
+                        velocity,
+                        follow: 0,
+                        hard: 0.0,
+                    });
                 }
+                MSG_ARM if lay => {
+                    let was = self.capture.armed;
+                    let now = if value > 0.5 { layer as i32 } else if was == layer as i32 { -1 } else { was };
+                    if now != was {
+                        if was >= 0 {
+                            self.layers[was as usize].follow_release();
+                        }
+                        self.capture.arm(now);
+                    }
+                }
+                MSG_SET_TUNE if lay => self.capture.set_tune(layer, param, value),
+                MSG_SET_LIVE_KIT if lay => self.capture.set_kit(layer, index as usize, param, value),
+                MSG_RESET_SINGER => self.capture.reset_singer(),
                 MSG_PLAY => self.transport.play(),
                 MSG_STOP => {
                     self.transport.stop();
@@ -274,16 +322,41 @@ impl Engine {
         }
     }
 
-    /// Live: one render quantum. Adapts the partial budget to the host load.
+    /// Live: one render quantum with mic input in `input[..frames]`. Runs the
+    /// live tier, then renders with the armed layer driven by what it heard.
     pub fn process(&mut self, frames: usize) {
+        let frames = frames.min(self.max_block);
         self.adapt_budget();
-        self.run(frames);
+        self.drain_control(frames);
+        self.live_on = true;
+        let armed = self.capture.armed;
+        let beat = armed >= 0 && self.layers[armed as usize].kind == KIND_BEAT;
+        let action = self.capture.process(&mut self.input[..frames], beat);
+        if armed >= 0 {
+            let msg = match action {
+                Action::None => None,
+                Action::Start { slot, velocity, hard } => Some((1, slot, velocity, hard)),
+                Action::Release => Some((2, 0, 0.0, 0.0)),
+            };
+            if let Some((follow, slot, velocity, hard)) = msg {
+                if self.live.len() < self.live.capacity() {
+                    // Time 0: the sound starts in this quantum.
+                    self.live.insert(0, LiveMsg { time: 0, on: true, layer: armed as u8, slot, cents: f32::NAN, velocity, follow, hard });
+                }
+            }
+        }
+        self.run_block(frames);
+        self.capture.write_meters(&mut self.meter);
     }
 
-    /// Offline: any length up to max_block, fixed budget, no input.
+    /// Offline: any length up to max_block, fixed budget, no input, no live tier.
     pub fn render(&mut self, frames: usize) -> usize {
         self.host_load = 0.0;
-        self.run(frames)
+        let frames = frames.min(self.max_block);
+        self.drain_control(frames);
+        self.live_on = false;
+        self.capture.frames_count = 0;
+        self.run_block(frames)
     }
 
     fn adapt_budget(&mut self) {
@@ -322,9 +395,9 @@ impl Engine {
         }
     }
 
-    fn run(&mut self, frames: usize) -> usize {
-        let frames = frames.min(self.max_block);
-        self.drain_control(frames);
+    fn run_block(&mut self, frames: usize) -> usize {
+        self.call_len = frames.max(1);
+        self.call_pos = 0;
         self.out_l[..frames].fill(0.0);
         self.out_r[..frames].fill(0.0);
         for l in self.layers.iter_mut() {
@@ -334,6 +407,7 @@ impl Engine {
         let mut pos = 0;
         while pos < frames {
             if self.tick_phase == 0 {
+                self.call_pos = pos;
                 self.tick();
             }
             let span = (TICK - self.tick_phase).min(frames - pos);
@@ -362,6 +436,10 @@ impl Engine {
                         break;
                     }
                     live_i += 1;
+                    if m.follow != 0 {
+                        self.follow_msg(&m, len);
+                        continue;
+                    }
                     let l = &mut self.layers[m.layer as usize];
                     if m.on {
                         l.note_on_live(m.slot as usize, m.cents, m.velocity, &self.track, &self.curves, len);
@@ -397,6 +475,31 @@ impl Engine {
         frames
     }
 
+    /// Live follow start or release on the armed layer, now.
+    fn follow_msg(&mut self, m: &LiveMsg, len: usize) {
+        let layer = m.layer as usize;
+        if self.capture.armed != m.layer as i32 {
+            return;
+        }
+        if m.follow == 2 {
+            self.layers[layer].follow_release();
+            return;
+        }
+        self.push_follow_record(self.call_pos);
+        let l = &mut self.layers[layer];
+        l.follow_start(m.slot as usize, m.velocity, m.hard, &self.track, &self.curves, len);
+    }
+
+    /// Give the armed layer the live frame for the tick starting at `pos`.
+    fn push_follow_record(&mut self, pos: usize) {
+        if !self.live_on || self.capture.armed < 0 {
+            return;
+        }
+        let at = (pos + TICK / 2) as f32 / self.call_len as f32;
+        let (rec, gain) = self.capture.record(at);
+        self.layers[self.capture.armed as usize].follow_set(&rec, gain);
+    }
+
     fn render_span(&mut self, a: usize, b: usize) {
         let (l, r) = (&mut self.out_l[a..b], &mut self.out_r[a..b]);
         for layer in self.layers.iter_mut() {
@@ -408,6 +511,10 @@ impl Engine {
     fn tick(&mut self) {
         for l in self.layers.iter_mut() {
             l.control_tick();
+        }
+        if self.live_on {
+            self.capture.advance_tick();
+            self.push_follow_record(self.call_pos);
         }
         self.share_budget();
         let ups = self.transport.units_per_sample();

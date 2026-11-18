@@ -9,6 +9,7 @@
 pub mod curve;
 pub mod engine;
 pub mod layer;
+pub mod live;
 pub mod protocol;
 pub mod seq;
 pub mod voice;

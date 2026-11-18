@@ -17,7 +17,7 @@
 
 import { CONTROL_CAP, LOAD_TOO_BIG, METER_LEN, M_LOAD, MSG_BYTES, readBufferTable, type BufferTable,
   type EngineExports } from './protocol';
-import { ControlRing, MeterBlock } from '../host/rings';
+import { ControlRing, MeterBlock, RecordRing } from '../host/rings';
 
 declare class AudioWorkletProcessor {
   readonly port: MessagePort;
@@ -29,6 +29,12 @@ declare function registerProcessor(name: string, ctor: new (options: any) => Aud
 const MAX_BLOCK = 128;
 const METER_S = 1 / 30;
 const WINDOW = 16;
+const FLUSH_S = 0.1; // message mode: live chunk period
+// Same values as in klont-host.ts.
+/** Frame record: 24-float feature frame plus the tuned pitch (CURVE_STRIDE in the engine). */
+const FRAME_STRIDE = 25;
+const MIC_SECONDS = 60;
+const FRAME_RING = 6000;
 
 export interface KlontProcessorOptions {
   bytes: ArrayBuffer;
@@ -36,6 +42,12 @@ export interface KlontProcessorOptions {
   /** Shared mode only. */
   control?: SharedArrayBuffer;
   meter?: SharedArrayBuffer;
+  /** Mono mic input: Live follow. Without it the M1 player path runs unchanged. */
+  input?: boolean;
+  /** Shared mode with `input`: the mic, output and frame rings. */
+  mic?: SharedArrayBuffer;
+  out?: SharedArrayBuffer;
+  frames?: SharedArrayBuffer;
 }
 
 const perf: { now(): number } | null = typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -64,6 +76,17 @@ class KlontProcessor extends AudioWorkletProcessor {
   private wasmMeter!: Float32Array;
   private ctlCount!: Uint32Array;
   private hostLoad!: Float32Array;
+  private input!: Float32Array;
+  private wasmFrames!: Float32Array;
+  private frCount!: Uint32Array;
+  // Live follow rings (input mode only)
+  private readonly live: boolean;
+  private mic?: RecordRing;
+  private outRing?: RecordRing;
+  private frames?: RecordRing;
+  private capCursor = 0;
+  private frameCursor = 0;
+  private lastFlush = 0;
 
   constructor(options: { processorOptions: KlontProcessorOptions }) {
     super();
@@ -73,6 +96,13 @@ class KlontProcessor extends AudioWorkletProcessor {
     if (o.shared) {
       this.ring = new ControlRing(o.control!);
       this.meters = new MeterBlock(o.meter!, METER_LEN);
+    }
+    this.live = !!o.input;
+    if (this.live) {
+      const cap = Math.ceil(MIC_SECONDS * sampleRate);
+      this.mic = new RecordRing(o.mic ?? new ArrayBuffer(RecordRing.bytes(cap, 1)), cap, 1);
+      this.outRing = new RecordRing(o.out ?? new ArrayBuffer(RecordRing.bytes(cap, 1)), cap, 1);
+      this.frames = new RecordRing(o.frames ?? new ArrayBuffer(RecordRing.bytes(FRAME_RING, FRAME_STRIDE)), FRAME_RING, FRAME_STRIDE);
     }
     this.port.onmessage = (ev) => this.onMessage(ev.data);
     this.refreshViews();
@@ -84,6 +114,9 @@ class KlontProcessor extends AudioWorkletProcessor {
     if (mem === this.buf) return;
     this.buf = mem;
     const t = this.t = readBufferTable(mem, this.ex.ew_buffers(this.e));
+    this.input = new Float32Array(mem, t.input, MAX_BLOCK);
+    this.wasmFrames = new Float32Array(mem, t.frames, t.framesCap * FRAME_STRIDE);
+    this.frCount = new Uint32Array(mem, t.framesCount, 1);
     this.outL = new Float32Array(mem, t.outputL, MAX_BLOCK);
     this.outR = new Float32Array(mem, t.outputR, MAX_BLOCK);
     this.control = new Uint8Array(mem, t.control, CONTROL_CAP * MSG_BYTES);
@@ -121,13 +154,17 @@ class KlontProcessor extends AudioWorkletProcessor {
     return n;
   }
 
-  process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+  process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const out = outputs[0];
     if (!out || out.length === 0) return true;
+    const inp = this.live ? inputs[0]?.[0] : undefined;
     const total = out[0].length;
     for (let o = 0; o < total; o += MAX_BLOCK) {
       const m = Math.min(MAX_BLOCK, total - o);
       this.refreshViews();
+      if (this.live) {
+        if (inp) this.input.set(inp.subarray(o, o + m)); else this.input.fill(0, 0, m);
+      }
       this.block(m);
       out[0].set(this.outL.subarray(0, m), o);
       (out[1] ?? out[0]).set(this.outR.subarray(0, m), o);
@@ -159,11 +196,34 @@ class KlontProcessor extends AudioWorkletProcessor {
     // window fallback; show the last real figure instead.
     this.wasmMeter[M_LOAD] = perf ? this.lastLoad : this.shownLoad;
     this.samples += m;
+    if (this.live) this.publishLive(m);
     if (this.meters) this.meters.write(this.wasmMeter);
     else if (this.samples - this.lastMeter >= METER_S * sampleRate) {
       this.lastMeter = this.samples;
       const copy = this.wasmMeter.slice();
       this.port.postMessage({ t: 'meter', data: copy }, [copy.buffer]);
+    }
+  }
+
+  /** ew_process left the high-passed mic in `input`; log it, the output and the frames. */
+  private publishLive(m: number): void {
+    this.mic!.write(this.input, m);
+    this.outRing!.write(this.outL, m);
+    const nf = this.frCount[0];
+    if (nf > 0) this.frames!.write(this.wasmFrames, nf);
+    if (this.meters) return;
+    // Message mode: ship what is new every 100 ms, frames and samples together.
+    if (this.samples - this.lastFlush >= FLUSH_S * sampleRate) {
+      this.lastFlush = this.samples;
+      const n = this.outRing!.total() - this.capCursor;
+      const mic = new Float32Array(n), out = new Float32Array(n);
+      this.mic!.readRange(this.capCursor, n, mic);
+      this.outRing!.readRange(this.capCursor, n, out);
+      this.capCursor += n;
+      const f = this.frames!.readSince(this.frameCursor);
+      this.frameCursor = f.cursor;
+      this.port.postMessage({ t: 'live', mic, out, frames: f.records, nFrames: f.count },
+        [mic.buffer, out.buffer, f.records.buffer]);
     }
   }
 
