@@ -114,11 +114,11 @@ function buildProject(): Store {
     for (const l of store.doc.layers) {
       let clip: Clip;
       if (l.kind === 'beat') {
-        clip = { kind: 'beat', take: '', takes: [], loopLen: len, timeSnap: 0, hits: beatHits(len, grid, 16) } satisfies BeatClip;
+        clip = { kind: 'beat', take: '', takes: [], loopLen: len, timeSnap: 0, morph: [], hits: beatHits(len, grid, 16) } satisfies BeatClip;
       } else {
         const withTake = s === store.doc.sections[0] && l === store.doc.layers[0];
         clip = {
-          kind: l.kind, take: withTake ? TAKE_ID : '', takes: withTake ? [TAKE_ID] : [], loopLen: len, timeSnap: 0,
+          kind: l.kind, take: withTake ? TAKE_ID : '', takes: withTake ? [TAKE_ID] : [], loopLen: len, timeSnap: 0, morph: [],
           notes: melodyNotes(r, len, grid, 12 + ri(r, 5)),
           warp: withTake ? [{ takeSec: 0, clipT: 0 }, { takeSec: 4.8, clipT: len }] : [],
         } satisfies MelodyClip;

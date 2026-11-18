@@ -45,7 +45,7 @@ function project(): Project {
     schema: 1, id: 'p', name: 'p', loop: true, takes: {},
     layers: [layer('mel', 'melody'), layer('click', 'beat')],
     sections: [{ id: 's', name: 'A', feel: 'grid', beats: 4, seconds: 0, bpm: 120, repeats: 1, rampMs: 0,
-      clips: { click: { kind: 'beat', take: '', takes: [], loopLen: 3840, timeSnap: 0, hits } } }],
+      clips: { click: { kind: 'beat', take: '', takes: [], loopLen: 3840, timeSnap: 0, morph: [], hits } } }],
   };
 }
 

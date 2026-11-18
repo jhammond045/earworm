@@ -221,6 +221,91 @@ describe('ProjectDb', () => {
   });
 });
 
+// What a schema 1 app left behind: a snapshot and journal with no morph lanes anywhere.
+function asSchema1<T>(v: T): T {
+  const strip = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(strip);
+    if (x && typeof x === 'object') {
+      return Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'morph').map(([k, y]) => [k, strip(y)]));
+    }
+    return x;
+  };
+  return strip(JSON.parse(JSON.stringify(v))) as T;
+}
+
+describe('schema migration on open', () => {
+  it('upgrades an old snapshot and replays old journal entries into the new shape', async () => {
+    const kv = memoryKv();
+    const db = new ProjectDb(kv, { flushMs: 10_000, snapshotEvery: 1000 });
+    const start = newProject('Old');
+    await db.create(start);
+    const store = session(db, start);
+    const mel = store.doc.layers[0]!.id;
+    const sec = store.doc.sections[0]!.id;
+    store.dispatch('addNote', { section: sec, layer: mel, note: { id: 'n1', t: 0, dur: 480, cents: 5000, hard: 0.5 } }); // creates a clip
+    store.dispatch('addNote', { section: sec, layer: mel, note: { id: 'n2', t: 960, dur: 480, cents: 5200, hard: 0.5 } });
+    store.dispatch('duplicateSection', { id: sec }); // an op carrying a whole section
+    store.dispatch('setClip', { section: sec, layer: mel, clip: null }); // its inverse carries a whole clip
+    store.undo();
+    const expectedDoc = store.doc;
+    store.redo(); // the doc the redo stack leads to
+    const redone = store.doc;
+    store.undo();
+    await db.flush();
+
+    // Rewrite storage as the old app would have written it.
+    const snap = (await kv.get('projects', `snap/${start.id}`)) as { doc: Project; history: unknown; seq: number };
+    await kv.put('projects', `snap/${start.id}`, { ...snap, doc: { ...asSchema1(snap.doc), schema: 1 } });
+    for (const k of await journalKeys(kv, start.id)) await kv.put('journal', k, asSchema1(await kv.get('journal', k)));
+    const stored = JSON.stringify(await kv.get('journal', (await journalKeys(kv, start.id))[0]!));
+    expect(stored).not.toContain('morph');
+
+    const opened = await new ProjectDb(kv).open(start.id);
+    expect(opened!.doc.schema).toBe(2);
+    expect(opened!.doc).toEqual(expectedDoc);
+
+    // Undo history built from old entries restores clips that carry a morph lane too.
+    const again = new Store(opened!.doc, opened!.history);
+    while (again.undo());
+    expect(again.doc).toEqual(start);
+    while (again.redo());
+    expect(again.doc).toEqual(redone);
+    for (const sc of again.doc.sections) for (const c of Object.values(sc.clips)) expect(c.morph).toEqual([]);
+  });
+
+  it('writes the upgraded snapshot back and drops the old journal, so new entries do not mix shapes', async () => {
+    const kv = memoryKv();
+    const db = new ProjectDb(kv, { flushMs: 10_000 });
+    const start = newProject('Old');
+    await db.create(start);
+    const store = session(db, start);
+    level(store, -4);
+    await db.flush();
+    const snap = (await kv.get('projects', `snap/${start.id}`)) as { doc: Project };
+    await kv.put('projects', `snap/${start.id}`, { ...snap, doc: { ...asSchema1(snap.doc), schema: 1 } });
+
+    const db2 = new ProjectDb(kv, { flushMs: 10_000 });
+    const opened = await db2.open(start.id);
+    expect(await journalKeys(kv, start.id)).toEqual([]);
+    expect(((await kv.get('projects', `snap/${start.id}`)) as { doc: Project; seq: number }).doc.schema).toBe(2);
+    const s2 = session(db2, opened!.doc, opened!.history);
+    level(s2, -8);
+    await db2.flush();
+    expect(await journalKeys(kv, start.id)).toHaveLength(1);
+    const reopened = await new ProjectDb(kv).open(start.id);
+    expect(reopened!.doc.layers[0]!.level).toBe(-8);
+    expect(reopened!.doc.schema).toBe(2);
+  });
+
+  it('refuses a project saved by a newer app', async () => {
+    const kv = memoryKv();
+    const db = new ProjectDb(kv);
+    const doc = { ...newProject('Future'), schema: 99 } as Project;
+    await db.create(doc);
+    await expect(new ProjectDb(kv).open(doc.id)).rejects.toThrow(/newer version/);
+  });
+});
+
 describe('memory stores', () => {
   it('memoryKv filters keys by prefix and clones values', async () => {
     const kv = memoryKv();

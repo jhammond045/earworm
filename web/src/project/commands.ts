@@ -2,19 +2,25 @@
 // document, checks its arguments (RangeError with a plain message), and returns patch ops.
 // It returns [] when nothing would change. Store (store.ts) applies the ops and records them.
 
+import { DESCS } from '../gen/params';
+import type { Group } from '../gen/params';
 import { soundToSet } from '../m1/layer';
 import type { Sound } from '../m1/layer';
 import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
 import type { Op, Path } from './patch';
-import { KIT_SLOTS, MAX_LAYERS, PPQ, SCHEMA } from './types';
-import type { BeatClip, Clip, Feel, GestureDepth, Hit, KitSlot, Layer, LayerKind, MelodyClip, Note, Project, Section,
-  Take, Tune } from './types';
+import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA } from './types';
+import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, MorphMarker,
+  MorphShape, Note, Project, Section, State, Take, Tune } from './types';
 
 const PARAMS = 96;
 const MAX_CENTS = 12000;
 const MIN_FREE_DUR = 0.01;
 const MIN_BPM = 20;
 const MAX_BPM = 400;
+/** Mask bit of each aspect group (the engine's GROUP_* order). */
+const GROUP_BIT: Record<Group, number> = { tone: 1, shape: 2, motion: 4, grit: 8, space: 16 };
+const ALL_GROUPS = 0x1f;
+const N_MACROS = 8;
 const LAYER_COLORS = [0xe4572e, 0x29a3a3, 0xf3a712, 0x6a4c93, 0x4c9f38, 0x2f6fd0, 0xc9486b, 0x8a8f98];
 
 let counter = 0;
@@ -61,7 +67,7 @@ function makeLayer(kind: LayerKind, name: string, soundIndex: number, colorIndex
   return {
     id: newId('lay'), name, kind, color: LAYER_COLORS[colorIndex % LAYER_COLORS.length],
     level: 0, pan: 0, mute: false,
-    states: [{ id: newId('st'), name: 'Base', base, macros: new Array(8).fill(0.5), influenceAmount: 0 }],
+    states: [{ id: newId('st'), name: 'Base', base, macros: new Array(N_MACROS).fill(0.5), influenceAmount: 0 }],
     tune: defaultTune(), depth: defaultDepth(), follow: 1, kit,
   };
 }
@@ -138,6 +144,17 @@ function normHit(h: Hit, len: number, grid: boolean, min: number): Hit {
   return t === h.t && dur === h.dur && strength === h.strength ? h : { ...h, t, dur, strength };
 }
 
+/** Check a morph marker and put its time inside the loop. `states` (ids) is checked when given. */
+function normMarker(m: MorphMarker, len: number, grid: boolean, states: Set<string> | null): MorphMarker {
+  fin(m.t, 'marker t'); fin(m.lenMs, 'marker lenMs');
+  if (m.lenMs < 0) fail('marker lenMs must be 0 or more');
+  if (!MORPH_SHAPES.includes(m.shape)) fail(`marker shape must be one of ${MORPH_SHAPES.join(', ')}`);
+  if (typeof m.state !== 'string') fail('marker state must be a state id');
+  if (states && !states.has(m.state)) fail(`unknown state id "${m.state}"`);
+  const t = wrapT(m.t, len, grid);
+  return t === m.t ? m : { ...m, t };
+}
+
 const sortByT = <T extends { t: number }>(a: T[]): T[] => a.slice().sort((x, y) => x.t - y.t);
 const sameItems = <T>(a: T[], b: T[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -149,17 +166,22 @@ function insertSorted<T extends { t: number }>(a: T[], item: T): number {
 
 /** Make a clip valid for its section: times inside [0, loopLen), durations at least the minimum, clamped values.
  *  Returns the same object when it already is. */
-function normClip(clip: Clip, section: Section): Clip {
+function normClip(clip: Clip, section: Section, states: Set<string> | null = null): Clip {
   const grid = section.feel === 'grid';
   const min = minDur(section);
   if (!(typeof clip.loopLen === 'number' && clip.loopLen > 0 && Number.isFinite(clip.loopLen))) fail('clip loopLen must be above 0');
   if (typeof clip.timeSnap !== 'number' || clip.timeSnap < 0) fail('clip timeSnap must be 0 or more');
-  if (clip.kind === 'beat') {
-    const hits = clip.hits.map((h) => normHit(h, clip.loopLen, grid, min));
-    return sameItems(hits, clip.hits) ? clip : { ...clip, hits };
+  // A clip built by older code may lack the morph lane. Markers keep to the loop like notes do.
+  let morph = clip.morph ?? [];
+  const wrapped = morph.map((m) => normMarker(m, clip.loopLen, grid, states));
+  if (!clip.morph || !sameItems(wrapped, morph)) morph = sortByT(wrapped);
+  const withMorph = morph === clip.morph ? clip : { ...clip, morph };
+  if (withMorph.kind === 'beat') {
+    const hits = withMorph.hits.map((h) => normHit(h, withMorph.loopLen, grid, min));
+    return sameItems(hits, withMorph.hits) ? withMorph : { ...withMorph, hits };
   }
-  const notes = clip.notes.map((n) => normNote(n, clip.loopLen, grid, min));
-  return sameItems(notes, clip.notes) ? clip : { ...clip, notes };
+  const notes = withMorph.notes.map((n) => normNote(n, withMorph.loopLen, grid, min));
+  return sameItems(notes, withMorph.notes) ? withMorph : { ...withMorph, notes };
 }
 
 /** Convert every clip time in a section between ticks and seconds. */
@@ -167,7 +189,8 @@ function convertClip(clip: Clip, factor: number, toGrid: boolean): Clip {
   const conv = (v: number) => (toGrid ? Math.round(v * factor) : v * factor);
   const min = toGrid ? 1 : MIN_FREE_DUR;
   const loopLen = Math.max(min, conv(clip.loopLen));
-  const base = { loopLen, timeSnap: conv(clip.timeSnap) };
+  const morph = (clip.morph ?? []).map((m) => ({ ...m, t: wrapT(conv(m.t), loopLen, toGrid) }));
+  const base = { loopLen, timeSnap: conv(clip.timeSnap), morph: sortByT(morph) };
   if (clip.kind === 'beat') {
     const hits = clip.hits.map((h) => ({ ...h, t: wrapT(conv(h.t), loopLen, toGrid), dur: Math.max(min, conv(h.dur)) }));
     return { ...clip, ...base, hits };
@@ -227,6 +250,56 @@ function checkParams(v: unknown, what: string): number[] {
   for (const x of v as unknown[]) fin(x, what);
   return v as number[];
 }
+
+
+/** Values in 0..1, exactly `n` of them. */
+function unitArray(v: unknown, n: number, what: string): number[] {
+  if (!Array.isArray(v) || v.length !== n) fail(`${what} must be ${n} numbers`);
+  for (const x of v as unknown[]) inRange(x, what, 0, 1);
+  return v as number[];
+}
+
+/** A marker for a command: strict, the time must already be inside the loop (grid times are rounded to ticks). */
+function normMarkerInside(m: MarkerFields, len: number, grid: boolean, layer: Layer): MarkerFields {
+  fin(m.t, 'marker t');
+  const t = grid ? Math.round(m.t) : m.t;
+  if (t < 0 || t >= len) fail(`marker t must be inside the loop (0 up to ${len})`);
+  return normMarker({ ...m, t }, len, grid, new Set(layer.states.map((x) => x.id)));
+}
+
+function stateIdx(l: Layer, id: string): number {
+  const i = l.states.findIndex((s) => s.id === id);
+  return i < 0 ? fail(`unknown state id "${id}"`) : i;
+}
+
+/** Blend a base toward an Influence target by `amount`, per aspect group the mask lets through
+ *  (TDD resolution step 2: p = (1 - a m) b + a m t). */
+export function blendInfluence(base: number[], target: number[], mask: number, amount: number): number[] {
+  return base.map((b, i) => {
+    const am = mask & GROUP_BIT[DESCS[i].group] ? amount : 0;
+    return (1 - am) * b + am * target[i];
+  });
+}
+
+function checkInfluence(v: unknown): Influence {
+  if (!v || typeof v !== 'object') fail('influence must be an object or null');
+  const x = v as Influence;
+  unitArray(x.target, PARAMS, 'influence target');
+  if (!Number.isInteger(x.mask) || x.mask < 0 || x.mask > ALL_GROUPS) fail(`influence mask must be a whole number from 0 to ${ALL_GROUPS}`);
+  if (typeof x.source !== 'string' || !x.source.startsWith('grain-')) fail('influence source must be a blob id starting with "grain-"');
+  str(x.sourceName, 'influence sourceName');
+  if (fin(x.sourceRate, 'influence sourceRate') <= 0) fail('influence sourceRate must be above 0');
+  if (typeof x.useSound !== 'boolean') fail('influence useSound must be true or false');
+  if (x.grain !== null) {
+    if (!x.grain || typeof x.grain !== 'object') fail('influence grain must be an object or null');
+    const g = x.grain;
+    if (fin(g.start, 'grain start') < 0 || fin(g.end, 'grain end') <= g.start) fail('grain region must have 0 <= start < end');
+    if (g.refCents !== null) fin(g.refCents, 'grain refCents');
+  }
+  return x;
+}
+
+export interface MarkerFields { t: number; state: string; lenMs: number; shape: MorphShape }
 
 // ---------- the commands ----------
 
@@ -361,7 +434,7 @@ export const commands = {
       return hasClip(w.section, a.layer) ? [{ op: 'set', path: w.clipPath, value: undefined }] : [];
     }
     if ((a.clip.kind === 'beat') !== (w.layer.kind === 'beat')) fail(`a ${a.clip.kind} clip does not fit the ${w.layer.kind} layer "${w.layer.name}"`);
-    const clip = normClip(a.clip, w.section);
+    const clip = normClip(a.clip, w.section, new Set(w.layer.states.map((x) => x.id)));
     if (hasClip(w.section, a.layer) && w.section.clips[a.layer] === clip) return [];
     return [{ op: 'set', path: w.clipPath, value: clip }];
   },
@@ -389,6 +462,8 @@ export const commands = {
       if (loopLen !== c.loopLen) {
         ops.push({ op: 'set', path: [...w.clipPath, 'loopLen'], value: loopLen });
         const min = minDur(w.section);
+        const morph = (c.morph ?? []).map((m) => normMarker(m, loopLen, grid, null));
+        if (!sameItems(morph, c.morph ?? [])) ops.push({ op: 'set', path: [...w.clipPath, 'morph'], value: sortByT(morph) });
         if (c.kind === 'beat') {
           const hits = c.hits.map((h) => normHit(h, loopLen, grid, min));
           if (!sameItems(hits, c.hits)) ops.push({ op: 'set', path: [...w.clipPath, 'hits'], value: sortByT(hits) });
@@ -409,7 +484,7 @@ export const commands = {
     const note = normNote({ ...a.note, id: a.note.id ?? newId('n') } as Note, len, w.section.feel === 'grid', minDur(w.section));
     if (c?.notes.some((n) => n.id === note.id)) fail(`note id "${note.id}" already exists in this clip`);
     if (!c) {
-      const clip: MelodyClip = { kind: w.layer.kind as 'melody' | 'texture', take: '', takes: [], loopLen: len, timeSnap: 0, notes: [note], warp: [] };
+      const clip: MelodyClip = { kind: w.layer.kind as 'melody' | 'texture', take: '', takes: [], loopLen: len, timeSnap: 0, morph: [], notes: [note], warp: [] };
       return [{ op: 'set', path: w.clipPath, value: clip }];
     }
     return [{ op: 'ins', path: [...w.clipPath, 'notes', insertSorted(c.notes, note)], value: note }];
@@ -458,7 +533,7 @@ export const commands = {
     const hit = normHit({ ...a.hit, id: a.hit.id ?? newId('h') } as Hit, len, w.section.feel === 'grid', minDur(w.section));
     if (c?.hits.some((h) => h.id === hit.id)) fail(`hit id "${hit.id}" already exists in this clip`);
     if (!c) {
-      const clip: BeatClip = { kind: 'beat', take: '', takes: [], loopLen: len, timeSnap: 0, hits: [hit] };
+      const clip: BeatClip = { kind: 'beat', take: '', takes: [], loopLen: len, timeSnap: 0, morph: [], hits: [hit] };
       return [{ op: 'set', path: w.clipPath, value: clip }];
     }
     return [{ op: 'ins', path: [...w.clipPath, 'hits', insertSorted(c.hits, hit)], value: hit }];
@@ -519,6 +594,143 @@ export const commands = {
     }
     const next = c.notes.map(snap);
     return sameItems(next, c.notes) ? [] : [{ op: 'set', path: [...w.clipPath, 'notes'], value: sortByT(next) }];
+  },
+
+  /** Set or clear (null) the layer's Influence. */
+  setInfluence(doc: Project, a: { layer: string; influence: Influence | null }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    if (a.influence === null) return l.influence ? [{ op: 'set', path: ['layers', i, 'influence'], value: undefined }] : [];
+    const infl = checkInfluence(a.influence);
+    return l.influence === infl ? [] : [{ op: 'set', path: ['layers', i, 'influence'], value: infl }];
+  },
+
+  setInfluenceAmount(doc: Project, a: { layer: string; state: string; amount: number }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const si = stateIdx(doc.layers[i], a.state);
+    inRange(a.amount, 'influence amount', 0, 1);
+    return doc.layers[i].states[si].influenceAmount === a.amount ? [] : [{ op: 'set', path: ['layers', i, 'states', si, 'influenceAmount'], value: a.amount }];
+  },
+
+  setInfluenceMask(doc: Project, a: { layer: string; mask: number }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const infl = doc.layers[i].influence ?? fail('this layer has no Influence');
+    if (!Number.isInteger(a.mask) || a.mask < 0 || a.mask > ALL_GROUPS) fail(`influence mask must be a whole number from 0 to ${ALL_GROUPS}`);
+    return infl.mask === a.mask ? [] : [{ op: 'set', path: ['layers', i, 'influence', 'mask'], value: a.mask }];
+  },
+
+  /** Write the blended values into the state's base, then clear the Influence and set that state's amount to 0
+   *  (TDD "Commit writes the blended values into the state's base and clears the target"). Other states keep
+   *  their stored amounts; with no Influence they are not sent to the engine. */
+  commitInfluence(doc: Project, a: { layer: string; state: string }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const infl = l.influence ?? fail('this layer has no Influence');
+    const si = stateIdx(l, a.state);
+    const st = l.states[si];
+    return [
+      { op: 'set', path: ['layers', i, 'states', si, 'base'], value: blendInfluence(st.base, infl.target, infl.mask, st.influenceAmount) },
+      { op: 'set', path: ['layers', i, 'states', si, 'influenceAmount'], value: 0 },
+      { op: 'set', path: ['layers', i, 'influence'], value: undefined },
+    ];
+  },
+
+  /** A new state, copied from `from` (default: the first state). Ids come from `id` or are made. */
+  addState(doc: Project, a: { layer: string; from?: string; name?: string; id?: string }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    if (l.states.length >= MAX_STATES) fail(`too many states (${MAX_STATES} max)`);
+    const src = l.states[a.from !== undefined ? stateIdx(l, a.from) : 0];
+    const id = a.id !== undefined ? str(a.id, 'state id') : newId('st');
+    if (l.states.some((s) => s.id === id)) fail(`state id "${id}" already exists`);
+    const name = a.name !== undefined ? str(a.name, 'state name') : `State ${l.states.length + 1}`;
+    const st: State = { id, name, base: src.base.slice(), macros: src.macros.slice(), influenceAmount: src.influenceAmount };
+    return [{ op: 'ins', path: ['layers', i, 'states', l.states.length], value: st }];
+  },
+
+  setState(doc: Project, a: { layer: string; id: string; name?: string; base?: number[]; macros?: number[]; influenceAmount?: number }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const si = stateIdx(doc.layers[i], a.id);
+    const st = doc.layers[i].states[si];
+    const ops: Op[] = [];
+    const put = (k: keyof State, value: unknown) => { if (value !== st[k]) ops.push({ op: 'set', path: ['layers', i, 'states', si, k], value }); };
+    if (a.name !== undefined) put('name', str(a.name, 'state name'));
+    if (a.base !== undefined) put('base', unitArray(a.base, PARAMS, 'state base'));
+    if (a.macros !== undefined) put('macros', unitArray(a.macros, N_MACROS, 'state macros'));
+    if (a.influenceAmount !== undefined) put('influenceAmount', inRange(a.influenceAmount, 'influence amount', 0, 1));
+    return ops;
+  },
+
+  /** Not the last state. Morph markers that point at it are removed from every clip of the layer. */
+  removeState(doc: Project, a: { layer: string; id: string }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const si = stateIdx(l, a.id);
+    if (l.states.length === 1) fail('the last state cannot be removed');
+    const ops: Op[] = [{ op: 'rm', path: ['layers', i, 'states', si] }];
+    doc.sections.forEach((s, sec) => {
+      const c = hasClip(s, l.id) ? s.clips[l.id] : undefined;
+      if (!c || !c.morph) return;
+      const keep = c.morph.filter((m) => m.state !== a.id);
+      if (keep.length !== c.morph.length) ops.push({ op: 'set', path: ['sections', sec, 'clips', l.id, 'morph'], value: keep });
+    });
+    return ops;
+  },
+
+  /** Adds a marker; creates an empty clip as long as the section if the lane has none. Needs 0 <= t < loopLen. */
+  addMorphMarker(doc: Project, a: { section: string; layer: string; marker: Omit<MarkerFields, 'lenMs' | 'shape'> & Partial<MarkerFields> }): Op[] {
+    const w = where(doc, a.section, a.layer);
+    const c = hasClip(w.section, a.layer) ? (w.section.clips[a.layer] as Clip) : undefined;
+    const len = c ? c.loopLen : sectionLength(w.section);
+    const grid = w.section.feel === 'grid';
+    const m = a.marker;
+    const marker = normMarkerInside({ t: m.t, state: m.state, lenMs: m.lenMs ?? 0, shape: m.shape ?? 'line' }, len, grid, w.layer);
+    if (!c) {
+      const base = { take: '', takes: [] as string[], loopLen: len, timeSnap: 0, morph: [marker] };
+      const clip: Clip = w.layer.kind === 'beat'
+        ? { kind: 'beat', ...base, hits: [] }
+        : { kind: w.layer.kind, ...base, notes: [], warp: [] };
+      return [{ op: 'set', path: w.clipPath, value: clip }];
+    }
+    const morph = c.morph ?? [];
+    if (!c.morph) return [{ op: 'set', path: [...w.clipPath, 'morph'], value: [marker] }];
+    return [{ op: 'ins', path: [...w.clipPath, 'morph', insertSorted(morph, marker)], value: marker }];
+  },
+
+  /** `index` is the marker's position in the clip's morph list now. Changing t re-sorts the list. */
+  moveMorphMarker(doc: Project, a: { section: string; layer: string; index: number; t?: number; lenMs?: number; shape?: MorphShape; state?: string }): Op[] {
+    const w = where(doc, a.section, a.layer);
+    const c = hasClip(w.section, a.layer) ? (w.section.clips[a.layer] as Clip) : fail('no clip in that section and layer');
+    const morph = c.morph ?? [];
+    if (!Number.isInteger(a.index) || a.index < 0 || a.index >= morph.length) fail(`marker index must be 0 to ${morph.length - 1}`);
+    const old = morph[a.index];
+    const next = normMarkerInside({ t: a.t ?? old.t, state: a.state ?? old.state, lenMs: a.lenMs ?? old.lenMs, shape: a.shape ?? old.shape },
+      c.loopLen, w.section.feel === 'grid', w.layer);
+    if (next.t === old.t && next.state === old.state && next.lenMs === old.lenMs && next.shape === old.shape) return [];
+    const list = morph.slice();
+    list[a.index] = next;
+    return [{ op: 'set', path: [...w.clipPath, 'morph'], value: next.t === old.t ? list : sortByT(list) }];
+  },
+
+  removeMorphMarker(doc: Project, a: { section: string; layer: string; index: number }): Op[] {
+    const w = where(doc, a.section, a.layer);
+    const c = hasClip(w.section, a.layer) ? (w.section.clips[a.layer] as Clip) : fail('no clip in that section and layer');
+    const n = c.morph?.length ?? 0;
+    if (!Number.isInteger(a.index) || a.index < 0 || a.index >= n) fail(`marker index must be 0 to ${n - 1}`);
+    return [{ op: 'rm', path: [...w.clipPath, 'morph', a.index] }];
+  },
+
+  /** "Use my sound for a kit slot": replace one slot's sound and default pitch. */
+  setKitSlot(doc: Project, a: { layer: string; slot: number; params: number[]; cents: number }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    if (l.kind !== 'beat') fail(`layer "${l.name}" is not a beat layer and has no kit`);
+    if (!Number.isInteger(a.slot) || a.slot < 0 || a.slot >= KIT_SLOTS) fail(`slot must be a whole number from 0 to ${KIT_SLOTS - 1}`);
+    unitArray(a.params, PARAMS, 'kit slot sound');
+    inRange(a.cents, 'kit slot cents', 0, MAX_CENTS);
+    const old = l.kit[a.slot];
+    if (old && old.cents === a.cents && old.params.length === PARAMS && old.params.every((v, k) => v === a.params[k])) return [];
+    return [{ op: 'set', path: ['layers', i, 'kit', a.slot], value: { params: a.params, cents: a.cents } }];
   },
 
   /** Switch to an older take in the clip's stack. The caller rebuilds notes/hits (setClip). */

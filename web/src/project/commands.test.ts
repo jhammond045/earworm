@@ -247,7 +247,7 @@ describe('clips and notes', () => {
 
   it('setClip places and clears a clip, and rejects a mismatched kind', () => {
     const { store, sec, mel, beat } = setup();
-    const clip: MelodyClip = { kind: 'melody', take: 't1', takes: ['t1'], loopLen: 1920, timeSnap: 0, notes: [note('a', 4000)], warp: [] };
+    const clip: MelodyClip = { kind: 'melody', take: 't1', takes: ['t1'], loopLen: 1920, timeSnap: 0, morph: [], notes: [note('a', 4000)], warp: [] };
     store.batch('place take', (run) => {
       run('addTake', { take: take('t1') });
       run('setClip', { section: sec, layer: mel, clip });
@@ -284,7 +284,7 @@ describe('clips and notes', () => {
 
   it('selectTake only accepts a take in the stack', () => {
     const { store, sec, mel } = setup();
-    const clip: MelodyClip = { kind: 'melody', take: 't2', takes: ['t1', 't2'], loopLen: 1920, timeSnap: 0, notes: [], warp: [] };
+    const clip: MelodyClip = { kind: 'melody', take: 't2', takes: ['t1', 't2'], loopLen: 1920, timeSnap: 0, morph: [], notes: [], warp: [] };
     store.dispatch('setClip', { section: sec, layer: mel, clip });
     store.dispatch('selectTake', { section: sec, layer: mel, take: 't1' });
     expect(clipOf(store, sec, mel).take).toBe('t1');
@@ -314,5 +314,248 @@ describe('commands return ops only for real changes', () => {
     const doc = newProject('x');
     const ops: Op[] = commands.setLayer(doc, { id: doc.layers[0].id, level: 0, name: doc.layers[0].name });
     expect(ops).toEqual([]);
+  });
+});
+
+// ---------- M4: Influence, states, morph markers, kit slot ----------
+
+import { DESCS } from '../gen/params';
+import type { Influence } from './types';
+
+const ramp = (f: (i: number) => number) => Array.from({ length: 96 }, (_, i) => f(i));
+const influence = (over: Partial<Influence> = {}): Influence => ({
+  target: ramp(() => 1), mask: 0x1f, source: 'grain-a', sourceName: 'kettle', sourceRate: 16000,
+  grain: { start: 100, end: 900, refCents: 6000 }, useSound: true, ...over,
+});
+
+describe('Influence commands', () => {
+  it('setInfluence sets and clears, and rejects bad values', () => {
+    const { store, mel } = setup();
+    const infl = influence();
+    expect(store.dispatch('setInfluence', { layer: mel, influence: infl })).toBe(true);
+    expect(store.doc.layers[0].influence).toEqual(infl);
+    expect(store.dispatch('setInfluence', { layer: mel, influence: null })).toBe(true);
+    expect('influence' in store.doc.layers[0]).toBe(false);
+    expect(store.dispatch('setInfluence', { layer: mel, influence: null })).toBe(false);
+    store.undo();
+    expect(store.doc.layers[0].influence).toEqual(infl);
+    const bad = (i: Partial<Influence>) => () => store.dispatch('setInfluence', { layer: mel, influence: influence(i) });
+    expect(bad({ target: ramp(() => 1.5) })).toThrow(RangeError);
+    expect(bad({ target: [0.5] })).toThrow(RangeError);
+    expect(bad({ mask: 32 })).toThrow(RangeError);
+    expect(bad({ mask: 1.5 })).toThrow(RangeError);
+    expect(bad({ source: 'take-1' })).toThrow(RangeError);
+    expect(bad({ sourceRate: 0 })).toThrow(RangeError);
+    expect(bad({ grain: { start: 5, end: 5, refCents: null } })).toThrow(RangeError);
+    expect(() => store.dispatch('setInfluence', { layer: 'nope', influence: null })).toThrow(RangeError);
+  });
+
+  it('setInfluenceAmount and setInfluenceMask validate and are no-ops when unchanged', () => {
+    const { store, mel } = setup();
+    const st = store.doc.layers[0].states[0].id;
+    expect(store.dispatch('setInfluenceAmount', { layer: mel, state: st, amount: 0.4 })).toBe(true);
+    expect(store.doc.layers[0].states[0].influenceAmount).toBe(0.4);
+    expect(store.dispatch('setInfluenceAmount', { layer: mel, state: st, amount: 0.4 })).toBe(false);
+    expect(() => store.dispatch('setInfluenceAmount', { layer: mel, state: st, amount: 1.1 })).toThrow(RangeError);
+    expect(() => store.dispatch('setInfluenceAmount', { layer: mel, state: 'x', amount: 0.1 })).toThrow(RangeError);
+    expect(() => store.dispatch('setInfluenceMask', { layer: mel, mask: 3 })).toThrow(/no Influence/);
+    store.dispatch('setInfluence', { layer: mel, influence: influence() });
+    expect(store.dispatch('setInfluenceMask', { layer: mel, mask: 3 })).toBe(true);
+    expect(store.doc.layers[0].influence!.mask).toBe(3);
+    expect(() => store.dispatch('setInfluenceMask', { layer: mel, mask: 99 })).toThrow(RangeError);
+  });
+
+  it('commitInfluence blends per masked group, then clears the Influence and the amount', () => {
+    const { store, mel } = setup();
+    const layer0 = store.doc.layers[0];
+    const st = layer0.states[0];
+    const base = ramp((i) => (i % 10) / 10);
+    store.dispatch('setState', { layer: mel, id: st.id, base });
+    store.dispatch('setInfluence', { layer: mel, influence: influence({ target: ramp(() => 1), mask: 1 | 4 }) }); // tone and motion
+    store.dispatch('setInfluenceAmount', { layer: mel, state: st.id, amount: 0.5 });
+    store.dispatch('commitInfluence', { layer: mel, state: st.id });
+    const after = store.doc.layers[0];
+    expect(after.influence).toBeUndefined();
+    expect(after.states[0].influenceAmount).toBe(0);
+    const bit = { tone: 1, shape: 2, motion: 4, grit: 8, space: 16 } as const;
+    const seen = new Set<string>();
+    after.states[0].base.forEach((v, i) => {
+      const g = DESCS[i].group;
+      seen.add(g);
+      const masked = (1 | 4) & bit[g];
+      expect(v).toBeCloseTo(masked ? 0.5 * base[i] + 0.5 : base[i], 12);
+    });
+    expect(seen.size).toBeGreaterThan(3); // the table really spans several groups
+    store.undo();
+    expect(store.doc.layers[0].influence).toBeTruthy();
+    expect(store.doc.layers[0].states[0].base).toEqual(base);
+    expect(() => store.dispatch('commitInfluence', { layer: mel, state: 'x' })).toThrow(RangeError);
+  });
+
+  it('commitInfluence at amount 0 keeps the base, at 1 with a full mask takes the target', () => {
+    const { store, mel } = setup();
+    const st = store.doc.layers[0].states[0];
+    const base = st.base.slice();
+    const target = ramp((i) => ((i * 7) % 11) / 10);
+    store.dispatch('setInfluence', { layer: mel, influence: influence({ target }) });
+    store.dispatch('commitInfluence', { layer: mel, state: st.id });
+    expect(store.doc.layers[0].states[0].base).toEqual(base);
+    store.dispatch('setInfluence', { layer: mel, influence: influence({ target }) });
+    store.dispatch('setInfluenceAmount', { layer: mel, state: st.id, amount: 1 });
+    store.dispatch('commitInfluence', { layer: mel, state: st.id });
+    expect(store.doc.layers[0].states[0].base).toEqual(target);
+  });
+
+  it('commitInfluence needs an Influence', () => {
+    const { store, mel } = setup();
+    expect(() => store.dispatch('commitInfluence', { layer: mel, state: store.doc.layers[0].states[0].id })).toThrow(/no Influence/);
+  });
+});
+
+describe('state commands', () => {
+  it('addState copies a state, names it, caps at 8 and rejects bad ids', () => {
+    const { store, mel } = setup();
+    const first = store.doc.layers[0].states[0];
+    store.dispatch('addState', { layer: mel });
+    const s2 = store.doc.layers[0].states[1];
+    expect(s2.name).toBe('State 2');
+    expect(s2.base).toEqual(first.base);
+    expect(s2.base).not.toBe(first.base);
+    expect(s2.id).not.toBe(first.id);
+    store.dispatch('addState', { layer: mel, from: s2.id, name: 'Wide', id: 'st_fixed' });
+    expect(store.doc.layers[0].states[2]).toMatchObject({ id: 'st_fixed', name: 'Wide' });
+    expect(() => store.dispatch('addState', { layer: mel, id: 'st_fixed' })).toThrow(/already exists/);
+    expect(() => store.dispatch('addState', { layer: mel, from: 'nope' })).toThrow(RangeError);
+    for (let i = 3; i < 8; i++) store.dispatch('addState', { layer: mel });
+    expect(store.doc.layers[0].states).toHaveLength(8);
+    expect(() => store.dispatch('addState', { layer: mel })).toThrow(/too many states/);
+  });
+
+  it('setState changes only what is given and validates ranges', () => {
+    const { store, mel } = setup();
+    const id = store.doc.layers[0].states[0].id;
+    expect(store.dispatch('setState', { layer: mel, id, name: 'Dark', macros: [0, 1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], influenceAmount: 0.25 })).toBe(true);
+    expect(store.doc.layers[0].states[0]).toMatchObject({ name: 'Dark', influenceAmount: 0.25 });
+    expect(store.dispatch('setState', { layer: mel, id, name: 'Dark' })).toBe(false);
+    expect(() => store.dispatch('setState', { layer: mel, id, base: ramp(() => 1.2) })).toThrow(RangeError);
+    expect(() => store.dispatch('setState', { layer: mel, id, base: [0.5] })).toThrow(RangeError);
+    expect(() => store.dispatch('setState', { layer: mel, id, macros: [0.5] })).toThrow(RangeError);
+    expect(() => store.dispatch('setState', { layer: mel, id, influenceAmount: -0.1 })).toThrow(RangeError);
+    expect(() => store.dispatch('setState', { layer: mel, id: 'nope', name: 'x' })).toThrow(RangeError);
+  });
+
+  it('removeState refuses the last state and drops the markers that use it', () => {
+    const { store, sec, mel } = setup();
+    expect(() => store.dispatch('removeState', { layer: mel, id: store.doc.layers[0].states[0].id })).toThrow(/last state/);
+    const a = store.doc.layers[0].states[0].id;
+    store.dispatch('addState', { layer: mel, id: 'b' });
+    store.dispatch('addState', { layer: mel, id: 'c' });
+    for (const [t, state] of [[0, a], [960, 'b'], [1920, 'c'], [2880, 'b']] as const) {
+      store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t, state } });
+    }
+    store.dispatch('removeState', { layer: mel, id: 'b' });
+    expect(store.doc.layers[0].states.map((s) => s.id)).toEqual([a, 'c']);
+    expect((clipOf(store, sec, mel) as MelodyClip).morph.map((m) => m.state)).toEqual([a, 'c']);
+    store.undo();
+    expect((clipOf(store, sec, mel) as MelodyClip).morph).toHaveLength(4);
+    expect(store.doc.layers[0].states).toHaveLength(3);
+  });
+});
+
+describe('morph markers', () => {
+  it('addMorphMarker creates the clip, keeps markers sorted and defaults len and shape', () => {
+    const { store, sec, mel, beat } = setup();
+    const a = store.doc.layers[0].states[0].id;
+    store.dispatch('addState', { layer: mel, id: 'b' });
+    store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t: 1920, state: 'b', lenMs: 500, shape: 'ease' } });
+    store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t: 480.4, state: a } });
+    const c = clipOf(store, sec, mel) as MelodyClip;
+    expect(c.loopLen).toBe(3840 * 2);
+    expect(c.morph).toEqual([{ t: 480, state: a, lenMs: 0, shape: 'line' }, { t: 1920, state: 'b', lenMs: 500, shape: 'ease' }]);
+    store.dispatch('addMorphMarker', { section: sec, layer: beat, marker: { t: 0, state: store.doc.layers[1].states[0].id } });
+    expect(clipOf(store, sec, beat).kind).toBe('beat');
+  });
+
+  it('rejects times outside the loop, unknown states, bad lengths and shapes', () => {
+    const { store, sec, mel } = setup();
+    const a = store.doc.layers[0].states[0].id;
+    const add = (marker: Record<string, unknown>) => () => store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t: 0, state: a, ...marker } as never });
+    expect(add({ t: -1 })).toThrow(RangeError);
+    expect(add({ t: 7680 })).toThrow(RangeError);
+    expect(add({ t: NaN })).toThrow(RangeError);
+    expect(add({ state: 'zzz' })).toThrow(/unknown state/);
+    expect(add({ lenMs: -5 })).toThrow(RangeError);
+    expect(add({ shape: 'zigzag' })).toThrow(RangeError);
+    expect(clipOf(store, sec, mel)).toBeUndefined();
+  });
+
+  it('moveMorphMarker changes fields, re-sorts on t, and removeMorphMarker removes', () => {
+    const { store, sec, mel } = setup();
+    const a = store.doc.layers[0].states[0].id;
+    store.dispatch('addState', { layer: mel, id: 'b' });
+    store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t: 100, state: a } });
+    store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t: 200, state: 'b' } });
+    store.dispatch('moveMorphMarker', { section: sec, layer: mel, index: 0, t: 300, lenMs: 250, shape: 'wobble' });
+    expect((clipOf(store, sec, mel) as MelodyClip).morph).toEqual([
+      { t: 200, state: 'b', lenMs: 0, shape: 'line' }, { t: 300, state: a, lenMs: 250, shape: 'wobble' }]);
+    expect(store.dispatch('moveMorphMarker', { section: sec, layer: mel, index: 0, t: 200 })).toBe(false);
+    store.dispatch('moveMorphMarker', { section: sec, layer: mel, index: 0, state: a });
+    expect((clipOf(store, sec, mel) as MelodyClip).morph[0].state).toBe(a);
+    expect(() => store.dispatch('moveMorphMarker', { section: sec, layer: mel, index: 2, t: 1 })).toThrow(RangeError);
+    expect(() => store.dispatch('moveMorphMarker', { section: sec, layer: mel, index: 0, t: 99999 })).toThrow(RangeError);
+    expect(() => store.dispatch('moveMorphMarker', { section: sec, layer: mel, index: 0, state: 'q' })).toThrow(RangeError);
+    store.dispatch('removeMorphMarker', { section: sec, layer: mel, index: 1 });
+    expect((clipOf(store, sec, mel) as MelodyClip).morph).toHaveLength(1);
+    expect(() => store.dispatch('removeMorphMarker', { section: sec, layer: mel, index: 1 })).toThrow(RangeError);
+    expect(() => store.dispatch('removeMorphMarker', { section: sec, layer: store.doc.layers[1].id, index: 0 })).toThrow(/no clip/);
+  });
+
+  it('feel changes convert marker times, and a shorter loop wraps them', () => {
+    const { store, sec, mel } = setup();
+    const a = store.doc.layers[0].states[0].id;
+    store.dispatch('addMorphMarker', { section: sec, layer: mel, marker: { t: 1920, state: a, lenMs: 300 } }); // one beat * 2 at 100 bpm
+    store.dispatch('setSection', { id: sec, feel: 'free' });
+    const secs = 1920 * (60 / (100 * 960));
+    expect((clipOf(store, sec, mel) as MelodyClip).morph[0].t).toBeCloseTo(secs, 9);
+    expect((clipOf(store, sec, mel) as MelodyClip).morph[0].lenMs).toBe(300); // milliseconds do not follow the feel
+    store.dispatch('setSection', { id: sec, feel: 'grid' });
+    expect((clipOf(store, sec, mel) as MelodyClip).morph[0].t).toBe(1920);
+    store.dispatch('setClipFields', { section: sec, layer: mel, loopLen: 1000 });
+    expect((clipOf(store, sec, mel) as MelodyClip).morph[0].t).toBe(920);
+  });
+
+  it('setClip fills a missing morph lane and rejects markers with unknown states', () => {
+    const { store, sec, mel } = setup();
+    const old = { kind: 'melody', take: '', takes: [], loopLen: 1920, timeSnap: 0, notes: [], warp: [] } as unknown as MelodyClip;
+    store.dispatch('setClip', { section: sec, layer: mel, clip: old });
+    expect((clipOf(store, sec, mel) as MelodyClip).morph).toEqual([]);
+    const bad: MelodyClip = { ...old, morph: [{ t: 0, state: 'ghost', lenMs: 0, shape: 'line' }] };
+    expect(() => store.dispatch('setClip', { section: sec, layer: mel, clip: bad })).toThrow(/unknown state/);
+  });
+});
+
+describe('setKitSlot', () => {
+  it('replaces one slot of a beat layer and validates', () => {
+    const { store, mel, beat } = setup();
+    const params = ramp((i) => i / 100);
+    expect(store.dispatch('setKitSlot', { layer: beat, slot: 2, params, cents: 3600 })).toBe(true);
+    expect(store.doc.layers[1].kit[2]).toEqual({ params, cents: 3600 });
+    expect(store.doc.layers[1].kit[1]).toBe(store.doc.layers[1].kit[1]);
+    expect(store.dispatch('setKitSlot', { layer: beat, slot: 2, params, cents: 3600 })).toBe(false);
+    expect(() => store.dispatch('setKitSlot', { layer: beat, slot: 4, params, cents: 0 })).toThrow(RangeError);
+    expect(() => store.dispatch('setKitSlot', { layer: beat, slot: 0, params: ramp(() => 2), cents: 0 })).toThrow(RangeError);
+    expect(() => store.dispatch('setKitSlot', { layer: beat, slot: 0, params, cents: -1 })).toThrow(RangeError);
+    expect(() => store.dispatch('setKitSlot', { layer: mel, slot: 0, params, cents: 0 })).toThrow(/not a beat layer/);
+    store.undo();
+    expect(store.doc.layers[1].kit[2].cents).not.toBe(3600);
+  });
+});
+
+describe('newProject (M4)', () => {
+  it('has one state per layer, empty morph lanes and the current schema', () => {
+    const p = newProject('x');
+    expect(p.schema).toBe(2);
+    for (const l of p.layers) expect(l.states).toHaveLength(1);
+    expect(commands.addNote(p, { section: p.sections[0].id, layer: p.layers[0].id, note: note('a', 0) })[0]).toMatchObject({ value: { morph: [] } });
   });
 });

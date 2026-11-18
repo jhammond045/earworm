@@ -94,7 +94,7 @@ describe('placeTake', () => {
   });
 
   it('keeps the existing loop length, snap and take stack', () => {
-    const old: MelodyClip = { kind: 'melody', take: 'old', takes: ['old'], loopLen: 1920, timeSnap: 120, notes: [], warp: [] };
+    const old: MelodyClip = { kind: 'melody', take: 'old', takes: ['old'], loopLen: 1920, timeSnap: 120, morph: [], notes: [], warp: [] };
     const c = placeTake(args(doc('grid', { m: old }), { notes: [note(0.5, 0.1)] })) as MelodyClip;
     expect(c.loopLen).toBe(1920);
     expect(c.timeSnap).toBe(120);

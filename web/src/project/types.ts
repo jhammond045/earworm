@@ -10,10 +10,13 @@
 //   seconds to clip time.
 // - Parameter sets are 96 normalized values (gen/params.ts order).
 
-export const SCHEMA = 1;
+/** 2: clips carry a morph lane (M4). Older documents are upgraded by migrate.ts. */
+export const SCHEMA = 2;
 export const PPQ = 960;
 export const MAX_LAYERS = 8;
 export const KIT_SLOTS = 4;
+/** Sound states per layer (matches the engine's MAX_STATES). */
+export const MAX_STATES = 8;
 
 export type Ticks = number;
 export type Seconds = number;
@@ -75,7 +78,7 @@ export interface KitSlot {
   cents: number;
 }
 
-/** A sound state (TDD State). M3 uses states[0] only; M4 adds the morph lane. */
+/** A sound state (TDD State). More than one state is blended by the morph lane (M4). */
 export interface State {
   id: string;
   name: string;
@@ -84,6 +87,23 @@ export interface State {
   /** 8 macro positions, 0.5 neutral. */
   macros: number[];
   influenceAmount: number;
+}
+
+/** Sound Influence (TDD "Sound Influence"): a target parameter set the layer's base is blended toward. */
+export interface Influence {
+  /** 96 normalized values. */
+  target: number[];
+  /** One bit per aspect group (tone 1, shape 2, motion 4, grit 8, space 16); 0x1f is all. */
+  mask: number;
+  /** The captured sound: mono Float32 blob, id starts with "grain-". */
+  source: BlobRef;
+  sourceName: string;
+  /** Sample rate of the source blob. */
+  sourceRate: number;
+  /** Steady region of the source (sample indices) and its pitch; null: no grain source. */
+  grain: { start: number; end: number; refCents: number | null } | null;
+  /** Play the source itself through the grain cloud. */
+  useSound: boolean;
 }
 
 export interface Layer {
@@ -102,6 +122,8 @@ export interface Layer {
   follow: number;
   /** Beat layers: four slots. Empty for other kinds. */
   kit: KitSlot[];
+  /** Set while a match is applied and not yet committed. */
+  influence?: Influence;
 }
 
 export interface Note {
@@ -130,6 +152,19 @@ export interface Hit {
 
 export interface WarpAnchor { takeSec: Seconds; clipT: number }
 
+export type MorphShape = 'line' | 'ease' | 'late' | 'step' | 'wobble';
+export const MORPH_SHAPES: readonly MorphShape[] = ['line', 'ease', 'late', 'step', 'wobble'];
+
+/** From position `t` in the clip the layer moves to `state` over `lenMs`. Sorted by t. */
+export interface MorphMarker {
+  /** Section units, inside [0, loopLen). */
+  t: number;
+  /** State id of the layer. */
+  state: string;
+  lenMs: number;
+  shape: MorphShape;
+}
+
 export interface ClipBase {
   /** Current take id, or '' for a clip with no take (drawn notes only). */
   take: string;
@@ -139,6 +174,8 @@ export interface ClipBase {
   loopLen: number;
   /** Grid snap for edits in section units (0 = off). */
   timeSnap: number;
+  /** The morph lane, sorted by t. */
+  morph: MorphMarker[];
 }
 
 export interface MelodyClip extends ClipBase {

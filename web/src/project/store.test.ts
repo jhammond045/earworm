@@ -95,7 +95,7 @@ function randomAction(s: Store, r: () => number, n: number): void {
   const time = () => (grid ? Math.floor(r() * len) : r() * len);
   const items = clip ? (clip.kind === 'beat' ? clip.hits : clip.notes) : [];
   const some = () => items.filter(() => r() < 0.5).map((x) => x.id);
-  const k = Math.floor(r() * 24);
+  const k = Math.floor(r() * 34);
   switch (k) {
     case 0: d('renameProject', { name: `p${n}` }); break;
     case 1: if (secs.length < 6) d('addSection', { after: r() < 0.5 ? sec.id : undefined, feel: r() < 0.5 ? 'grid' : 'free', beats: 4 + Math.floor(r() * 8), seconds: 2 + r() * 6, bpm: 60 + Math.floor(r() * 100) }); break;
@@ -115,8 +115,8 @@ function randomAction(s: Store, r: () => number, n: number): void {
         run('addTake', { take: t });
         const ln = 960 * (1 + Math.floor(r() * 4));
         run('setClip', { section: sec.id, layer: layer.id, clip: layer.kind === 'beat'
-          ? { kind: 'beat', take: id, takes: [id], loopLen: ln, timeSnap: 0, hits: [{ id: `h${n}`, t: 5 * ln, dur: 100, slot: 1, strength: 0.5, shape } as Hit] }
-          : { kind: 'melody', take: id, takes: [id], loopLen: ln, timeSnap: 0, notes: [{ id: `n${n}`, t: 5 * ln + 7, dur: 0, cents: 5000, hard: 0.5 }], warp: [] } });
+          ? { kind: 'beat', take: id, takes: [id], loopLen: ln, timeSnap: 0, morph: [], hits: [{ id: `h${n}`, t: 5 * ln, dur: 100, slot: 1, strength: 0.5, shape } as Hit] }
+          : { kind: 'melody', take: id, takes: [id], loopLen: ln, timeSnap: 0, morph: [], notes: [{ id: `n${n}`, t: 5 * ln + 7, dur: 0, cents: 5000, hard: 0.5 }], warp: [] } });
       });
       break;
     }
@@ -138,6 +138,16 @@ function randomAction(s: Store, r: () => number, n: number): void {
     case 19: if (clip && clip.kind === 'beat' && clip.hits.length) d('setHitSlot', { section: sec.id, layer: layer.id, ids: some(), slot: Math.floor(r() * 4) }); break;
     case 20: if (clip) d('quantize', { section: sec.id, layer: layer.id, grid: grid ? 240 : 0.25 }); break;
     case 21: if (clip && clip.takes.length) d('selectTake', { section: sec.id, layer: layer.id, take: pick(clip.takes) }); break;
+    case 23: if (layer.states.length < 8) d('addState', { layer: layer.id, from: pick(layer.states).id, name: `S${n}` }); break;
+    case 24: d('setState', { layer: layer.id, id: pick(layer.states).id, base: Array.from({ length: 96 }, () => r()), macros: Array.from({ length: 8 }, () => r()), influenceAmount: r() }); break;
+    case 25: if (layer.states.length > 1) d('removeState', { layer: layer.id, id: pick(layer.states).id }); break;
+    case 26: case 27: d('addMorphMarker', { section: sec.id, layer: layer.id, marker: { t: time(), state: pick(layer.states).id, lenMs: r() * 800, shape: pick(['line', 'ease', 'late', 'step', 'wobble'] as const) } }); break;
+    case 28: if (clip && clip.morph.length) d('moveMorphMarker', { section: sec.id, layer: layer.id, index: Math.floor(r() * clip.morph.length), t: time(), state: pick(layer.states).id }); break;
+    case 29: if (clip && clip.morph.length) d('removeMorphMarker', { section: sec.id, layer: layer.id, index: Math.floor(r() * clip.morph.length) }); break;
+    case 30: d('setInfluence', { layer: layer.id, influence: r() < 0.2 ? null : { target: Array.from({ length: 96 }, () => r()), mask: Math.floor(r() * 32), source: `grain-${n}`, sourceName: `src${n}`, sourceRate: 16000, grain: r() < 0.5 ? null : { start: 0, end: 1000, refCents: r() < 0.5 ? null : 6000 }, useSound: r() < 0.5 } }); break;
+    case 31: d('setInfluenceAmount', { layer: layer.id, state: pick(layer.states).id, amount: r() }); break;
+    case 32: if (layer.influence) { if (r() < 0.5) d('commitInfluence', { layer: layer.id, state: pick(layer.states).id }); else d('setInfluenceMask', { layer: layer.id, mask: Math.floor(r() * 32) }); } break;
+    case 33: if (layer.kind === 'beat') d('setKitSlot', { layer: layer.id, slot: Math.floor(r() * 4), params: Array.from({ length: 96 }, () => r()), cents: r() * 9000 }); break;
     case 22: s.batch('two', (run) => { run('renameProject', { name: `b${n}` }); run('setSection', { id: sec.id, name: `c${n}` }); }); break;
     default: d('setLayer', { id: layer.id, name: `L${n}`, color: Math.floor(r() * 0xffffff) });
   }
@@ -169,6 +179,13 @@ describe('random commands', () => {
           expect(it.t).toBeLessThan(clip.loopLen);
           expect(it.dur).toBeGreaterThan(0);
         }
+        const ids = new Set(end.layers.flatMap((l) => l.states.map((st) => st.id)));
+        clip.morph.forEach((m, i) => {
+          expect(m.t).toBeGreaterThanOrEqual(0);
+          expect(m.t).toBeLessThan(clip.loopLen);
+          expect(ids.has(m.state)).toBe(true);
+          if (i > 0) expect(m.t).toBeGreaterThanOrEqual(clip.morph[i - 1].t);
+        });
       }
     }
     expect(end.layers.length).toBeLessThanOrEqual(8);
