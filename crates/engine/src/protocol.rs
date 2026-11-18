@@ -39,17 +39,16 @@ pub const M_OPEN: usize = 9;
 pub const M_BREATH: usize = 10;
 pub const M_HARD: usize = 11;
 pub const M_VOICING: usize = 12;
-pub const M_BLEED: usize = 13;
-pub const M_ONSET: usize = 14;
-pub const M_LIVE: usize = 15;
-pub const M_F0: usize = 16; // carrier f0 in Hz
-pub const M_VOICED_MIX: usize = 17; // 1 = partials, 0 = noise
-pub const M_ACTIVE_PARTIALS: usize = 18;
-pub const M_N_BANDS: usize = 19;
-pub const M_VOWEL: usize = 20; // 24 slots: live vowel shape dB
-pub const M_TONE_EFF: usize = 44; // 24 slots: effective tone bands dB
-pub const M_DELAY_LEVEL: usize = 68; // nominal analysis delay, s
-pub const M_DELAY_PITCH: usize = 69;
+pub const M_ONSET: usize = 13;
+pub const M_LIVE: usize = 14;
+pub const M_F0: usize = 15; // carrier f0 in Hz
+pub const M_VOICED_MIX: usize = 16; // 1 = partials, 0 = noise
+pub const M_ACTIVE_PARTIALS: usize = 17;
+pub const M_N_BANDS: usize = 18;
+pub const M_VOWEL: usize = 19; // 24 slots: live vowel shape dB
+pub const M_TONE_EFF: usize = 43; // 24 slots: effective tone bands dB
+pub const M_DELAY_LEVEL: usize = 67; // nominal analysis delay, s
+pub const M_DELAY_PITCH: usize = 68;
 pub const METER_LEN: usize = 72;
 
 /// Table returned by `ew_buffers`: byte offsets into wasm memory and sizes,

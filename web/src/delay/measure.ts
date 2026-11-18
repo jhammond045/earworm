@@ -263,12 +263,9 @@ export function synthHum(
   return { samples, burstStarts, f0 };
 }
 
-/** Engine settings for the internal delay test. Level is at its minimum so
- *  the engine's speaker-bleed check cannot fire: that check mutes the engine
- *  when its output is louder than the mic and the two envelopes move
- *  together, which is always true here (the engine follows a quiet hum from
- *  the speakers) even though the engine itself is never played. Delay is
- *  read from onsets and pitch, which do not depend on level. */
+/** Engine settings for the internal delay test. Level is at its minimum
+ *  because the engine itself is never played here. Delay is read from onsets
+ *  and pitch, which do not depend on level. */
 export const ENGINE_TEST_PARAMS: [name: string, value: number][] = [
   ['depth.mouth', 0], ['tune.snap', 0], ['depth.loud', 1], ['harm_mix', 1], ['noise_mix', 0], ['level', -60],
 ];

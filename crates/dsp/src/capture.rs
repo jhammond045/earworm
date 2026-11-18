@@ -45,8 +45,6 @@ pub struct Gesture {
     /// Vowel shape in dB: loudness and the singer's long-term average removed
     /// (requirements 3, 4, 5). Only `n_bands` entries are meaningful.
     pub bands_db: [f32; MAX_BANDS],
-    /// Speaker bleed detected (requirement 10): the engine should mute.
-    pub bleed: bool,
     /// Input level in dBFS (for meters).
     pub input_db: f32,
     /// Current adaptive noise floor in dBFS (for meters).
@@ -110,7 +108,6 @@ const PERSIST_HOPS: u32 = 6; // 30 ms
 const FLOOR_MIN_DB: f32 = -80.0;
 const FLOOR_START_DB: f32 = -60.0;
 const ABS_OPEN_DB: f32 = -70.0;
-const BLEED_FRAMES: usize = 20; // 200 ms of 10 ms frames
 
 fn db_of_power(p: f32) -> f32 {
     10.0 * p.max(1e-12).log10()
@@ -136,9 +133,6 @@ pub struct LiveTier {
     // Per-tick sample accumulators.
     zc_count: u32,
     last_sign: bool,
-    out_e: f32,
-    mic_e: f32,
-    acc_n: u32,
 
     // Gate, floor, ceiling.
     floor_db: f32,
@@ -185,14 +179,6 @@ pub struct LiveTier {
     hard_stored: f32,
     onset_max: f32,
 
-    // Bleed detector.
-    out_hist: [f32; BLEED_FRAMES],
-    mic_hist: [f32; BLEED_FRAMES],
-    bleed_n: usize,
-    bleed_pos: usize,
-    bleed_streak: u32,
-    bleed_hold: u32,
-
     // Frames.
     ring: [Frame; RING],
     ring_head: usize,
@@ -226,7 +212,6 @@ impl LiveTier {
             gate: false,
             gate_env: 0.0,
             bands_db: [0.0; MAX_BANDS],
-            bleed: false,
             input_db: -120.0,
             floor_db: FLOOR_START_DB,
         };
@@ -247,9 +232,6 @@ impl LiveTier {
             tick_in_frame: 0,
             zc_count: 0,
             last_sign: false,
-            out_e: 0.0,
-            mic_e: 0.0,
-            acc_n: 0,
             floor_db: FLOOR_START_DB,
             ceil_db: FLOOR_START_DB + 30.0,
             gate_open: false,
@@ -287,12 +269,6 @@ impl LiveTier {
             refine_max_slope: 0.0,
             hard_stored: 0.0,
             onset_max: 0.0,
-            out_hist: [0.0; BLEED_FRAMES],
-            mic_hist: [0.0; BLEED_FRAMES],
-            bleed_n: 0,
-            bleed_pos: 0,
-            bleed_streak: 0,
-            bleed_hold: 0,
             ring: [silent_frame(); RING],
             ring_head: 0,
         }
@@ -303,23 +279,17 @@ impl LiveTier {
     }
 
     /// Process one block of mic input. `input` is high-passed in place (the
-    /// caller then copies it to the mic ring). `engine_out` is the engine's
-    /// previous output block (same length or empty), used only by the bleed
-    /// detector. Frames completed during the block are pushed to `sink`
-    /// (the caller clears it).
-    pub fn process(&mut self, input: &mut [f32], engine_out: &[f32], sink: &mut FrameSink) {
+    /// caller then copies it to the mic ring). Frames completed during the
+    /// block are pushed to `sink` (the caller clears it).
+    pub fn process(&mut self, input: &mut [f32], sink: &mut FrameSink) {
         self.gesture.n_pitch_updates = 0;
         self.gesture.onset = 0.0;
         if input.is_empty() {
             return;
         }
-        let have_out = !engine_out.is_empty();
-        if !have_out {
-            self.reset_bleed();
-        }
 
         let mut sum_sq = 0.0f32;
-        for (i, s) in input.iter_mut().enumerate() {
+        for s in input.iter_mut() {
             let raw = if s.is_finite() { *s } else { 0.0 };
             let x = self.hp.process(raw);
             *s = x;
@@ -339,13 +309,6 @@ impl LiveTier {
                 self.last_sign = sign;
             }
 
-            if have_out {
-                let o = engine_out.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-                self.out_e += o * o;
-                self.mic_e += x * x;
-                self.acc_n += 1;
-            }
-
             // Pitch path.
             if let Some(d) = self.dec.process(x) {
                 if let Some(est) = self.yin.push(d) {
@@ -356,7 +319,7 @@ impl LiveTier {
             self.tick_acc += 1.0;
             if self.tick_acc >= self.tick_len {
                 self.tick_acc -= self.tick_len;
-                self.tick(have_out, sink);
+                self.tick(sink);
             }
         }
         self.gesture.input_db = db_of_power(sum_sq / input.len() as f32);
@@ -380,17 +343,6 @@ impl LiveTier {
     /// Nominal analysis delays (constants derived from filter/window sizes).
     pub fn delays(&self) -> Delays {
         Delays { level_s: LEVEL_DELAY_S, pitch_s: self.pitch_delay_s }
-    }
-
-    fn reset_bleed(&mut self) {
-        self.bleed_n = 0;
-        self.bleed_pos = 0;
-        self.bleed_streak = 0;
-        self.bleed_hold = 0;
-        self.gesture.bleed = false;
-        self.out_e = 0.0;
-        self.mic_e = 0.0;
-        self.acc_n = 0;
     }
 
     /// Handle one YIN estimate (every ~5 ms). Continuity guard, requirement 8:
@@ -477,7 +429,7 @@ impl LiveTier {
     }
 
     /// One 2.5 ms feature update.
-    fn tick(&mut self, have_out: bool, sink: &mut FrameSink) {
+    fn tick(&mut self, sink: &mut FrameSink) {
         let n = self.n_bands;
         let mut lv = [0.0f32; MAX_BANDS];
         self.bank.levels_db(&mut lv[..n]);
@@ -675,56 +627,12 @@ impl LiveTier {
         self.tick_in_frame += 1;
         if self.tick_in_frame >= TICKS_PER_FRAME {
             self.tick_in_frame = 0;
-            self.emit_frame(have_out, total_db, sink);
+            self.emit_frame(sink);
         }
     }
 
-    fn emit_frame(&mut self, have_out: bool, total_db: f32, sink: &mut FrameSink) {
+    fn emit_frame(&mut self, sink: &mut FrameSink) {
         let n = self.n_bands;
-        let _ = total_db;
-
-        // Bleed detection runs per frame on 10 ms envelopes.
-        if have_out && self.acc_n > 0 {
-            let cnt = self.acc_n as f32;
-            let out_db = db_of_power(self.out_e / cnt);
-            let mic_db = db_of_power(self.mic_e / cnt);
-            self.out_e = 0.0;
-            self.mic_e = 0.0;
-            self.acc_n = 0;
-            self.out_hist[self.bleed_pos] = out_db;
-            self.mic_hist[self.bleed_pos] = mic_db;
-            self.bleed_pos = (self.bleed_pos + 1) % BLEED_FRAMES;
-            self.bleed_n = (self.bleed_n + 1).min(BLEED_FRAMES);
-            if self.bleed_n == BLEED_FRAMES {
-                let m = BLEED_FRAMES as f32;
-                let mo = self.out_hist.iter().sum::<f32>() / m;
-                let mm = self.mic_hist.iter().sum::<f32>() / m;
-                let (mut so, mut sm, mut sx) = (0.0f32, 0.0f32, 0.0f32);
-                for i in 0..BLEED_FRAMES {
-                    let a = self.out_hist[i] - mo;
-                    let b = self.mic_hist[i] - mm;
-                    so += a * a;
-                    sm += b * b;
-                    sx += a * b;
-                }
-                let corr = if so > 20.0 && sm > 20.0 { sx / (so * sm).sqrt() } else { 0.0 };
-                // Conservative: engine loud, envelopes move together, and
-                // the mic is quieter than the engine (a speaker heard
-                // through the air, not a singer shouting over it).
-                if mo > -45.0 && corr > 0.85 && mm < mo - 3.0 && self.gate_open {
-                    self.bleed_streak += 1;
-                } else {
-                    self.bleed_streak = 0;
-                }
-                if self.bleed_streak >= 10 {
-                    self.bleed_hold = 100; // 1 s
-                }
-            }
-            if self.bleed_hold > 0 {
-                self.bleed_hold -= 1;
-            }
-            self.gesture.bleed = self.bleed_hold > 0;
-        }
 
         // Level group snapshot goes into the ring; the pitch group is
         // current. Requirement 11: stored frames shift the level group by
@@ -761,7 +669,7 @@ pub fn frames_from_signal(signal: &[f32], sample_rate: f32, n_bands: usize) -> V
         let b = &mut buf[..chunk.len()];
         b.copy_from_slice(chunk);
         sink.clear();
-        tier.process(b, &[], &mut sink);
+        tier.process(b, &mut sink);
         out.extend_from_slice(sink.frames());
     }
     out
@@ -824,11 +732,10 @@ mod tests {
         let mut buf = [0.0f32; 128];
         for _ in 0..200 {
             sink.clear();
-            t.process(&mut buf, &[], &mut sink);
+            t.process(&mut buf, &mut sink);
         }
         assert!(!t.gesture().gate);
         assert!(t.gesture().gate_env < 0.01);
-        assert!(!t.gesture().bleed);
     }
 
     #[test]
@@ -837,7 +744,7 @@ mod tests {
         let mut sink = FrameSink::with_capacity(8);
         let mut buf = [f32::NAN; 128];
         buf[3] = f32::INFINITY;
-        t.process(&mut buf, &[], &mut sink);
+        t.process(&mut buf, &mut sink);
         assert!(buf.iter().all(|x| x.is_finite()));
     }
 
@@ -986,7 +893,7 @@ mod tests {
             let b = &mut buf[..ch.len()];
             b.copy_from_slice(ch);
             sink.clear();
-            t.process(b, &[], &mut sink);
+            t.process(b, &mut sink);
             for fr in sink.frames() {
                 assert_eq!(fr.len(), frame::MAX_FRAME_LEN);
             }
@@ -1020,43 +927,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_engine_out_means_no_bleed() {
-        let mut t = LiveTier::new(SR, 16);
-        let mut sink = FrameSink::with_capacity(8);
-        let sig = voice(secs(1.0), SR, 0.1, |_| 220.0, &AH);
-        for ch in sig.chunks(128) {
-            let mut b = ch.to_vec();
-            sink.clear();
-            t.process(&mut b, &[], &mut sink);
-            assert!(!t.gesture().bleed);
-        }
-    }
-
-    #[test]
-    fn bleed_is_detected_for_a_quiet_echo_of_the_engine() {
-        // Engine output: noise modulated by a slow irregular envelope.
-        // Mic: the same envelope, 20 dB down, with no voice of its own.
-        let mut nz = Noise::new(11);
-        let n = secs(2.0);
-        let env = |i: usize| {
-            let t = i as f32 / SR;
-            0.5 + 0.5 * (t * 7.0).sin() * (t * 3.1).cos()
-        };
-        let out: Vec<f32> = (0..n).map(|i| 0.5 * env(i) * nz.next()).collect();
-        let mic: Vec<f32> = (0..n).map(|i| 0.05 * env(i) * nz.next()).collect();
-        let mut t = LiveTier::new(SR, 16);
-        let mut sink = FrameSink::with_capacity(8);
-        let mut seen = false;
-        for (m, o) in mic.chunks(128).zip(out.chunks(128)) {
-            let mut b = m.to_vec();
-            sink.clear();
-            t.process(&mut b, o, &mut sink);
-            seen |= t.gesture().bleed;
-        }
-        assert!(seen);
-    }
-
     /// Measures the live tier's real delays and checks them against the TDD
     /// budget (pitch under 25 ms, level under 10 ms).
     #[test]
@@ -1076,7 +946,7 @@ mod tests {
         for ch in sine.chunks(block) {
             let mut b = ch.to_vec();
             sink.clear();
-            t.process(&mut b, &[], &mut sink);
+            t.process(&mut b, &mut sink);
             pos += ch.len();
             let g = t.gesture();
             if pitch_delay.is_none() && pos > t_on && g.pitch_cents.is_finite() && cents_err(g.pitch_cents, 440.0) < 20.0 {
@@ -1096,7 +966,7 @@ mod tests {
         for ch in step.chunks(block) {
             let mut b = ch.to_vec();
             sink.clear();
-            t.process(&mut b, &[], &mut sink);
+            t.process(&mut b, &mut sink);
             pos += ch.len();
             settled = t.gesture().loudness;
             if level_delay.is_none() && pos > t_on && settled > 0.5 {
