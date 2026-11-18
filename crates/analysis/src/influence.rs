@@ -24,6 +24,14 @@ pub struct MatchResult {
     pub duration_s: f32,
     pub voiced_fraction: f32,
     pub pitched: bool,
+    /// RMS of the residual (everything between the partials) over the RMS of
+    /// the partials, in the frames near the peak. NaN for unpitched sources.
+    /// `match_full` turns it into harm_mix and noise_mix for the M1 engine.
+    pub noise_to_harm: f32,
+    /// Median number of partials found per loud frame (0 when unpitched).
+    pub partials: f32,
+    /// Median over loud frames of the highest partial found, Hz (0 when unpitched).
+    pub partial_top_hz: f32,
 }
 
 impl MatchResult {
@@ -74,16 +82,32 @@ const FFT_N: usize = 4096;
 const HOP_S: f32 = 0.01;
 const MAX_SPEC_FRAMES: usize = 120;
 const MAX_PARTIALS: usize = 64;
-const VOICED_CONF: f32 = 0.7;
+pub(crate) const VOICED_CONF: f32 = 0.7;
 const BELL_SIGMA_OCT: f32 = 0.1416; // 1/3 octave FWHM
 const BAND_CLAMP_DB: f32 = 40.0;
 
 fn default_result() -> MatchResult {
-    MatchResult { params: ParamSet::default(), pitch_cents: 4800.0, duration_s: 0.2, voiced_fraction: 0.0, pitched: false }
+    MatchResult {
+        params: ParamSet::default(),
+        pitch_cents: 4800.0,
+        duration_s: 0.2,
+        voiced_fraction: 0.0,
+        pitched: false,
+        noise_to_harm: f32::NAN,
+        partials: 0.0,
+        partial_top_hz: 0.0,
+    }
 }
 
 /// Measure `signal` and return the target parameter set.
 pub fn instant_match(signal: &[f32], sample_rate: f32, n_bands: usize) -> MatchResult {
+    instant_inner(signal, sample_rate, n_bands, false)
+}
+
+/// The measurement behind `instant_match` and `match_full`. `decaying` turns
+/// the decay-slope row (damp) on for a sound that has a plateau, as when the
+/// audio is one hit for a kit slot.
+pub(crate) fn instant_inner(signal: &[f32], sample_rate: f32, n_bands: usize, decaying: bool) -> MatchResult {
     let mut res = default_result();
     if !(sample_rate.is_finite() && (4000.0..=400_000.0).contains(&sample_rate)) {
         return res;
@@ -190,6 +214,7 @@ pub fn instant_match(signal: &[f32], sample_rate: f32, n_bands: usize) -> MatchR
 
     // Harmonic structure of the sound: modal table and stretch.
     let (mut modal, mut stretch) = (0.0f32, 0.0f32);
+    let mut tau1: Option<f32> = None;
     if pitched {
         let ref_f = idx.iter().enumerate().filter(|(fi, _)| tone_frame[*fi]).map(|(fi, _)| fi).max_by(|&a, &b| {
             let ea: f32 = mags[a].iter().map(|v| v * v).sum();
@@ -287,6 +312,14 @@ pub fn instant_match(signal: &[f32], sample_rate: f32, n_bands: usize) -> MatchR
         let (h, nz) = if ratio < 1.0 { (1.0, ratio) } else { (1.0 / ratio, 1.0) };
         ps.scalars[HARM_MIX] = clamp(HARM_MIX, h);
         ps.scalars[NOISE_MIX] = clamp(NOISE_MIX, nz);
+        res.noise_to_harm = ratio;
+        let mut counts: Vec<usize> = frame_parts.iter().enumerate().filter(|(fi, _)| tone_frame[*fi]).map(|(_, q)| q.len()).collect();
+        counts.sort_unstable();
+        res.partials = counts.get(counts.len() / 2).copied().unwrap_or(0) as f32;
+        let mut tops: Vec<f32> = frame_parts.iter().enumerate().filter(|(fi, q)| tone_frame[*fi] && !q.is_empty()).map(|(_, q)| q.iter().map(|x| x.f).fold(0.0f32, f32::max)).collect();
+        tops.sort_by(|a, b| a.total_cmp(b));
+        res.partial_top_hz = tops.get(tops.len() / 2).copied().unwrap_or(0.0);
+        let ps = &mut res.params;
         ps.scalars[MODAL] = clamp(MODAL, modal);
 
         // Stretch: harmonic sounds get a per-frame fit of f_k^2/k^2 against k^2;
@@ -438,7 +471,7 @@ pub fn instant_match(signal: &[f32], sample_rate: f32, n_bands: usize) -> MatchR
         }
 
         // damp from how fast each partial dies against its ratio.
-        if env.sustain < 0.3 {
+        if env.sustain < 0.3 || decaying {
             let mut series: Vec<Vec<(f32, f32)>> = vec![Vec::new(); MAX_PARTIALS + 1];
             for (fi, parts) in frame_parts.iter().enumerate() {
                 let t = (idx[fi] as f32 + 0.5) * hop_s;
@@ -463,8 +496,12 @@ pub fn instant_match(signal: &[f32], sample_rate: f32, n_bands: usize) -> MatchR
             if pts.len() >= 3 {
                 let spread = pts.iter().map(|q| q.0).fold(f32::MIN, f32::max) - pts.iter().map(|q| q.0).fold(f32::MAX, f32::min);
                 if spread > 0.5 {
-                    let (_, slope) = line_fit(pts.iter().copied());
+                    let (icpt, slope) = line_fit(pts.iter().copied());
                     ps.scalars[DAMP] = clamp(DAMP, -slope / 2.0);
+                    // The Klont's partial k decays with decay * ratio^(-2 damp),
+                    // so env.decay is the fundamental's own time constant (the
+                    // fit's value at ratio 1), not that of the summed loudness.
+                    tau1 = Some(icpt.exp());
                 }
             }
         }
@@ -491,7 +528,7 @@ pub fn instant_match(signal: &[f32], sample_rate: f32, n_bands: usize) -> MatchR
     let ps = &mut res.params;
     ps.scalars[ENV_ATTACK] = clamp(ENV_ATTACK, env.attack);
     ps.scalars[ENV_HOLD] = clamp(ENV_HOLD, env.hold);
-    ps.scalars[ENV_DECAY] = clamp(ENV_DECAY, env.decay);
+    ps.scalars[ENV_DECAY] = clamp(ENV_DECAY, tau1.unwrap_or(env.decay));
     ps.scalars[ENV_SUSTAIN] = clamp(ENV_SUSTAIN, env.sustain);
     ps.scalars[ENV_RELEASE] = clamp(ENV_RELEASE, env.release);
     ps.scalars[ENV_NOISE_DECAY] = clamp(ENV_NOISE_DECAY, noise_decay(&resid_series, p, hop_s));
@@ -556,12 +593,22 @@ fn fit_envelope(amp: &[f32], db: &[f32], p: usize, hop_s: f32) -> EnvFit {
     let off = (p + 1..nf).find(|&i| db[i] < -30.0).unwrap_or(nf);
     let duration = (off - onset) as f32 * hop_s;
 
-    let attack = ((rise_cross(&amp[..=p], 0.9 * pk) - rise_cross(&amp[..=p], 0.1 * pk)) * hop_s).max(0.002);
+    // The attack ends where the loudness first reaches 90% of its maximum. A
+    // sustained sound that ripples (tremolo, vibrato) can have its maximum
+    // anywhere, so the decay fit starts there and not at the maximum.
+    let pe = (0..=p).find(|&i| amp[i] >= 0.9 * pk).unwrap_or(p);
+    let attack = ((rise_cross(&amp[..=pe], 0.9 * pk) - rise_cross(&amp[..=pe], 0.1 * pk)) * hop_s).max(0.002);
 
     // Decay to a plateau over the sounding part, fitted on the amplitude.
-    let norm = |range: std::ops::Range<usize>| -> Vec<f32> { amp[range].iter().map(|a| a / pk).collect() };
-    let region_end = off.max(p + 1).min(nf);
-    let mut start = p;
+    let pk_fit = amp[pe].max(1e-9);
+    let norm = |range: std::ops::Range<usize>| -> Vec<f32> { amp[range].iter().map(|a| a / pk_fit).collect() };
+    let mut region_end = off.max(pe + 1).min(nf);
+    // A plateau followed by a release: the decay-to-plateau fit must not see
+    // the release, or it reads the whole thing as one long decay.
+    if let Some(b) = plateau_break(db, pe) {
+        region_end = region_end.min(b + 1).max(pe + 1);
+    }
+    let mut start = pe;
     let mut a = norm(start..region_end);
     let (mut s, mut tau) = fit_decay(&a, hop_s);
     let mut hold = 0.0;
@@ -585,16 +632,19 @@ fn fit_envelope(amp: &[f32], db: &[f32], p: usize, hop_s: f32) -> EnvFit {
 
     let release = if plateau {
         // Loud part ends at the last block within 6 dB of the peak.
-        let r0 = (p..nf).rev().find(|&i| db[i] >= -6.0).unwrap_or(p);
+        // (Within 3 dB of the plateau level, which is under the peak when
+        // the sound decays to its plateau, and -40 dB is taken from there.)
+        let plat_db = 20.0 * sustain.max(1e-3).log10();
+        let r0 = (p..nf).rev().find(|&i| db[i] >= plat_db - 3.0).unwrap_or(p);
         if r0 + 1 >= nf {
             0.15
         } else {
-            let t_end = match (r0..nf).find(|&i| db[i] <= -40.0) {
+            let t_end = match (r0..nf).find(|&i| db[i] <= db[r0] - 40.0) {
                 Some(j) => j as f32,
                 None => {
                     // Not reached before the signal ends: extrapolate the slope so far.
                     let drop = (-db[nf - 1] + db[r0]).max(1.0);
-                    r0 as f32 + (nf - 1 - r0) as f32 * (40.0 + db[r0]) / drop
+                    r0 as f32 + (nf - 1 - r0) as f32 * 40.0 / drop
                 }
             };
             (t_end - r0 as f32) * hop_s
@@ -607,6 +657,41 @@ fn fit_envelope(amp: &[f32], db: &[f32], p: usize, hop_s: f32) -> EnvFit {
         }
     };
     EnvFit { attack, hold, decay, sustain, release: release.max(0.005), onset, off, duration }
+}
+
+/// Where a plateau ends (the frame the release starts at): the end of the
+/// longest stretch after the peak where the loudness, smoothed over 250 ms,
+/// moves under 4 dB per second and stays within 12 dB of the peak. None when
+/// there is no such stretch of at least 150 ms.
+fn plateau_break(db: &[f32], p: usize) -> Option<usize> {
+    let nf = db.len();
+    if nf < p + 40 {
+        return None;
+    }
+    let sm: Vec<f32> = (0..nf)
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(12), (i + 13).min(nf));
+            db[a..b].iter().sum::<f32>() / (b - a) as f32
+        })
+        .collect();
+    let flat = |i: usize| i >= p && i >= 10 && i + 10 < nf && sm[i] > -12.0 && ((sm[i + 10] - sm[i - 10]) / 0.2).abs() < 4.0;
+    let mut best: Option<(usize, usize)> = None;
+    let mut i = p;
+    while i < nf {
+        if flat(i) {
+            let s = i;
+            while i < nf && flat(i) {
+                i += 1;
+            }
+            if i - s >= 15 && best.is_none_or(|b| i - s > b.1 - b.0) {
+                best = Some((s, i));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    // The windowed slope turns over about ten frames before the real break.
+    best.map(|(_, e)| (e + 10).min(nf - 1))
 }
 
 /// Fit s + (1 - s) exp(-t / tau) to amplitudes (peak = 1 at index 0), L1 error.
@@ -675,7 +760,7 @@ fn noise_decay(series: &[(f32, f32)], p: usize, hop_s: f32) -> f32 {
 // ---- pitch ----
 
 /// (hz, confidence) per block; (0, 0) for blocks skipped as too quiet.
-fn track_pitch(x: &[f32], sr: f32, hop: usize, db: &[f32]) -> Vec<(f32, f32)> {
+pub(crate) fn track_pitch(x: &[f32], sr: f32, hop: usize, db: &[f32]) -> Vec<(f32, f32)> {
     let nf = db.len();
     let factor = decimation_factor(sr);
     let mut dec = Decimator::new(factor);
@@ -984,7 +1069,7 @@ fn find_formants(samples: &[(f32, f32)]) -> Vec<(f32, f32)> {
     out
 }
 
-fn band_edges(c: &[f32]) -> Vec<f32> {
+pub(crate) fn band_edges(c: &[f32]) -> Vec<f32> {
     let n = c.len();
     let r = (c[n - 1] / c[0]).powf(1.0 / (n - 1) as f32).max(1.01);
     let sr = r.sqrt();
@@ -1029,7 +1114,7 @@ fn finish_shape(v: &mut [Option<f32>]) -> Vec<f32> {
 }
 
 /// Least-squares line y = a + b x. Returns (a, b); (mean y, 0) if x has no spread.
-fn line_fit(pts: impl Iterator<Item = (f32, f32)>) -> (f32, f32) {
+pub(crate) fn line_fit(pts: impl Iterator<Item = (f32, f32)>) -> (f32, f32) {
     let (mut n, mut sx, mut sy, mut sxx, mut sxy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for (x, y) in pts {
         let (x, y) = (x as f64, y as f64);

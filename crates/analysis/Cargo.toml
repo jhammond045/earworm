@@ -8,6 +8,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 dsp = { path = "../dsp" }
+params = { path = "../params" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 hound = "3"
+
+[dev-dependencies]
+klont = { path = "../klont" }

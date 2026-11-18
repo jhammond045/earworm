@@ -4,6 +4,7 @@
 //! wasm for the analysis workers.
 
 pub mod beats;
+pub mod full;
 pub mod influence;
 pub mod notes;
 pub mod pyin;
@@ -12,6 +13,7 @@ pub mod second;
 pub mod signal;
 pub mod tempo;
 
+pub use full::{FULL_MATCH_LEN, FullMatch, FullOpts, GrainSuggestion, match_full};
 pub use influence::{MATCH_LEN, MatchResult, instant_match};
 
 // ---- C ABI for the analysis worker ----
@@ -46,6 +48,34 @@ pub unsafe extern "C" fn an_match(ptr: *const f32, len: u32, sample_rate: f32, n
     let signal = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
     let r = instant_match(signal, sample_rate, n_bands as usize);
     let out = unsafe { &mut *std::ptr::addr_of_mut!(MATCH_OUT) };
+    r.to_floats(out);
+    out.as_ptr()
+}
+
+static mut FULL_OUT: [f32; FULL_MATCH_LEN] = [0.0; FULL_MATCH_LEN];
+
+/// Run `match_full` over `len` mono samples at `ptr`. `flags` is a bit set:
+/// `full::FLAG_DECAYING` (1), `FLAG_USE_SOUND` (2), `FLAG_NO_SOUND` (4).
+/// Returns a pointer to FULL_MATCH_LEN floats (layout documented at
+/// `full::FULL_MATCH_LEN`), valid until the next call.
+///
+/// # Safety
+/// `ptr`/`len` must describe readable f32s in wasm memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn an_match_full(ptr: *const f32, len: u32, sample_rate: f32, flags: u32) -> *const f32 {
+    let signal = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let opts = FullOpts {
+        decaying: flags & full::FLAG_DECAYING != 0,
+        use_sound: if flags & full::FLAG_NO_SOUND != 0 {
+            Some(false)
+        } else if flags & full::FLAG_USE_SOUND != 0 {
+            Some(true)
+        } else {
+            None
+        },
+    };
+    let r = match_full(signal, sample_rate, opts);
+    let out = unsafe { &mut *std::ptr::addr_of_mut!(FULL_OUT) };
     r.to_floats(out);
     out.as_ptr()
 }
