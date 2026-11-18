@@ -4,7 +4,7 @@
 // chunks, which is where a worker sees cancel messages.
 
 import { P, toNorm } from '../gen/params';
-import { BUDGET_MAX, CONTROL_CAP, LAYER_LEVEL, LOAD_CURVE, LOAD_LAYER, LOAD_OK, LOAD_TOO_BIG, LOAD_TRACK, MAX_LAYERS, MSG_BYTES,
+import { BUDGET_MAX, CONTROL_CAP, LAYER_LEVEL, LOAD_CURVE, LOAD_GRAIN, LOAD_LAYER, LOAD_OK, LOAD_TOO_BIG, LOAD_TRACK, MAX_LAYERS, MSG_BYTES,
   MSG_NOTE_ON, MSG_PLAY, MSG_SET_BUDGET, MSG_SET_LAYER, MSG_SET_PARAM, M_ACTIVE_PARTIALS, M_PEAK_L, M_PEAK_R, M_PLAYING,
   METER_LEN, SET_BASE, VOICES_PER_LAYER, encodeMessage, readBufferTable, type BufferTable, type EngineExports, type Msg } from './protocol';
 
@@ -19,6 +19,8 @@ export interface SongBlobs {
   /** Layer blobs by layer index; missing or null entries are skipped. */
   layers: (ArrayBuffer | null | undefined)[];
   curves?: { slot: number; buf: ArrayBuffer }[];
+  /** LOAD_GRAIN blobs by layer slot, loaded after the layers. */
+  grains?: { slot: number; buf: ArrayBuffer }[];
 }
 
 export interface RenderOptions {
@@ -106,6 +108,7 @@ export async function renderSong(ex: EngineExports, song: SongBlobs, opts: Rende
   try {
     song.layers.forEach((b, i) => { if (b) check(`layer ${i}`, core.load(LOAD_LAYER, i, b)); });
     for (const c of song.curves ?? []) check(`curve ${c.slot}`, core.load(LOAD_CURVE, c.slot, c.buf));
+    for (const g of song.grains ?? []) check(`grain ${g.slot}`, core.load(LOAD_GRAIN, g.slot, g.buf));
     let track = song.track;
     if (opts.once ?? true) {
       track = track.slice(0);

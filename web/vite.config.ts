@@ -30,6 +30,7 @@ export default defineConfig({
         bench: page('bench.html'),
         m2: page('m2.html'),
         m3: page('m3.html'),
+        m4Test: page('m4-test.html'),
       },
     },
   },

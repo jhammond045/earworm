@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="icon" href="data:,">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Earworm M4: blind match test</title>
+  <link rel="stylesheet" href="/src/common/style.css">
+  <style>
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+    #drop { border: 2px dashed #888; border-radius: 6px; padding: 14px; text-align: center; }
+    #drop.over { background: rgba(128, 128, 255, 0.15); }
+    .cand { border: 1px solid #8886; border-radius: 6px; padding: 8px; }
+    .ok { color: #2a7; }
+    .bad { color: #c33; }
+    .err { color: #c33; }
+    .muted { opacity: 0.75; }
+    table { border-collapse: collapse; }
+    td, th { padding: 2px 12px 2px 0; text-align: left; font-variant-numeric: tabular-nums; }
+    #kinds { font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Earworm M4: blind match test</h1>
+    <p>The M4 gate: listeners pick the source a match was made from at least 70% of the time, in a four-way blind test, across 20 varied sources, with Influence at 100%. Sources are shared with the <a href="/influence.html">Influence page</a>. Everything stays in this browser.</p>
+
+    <h2>1. Sources</h2>
+    <div id="drop">
+      Drop audio files here, or
+      <input type="file" id="file" accept="audio/*" multiple>
+      <button id="rec">Record 3 s from mic</button>
+    </div>
+    <p id="count" role="status"></p>
+    <p id="kinds" class="muted"></p>
+    <div id="srcmsg" role="status"></div>
+    <table id="srclist"></table>
+    <div class="row"><button id="clear">Clear all sources</button></div>
+
+    <h2>2. Match and listen</h2>
+    <div class="row">
+      <label>Use the sound itself
+        <select id="mode">
+          <option value="default">default rule (the gate run)</option>
+          <option value="off">off for all</option>
+          <option value="on">on for all</option>
+        </select>
+      </label>
+      <button id="matchall">Match and render all</button>
+      <button id="stop">Stop playing</button>
+    </div>
+    <div id="status" role="status"></div>
+    <table id="listen"></table>
+
+    <h2>3. Blind test</h2>
+    <p>Each trial plays one match and four sources A to D. Pick the source the match was made from. Listen as often as you like.</p>
+    <div class="row">
+      <label>Seed <input id="seed" size="10"></label>
+      <button id="start">Start</button>
+    </div>
+    <div id="trial"></div>
+    <div id="result"></div>
+  </main>
+  <script type="module" src="/src/m4/test-page.ts"></script>
+</body>
+</html>
