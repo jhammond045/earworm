@@ -1,9 +1,16 @@
-//! M0 analysis: Influence instant match and the pYIN-style second-pass pitch
-//! tracker. Compiled natively (tests, the pitch_eval tool) and to wasm for the
-//! analysis worker.
+//! Analysis: the M0 Influence instant match and pYIN-style pitch tracker, and
+//! the M2 capture second pass (notes, hits, tempo, scale, kit slots) with the
+//! stored-take tune call. Compiled natively (tests, the eval tools) and to
+//! wasm for the analysis workers.
 
+pub mod beats;
 pub mod influence;
+pub mod notes;
 pub mod pyin;
+pub mod score;
+pub mod second;
+pub mod signal;
+pub mod tempo;
 
 pub use influence::{MATCH_LEN, MatchResult, instant_match};
 
@@ -41,4 +48,102 @@ pub unsafe extern "C" fn an_match(ptr: *const f32, len: u32, sample_rate: f32, n
     let out = unsafe { &mut *std::ptr::addr_of_mut!(MATCH_OUT) };
     r.to_floats(out);
     out.as_ptr()
+}
+
+// ---- Second pass and tune (M2) ----
+
+thread_local! {
+    static RESULT: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn publish(v: Vec<f32>) -> *const f32 {
+    RESULT.with(|r| {
+        *r.borrow_mut() = v;
+        r.borrow().as_ptr()
+    })
+}
+
+/// Floats in the last `an_second` / `an_tune` result.
+#[unsafe(no_mangle)]
+pub extern "C" fn an_result_len() -> u32 {
+    RESULT.with(|r| r.borrow().len() as u32)
+}
+
+/// Run the second pass over a take: `audio_len` mono samples at `sr`, `frames_len`
+/// floats of 25-float frame records, `opts_len` floats of options (layout in
+/// `second::Options::from_floats`). Returns a pointer to `an_result_len()` floats
+/// (layout in `second::SecondPassResult::to_floats`), valid until the next call.
+///
+/// # Safety
+/// Every pointer/length pair must describe readable f32s in wasm memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn an_second(
+    audio: *const f32,
+    audio_len: u32,
+    sr: f32,
+    frames: *const f32,
+    frames_len: u32,
+    opts: *const f32,
+    opts_len: u32,
+) -> *const f32 {
+    let audio = unsafe { std::slice::from_raw_parts(audio, audio_len as usize) };
+    let frames = unsafe { std::slice::from_raw_parts(frames, frames_len as usize) };
+    let opts = if opts_len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(opts, opts_len as usize) } };
+    let r = second::second_pass(audio, sr, frames, &second::Options::from_floats(opts));
+    let mut out = Vec::new();
+    r.to_floats(&mut out);
+    publish(out)
+}
+
+/// Floats in the flat tune settings: snap, speed ms, slides (0 glide, 1 gliss, 2 jump),
+/// vibrato, root, scale index, reference cents, level out.
+pub const TUNE_SETTINGS_LEN: usize = 8;
+
+/// Tune a stored take: `frames_len` floats of 25-float records and `pitch` (one
+/// repaired pitch per frame, cents, NaN unvoiced). Returns `2 * n` floats, the
+/// tuned pitch per frame and then the loudness per frame after Level out.
+///
+/// Frames the second pass filled in (live pitch NaN, repaired pitch finite) count as
+/// confident; the others use the live confidence.
+///
+/// # Safety
+/// Every pointer/length pair must describe readable f32s in wasm memory;
+/// `pitch` must hold `frames_len / 25` floats and `settings` `TUNE_SETTINGS_LEN`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn an_tune(frames: *const f32, frames_len: u32, pitch: *const f32, settings: *const f32) -> *const f32 {
+    let frames = unsafe { std::slice::from_raw_parts(frames, frames_len as usize) };
+    let n = frames.len() / second::STRIDE;
+    let pitch = unsafe { std::slice::from_raw_parts(pitch, n) };
+    let s = unsafe { std::slice::from_raw_parts(settings, TUNE_SETTINGS_LEN) };
+    publish(tune_take(frames, pitch, s))
+}
+
+/// The work of `an_tune`, callable natively.
+pub fn tune_take(frames: &[f32], pitch: &[f32], s: &[f32]) -> Vec<f32> {
+    use dsp::tune::{SCALES, Slides, TuneSettings, level_out, tune_curve};
+    let n = (frames.len() / second::STRIDE).min(pitch.len());
+    let get = |i: usize, d: f32| s.get(i).copied().filter(|v| v.is_finite()).unwrap_or(d);
+    let scale = (get(5, 0.0).round().max(0.0) as usize).min(SCALES.len() - 1);
+    let settings = TuneSettings {
+        snap: get(0, 0.0).clamp(0.0, 1.0),
+        speed_ms: get(1, 60.0).clamp(0.0, 250.0),
+        slides: Slides::from_index(get(2, 0.0)),
+        vibrato: get(3, 1.0).clamp(0.0, 2.0),
+        root: (get(4, 0.0).round() as i64).rem_euclid(12) as u8,
+        mask: SCALES[scale].1,
+        ref_cents: get(6, 0.0),
+    };
+    let rec = |k: usize| &frames[k * second::STRIDE..(k + 1) * second::STRIDE];
+    let conf: Vec<f32> = (0..n)
+        .map(|k| {
+            let f = rec(k);
+            if !f[dsp::frame::PITCH].is_finite() && pitch[k].is_finite() { 0.9 } else { f[dsp::frame::CONFIDENCE] }
+        })
+        .collect();
+    let loud: Vec<f32> = (0..n).map(|k| rec(k)[dsp::frame::LOUDNESS]).collect();
+    let mut out = vec![0.0f32; 2 * n];
+    let (tuned, leveled) = out.split_at_mut(n);
+    tune_curve(settings, &pitch[..n], &conf, tuned);
+    level_out(&loud, get(7, 0.0), leveled);
+    out
 }

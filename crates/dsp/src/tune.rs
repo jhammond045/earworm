@@ -307,6 +307,38 @@ pub fn tune_curve(settings: TuneSettings, pitch: &[f32], conf: &[f32], out: &mut
     }
 }
 
+/// Half-width of the running-median window for Level out, in frames (1 s each side).
+pub const LEVEL_WINDOW: usize = 100;
+
+/// Level out for stored takes (TDD "Tuning", last paragraph): pull loudness
+/// toward its running median by `amount` (0 = unchanged, 1 = flat at the
+/// median). The median runs over the sounding frames (loudness > 0) within
+/// `LEVEL_WINDOW` frames either side, so a quiet passage is lifted and a loud
+/// one tamed. Silent frames stay 0 and the result stays in 0..1.
+pub fn level_out(loudness: &[f32], amount: f32, out: &mut [f32]) {
+    let n = loudness.len().min(out.len());
+    let amount = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
+    if amount == 0.0 {
+        out[..n].copy_from_slice(&loudness[..n]);
+        return;
+    }
+    let mut win: Vec<f32> = Vec::with_capacity(2 * LEVEL_WINDOW + 1);
+    for i in 0..n {
+        let x = loudness[i];
+        if !(x > 0.0) {
+            out[i] = if x.is_finite() { x.max(0.0) } else { 0.0 };
+            continue;
+        }
+        win.clear();
+        let lo = i.saturating_sub(LEVEL_WINDOW);
+        let hi = (i + LEVEL_WINDOW + 1).min(n);
+        win.extend(loudness[lo..hi].iter().copied().filter(|v| *v > 0.0));
+        let mid = win.len() / 2;
+        let med = *win.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1;
+        out[i] = (med + (1.0 - amount) * (x - med)).clamp(0.0, 1.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +718,50 @@ mod tests {
                 assert_eq!(o.to_bits(), out[i].to_bits(), "frame {i}");
             }
         }
+    }
+
+    #[test]
+    fn level_out_zero_is_identity_and_one_is_flat() {
+        let x: Vec<f32> = (0..300).map(|i| 0.3 + 0.4 * (i % 7) as f32 / 6.0).collect();
+        let mut y = vec![0.0; x.len()];
+        level_out(&x, 0.0, &mut y);
+        assert_eq!(x, y);
+        level_out(&x, 1.0, &mut y);
+        let spread = |v: &[f32]| v[100..200].iter().cloned().fold(0.0f32, f32::max) - v[100..200].iter().cloned().fold(1.0f32, f32::min);
+        assert!(spread(&y) < 0.5 * spread(&x) + 1e-6, "{} {}", spread(&y), spread(&x));
+    }
+
+    #[test]
+    fn level_out_lifts_quiet_and_tames_loud_and_keeps_silence() {
+        let mut x = vec![0.6f32; 400];
+        for v in &mut x[100..150] {
+            *v = 0.2;
+        }
+        for v in &mut x[200..250] {
+            *v = 1.0;
+        }
+        for v in &mut x[300..320] {
+            *v = 0.0;
+        }
+        let mut y = vec![0.0; x.len()];
+        level_out(&x, 0.5, &mut y);
+        assert!(y[120] > x[120] && y[120] < 0.6);
+        assert!(y[220] < x[220] && y[220] > 0.6);
+        assert!(y[310] == 0.0);
+        assert!((y[50] - 0.6).abs() < 1e-6);
+        assert!(y.iter().all(|v| (0.0..=1.0).contains(v)));
+        let mut z = vec![0.0; x.len()];
+        level_out(&x, 7.0, &mut z);
+        level_out(&x, 1.0, &mut y);
+        assert_eq!(y, z);
+    }
+
+    #[test]
+    fn level_out_handles_empty_and_nan() {
+        let mut y = [0.0f32; 3];
+        level_out(&[], 0.5, &mut y);
+        level_out(&[f32::NAN, 0.5, 0.5], 0.5, &mut y);
+        assert_eq!(y[0], 0.0);
+        assert!(y[1] > 0.0);
     }
 }
