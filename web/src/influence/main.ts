@@ -1,7 +1,7 @@
 import { matchSound, type Match } from '../analysis/match';
 import { createAudioContext, OfflineEngine } from '../host/engine-host';
 import { MAX_BANDS, PARAMS } from '../host/protocol';
-import { clearSources, decodeFile, downloadBlob, recordMic, saveSources, wavBlob } from './audio';
+import { clearSources, decodeFile, downloadBlob, loadSources, recordMic, saveSources, wavBlob } from './audio';
 
 const TAIL_S = 0.6;
 const GAP_S = 0.3;
@@ -163,7 +163,12 @@ function playSeq(parts: Float32Array[]) {
 
 async function persist() {
   try {
-    await saveSources(sources.map((s) => ({ name: s.name, sampleRate: s.sampleRate, signal: s.signal })));
+    // The M4 blind test page saves to the same store, so keep sources this page did not add
+    // (by name) instead of replacing the whole set. "Clear saved" still clears everything.
+    const mine = sources.map((s) => ({ name: s.name, sampleRate: s.sampleRate, signal: s.signal }));
+    const names = new Set(mine.map((s) => s.name));
+    const others = (await loadSources()).filter((s) => !names.has(s.name));
+    await saveSources([...others, ...mine]);
   } catch (e) {
     setStatus(`Could not save sources for the test page (storage unavailable: ${e instanceof Error ? e.message : e}). The prototype still works.`, true);
     return false;
