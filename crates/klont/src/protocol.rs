@@ -54,6 +54,18 @@ pub const MSG_SET_BUDGET: u16 = 9;
 pub const MSG_SELECT_LAYER: u16 = 10;
 /// Silence every voice and clear every effect tail at once.
 pub const MSG_PANIC: u16 = 11;
+/// Live follow (M2). layer, value 1 = arm the layer (the mic drives it), 0 =
+/// disarm. Arming one layer disarms any other. No automatic mute exists: the
+/// armed layer sounds whenever the gate is open.
+pub const MSG_ARM: u16 = 12;
+/// layer, param = TUNE_* field, value in that field's units. The live tuner
+/// uses the armed layer's settings.
+pub const MSG_SET_TUNE: u16 = 13;
+/// Taught kit for live slot choice on beat layers. layer, index = kit slot,
+/// param = LIVE_KIT_* field, value.
+pub const MSG_SET_LIVE_KIT: u16 = 14;
+/// Forget the learned singer average, openness range and noise floor.
+pub const MSG_RESET_SINGER: u16 = 15;
 
 /// MSG_SET_PARAM targets (the `index` byte).
 pub const SET_BASE: u8 = 0;
@@ -76,6 +88,28 @@ pub const LAYER_INFLUENCE_AMOUNT: u16 = 10; // 0..1
 pub const LAYER_INFLUENCE_MASK: u16 = 11; // bit per aspect group, GROUP_BIT_*
 pub const LAYER_KIT_CENTS: u16 = 12; // 12..=15: default pitch of kit slot 0..3, cents above C0
 pub const LAYER_FIELDS: usize = 16;
+
+/// MSG_SET_TUNE fields (TDD Tune). Defaults: snap 0, speed 60 ms, glide,
+/// vibrato 1, root 0, chromatic, ref 0, octave 0.
+pub const TUNE_SNAP: u16 = 0; // 0..1
+pub const TUNE_SPEED: u16 = 1; // ms, 0..250
+pub const TUNE_SLIDES: u16 = 2; // 0 glide, 1 gliss, 2 jump
+pub const TUNE_VIBRATO: u16 = 3; // 0 flatten, 1 keep, 2 exaggerate
+pub const TUNE_ROOT: u16 = 4; // pitch class 0..11, 0 = C
+pub const TUNE_SCALE: u16 = 5; // index into dsp::tune::SCALES
+pub const TUNE_REF_CENTS: u16 = 6; // singer offset from concert pitch, -50..50
+pub const TUNE_OCTAVE: u16 = 7; // whole octaves added to the live carrier, -2..2
+pub const TUNE_FIELDS: usize = 8;
+
+/// MSG_SET_LIVE_KIT fields. A slot with TAUGHT = 1 has a centre in the three
+/// live hit features (dsp::frame::live_hit_features); a live onset goes to
+/// the nearest taught centre. With no taught slot, slots 0..2 are chosen by
+/// brightness thirds.
+pub const LIVE_KIT_TAUGHT: u16 = 0; // 0 or 1
+pub const LIVE_KIT_BRIGHT: u16 = 1;
+pub const LIVE_KIT_LOW: u16 = 2;
+pub const LIVE_KIT_NOISE: u16 = 3;
+pub const LIVE_KIT_FIELDS: usize = 4;
 
 pub const KIND_MELODY: u32 = 0;
 pub const KIND_BEAT: u32 = 1;
@@ -157,7 +191,26 @@ pub const M_LIVE: usize = 128;
 /// Macro values with the gesture projected back onto each macro (TDD "What
 /// the sliders show"), 8 values.
 pub const M_MACRO_LIVE: usize = 224;
-pub const METER_LEN: usize = 240;
+/// Live tier (M2): latest values, refreshed every process call.
+pub const M_IN_DB: usize = 240; // input level, dBFS
+pub const M_FLOOR_DB: usize = 241; // adaptive noise floor, dBFS
+pub const M_GATE: usize = 242; // 0 or 1
+pub const M_PITCH: usize = 243; // raw live pitch, cents above C0 (NaN unknown)
+pub const M_CONF: usize = 244;
+pub const M_TUNED: usize = 245; // tuned carrier pitch, cents (octave applied)
+pub const M_LOUD: usize = 246;
+pub const M_OPEN: usize = 247;
+pub const M_BREATH: usize = 248;
+pub const M_HARD: usize = 249;
+pub const M_VOICING: usize = 250; // 0 voiced, 1 unvoiced, 2 silent
+pub const M_ONSET: usize = 251; // onset strength in this call, else 0
+pub const M_ARMED: usize = 252; // armed layer, -1 none
+pub const M_DELAY_LEVEL: usize = 253; // nominal analysis delay, s
+pub const M_DELAY_PITCH: usize = 254;
+pub const M_LIVE_SLOT: usize = 255; // kit slot of the last live hit, -1 none
+pub const M_LIVE_HITS: usize = 256; // live hits since init
+pub const M_VOWEL: usize = 264; // 16 slots: live vowel shape, dB
+pub const METER_LEN: usize = 280;
 
 // ---------------------------------------------------------------- buffer table
 
@@ -165,7 +218,7 @@ pub const METER_LEN: usize = 240;
 /// all u32 so JS can read it as a Uint32Array.
 #[repr(C)]
 pub struct BufferTable {
-    pub input: u32, // f32[max_block], mono mic in (unused until M2)
+    pub input: u32, // f32[max_block], mono mic in; ew_process high-passes it in place
     pub output_l: u32, // f32[max_block]
     pub output_r: u32, // f32[max_block]
     pub max_block: u32,
@@ -177,5 +230,8 @@ pub struct BufferTable {
     pub staging: u32, // u8[STAGING_BYTES] for ew_load
     pub staging_cap: u32,
     pub host_load: u32, // address of an f32 the live host sets to the last block's CPU load
+    pub frames: u32, // f32[frames_cap * CURVE_STRIDE]: feature frames made by the last ew_process
+    pub frames_cap: u32,
+    pub frames_count: u32, // address of a u32: frames written by the last ew_process
 }
-pub const BT_FIELDS: usize = 12;
+pub const BT_FIELDS: usize = 15;

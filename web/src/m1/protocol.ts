@@ -25,6 +25,10 @@ export const MSG_JUMP = 8;
 export const MSG_SET_BUDGET = 9;
 export const MSG_SELECT_LAYER = 10;
 export const MSG_PANIC = 11;
+export const MSG_ARM = 12;
+export const MSG_SET_TUNE = 13;
+export const MSG_SET_LIVE_KIT = 14;
+export const MSG_RESET_SINGER = 15;
 
 export const SET_BASE = 0;
 export const SET_KIT = 1;
@@ -44,6 +48,22 @@ export const LAYER_INFLUENCE_AMOUNT = 10;
 export const LAYER_INFLUENCE_MASK = 11;
 export const LAYER_KIT_CENTS = 12;
 export const LAYER_FIELDS = 16;
+
+export const TUNE_SNAP = 0;
+export const TUNE_SPEED = 1;
+export const TUNE_SLIDES = 2;
+export const TUNE_VIBRATO = 3;
+export const TUNE_ROOT = 4;
+export const TUNE_SCALE = 5;
+export const TUNE_REF_CENTS = 6;
+export const TUNE_OCTAVE = 7;
+export const TUNE_FIELDS = 8;
+
+export const LIVE_KIT_TAUGHT = 0;
+export const LIVE_KIT_BRIGHT = 1;
+export const LIVE_KIT_LOW = 2;
+export const LIVE_KIT_NOISE = 3;
+export const LIVE_KIT_FIELDS = 4;
 
 export const KIND_MELODY = 0;
 export const KIND_BEAT = 1;
@@ -105,7 +125,25 @@ export const M_LAYER_VOICES = 24;
 export const M_STORED = 32;
 export const M_LIVE = 128;
 export const M_MACRO_LIVE = 224;
-export const METER_LEN = 240;
+export const M_IN_DB = 240;
+export const M_FLOOR_DB = 241;
+export const M_GATE = 242;
+export const M_PITCH = 243;
+export const M_CONF = 244;
+export const M_TUNED = 245;
+export const M_LOUD = 246;
+export const M_OPEN = 247;
+export const M_BREATH = 248;
+export const M_HARD = 249;
+export const M_VOICING = 250;
+export const M_ONSET = 251;
+export const M_ARMED = 252;
+export const M_DELAY_LEVEL = 253;
+export const M_DELAY_PITCH = 254;
+export const M_LIVE_SLOT = 255;
+export const M_LIVE_HITS = 256;
+export const M_VOWEL = 264;
+export const METER_LEN = 280;
 
 // ---- buffer table (u32 fields, in this order; BT_* are field indices)
 export const BT_INPUT = 0;
@@ -120,12 +158,16 @@ export const BT_METER_LEN = 8;
 export const BT_STAGING = 9;
 export const BT_STAGING_CAP = 10;
 export const BT_HOST_LOAD = 11;
-export const BT_FIELDS = 12;
+export const BT_FRAMES = 12;
+export const BT_FRAMES_CAP = 13;
+export const BT_FRAMES_COUNT = 14;
+export const BT_FIELDS = 15;
 
 export interface BufferTable {
   input: number; outputL: number; outputR: number; maxBlock: number;
   control: number; controlCap: number; controlCount: number;
   meter: number; meterLen: number; staging: number; stagingCap: number; hostLoad: number;
+  frames: number; framesCap: number; framesCount: number;
 }
 
 export function readBufferTable(mem: ArrayBuffer, ptr: number): BufferTable {
@@ -134,7 +176,7 @@ export function readBufferTable(mem: ArrayBuffer, ptr: number): BufferTable {
     input: t[BT_INPUT], outputL: t[BT_OUTPUT_L], outputR: t[BT_OUTPUT_R], maxBlock: t[BT_MAX_BLOCK],
     control: t[BT_CONTROL], controlCap: t[BT_CONTROL_CAP], controlCount: t[BT_CONTROL_COUNT],
     meter: t[BT_METER], meterLen: t[BT_METER_LEN], staging: t[BT_STAGING], stagingCap: t[BT_STAGING_CAP],
-    hostLoad: t[BT_HOST_LOAD],
+    hostLoad: t[BT_HOST_LOAD], frames: t[BT_FRAMES], framesCap: t[BT_FRAMES_CAP], framesCount: t[BT_FRAMES_COUNT],
   };
 }
 

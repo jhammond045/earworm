@@ -43,9 +43,59 @@ pub fn silent_frame() -> Frame {
     f
 }
 
+/// Live hit features of a frame with `n_bands` bands, used to choose a kit
+/// slot for a live hit (TDD "Live slot choice") and, from the same frames,
+/// to teach a kit. Three values, each about 0..1:
+/// - brightness: power-weighted centroid of the vowel bands over band index
+/// - low: how far the lowest quarter of the bands sits above the mean, dB / 24 + 0.5
+/// - noise: breathiness
+///
+/// Non-finite band values count as 0 dB.
+pub fn live_hit_features(f: &[f32], n_bands: usize) -> [f32; 3] {
+    let n = n_bands.clamp(1, MAX_BANDS).min(f.len().saturating_sub(BANDS));
+    if n == 0 {
+        return [0.5, 0.5, 0.0];
+    }
+    let band = |i: usize| {
+        let v = f[BANDS + i];
+        if v.is_finite() { v.clamp(-60.0, 60.0) } else { 0.0 }
+    };
+    let (mut wsum, mut isum, mut mean) = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..n {
+        let w = 10f32.powf(band(i) / 10.0);
+        wsum += w;
+        isum += w * i as f32;
+        mean += band(i);
+    }
+    mean /= n as f32;
+    let bright = if n > 1 && wsum > 0.0 { isum / wsum / (n - 1) as f32 } else { 0.5 };
+    let q = (n / 4).max(1);
+    let low_mean = (0..q).map(band).sum::<f32>() / q as f32;
+    let low = ((low_mean - mean) / 24.0 + 0.5).clamp(0.0, 1.0);
+    let b = f.get(BREATHINESS).copied().unwrap_or(0.0);
+    let noise = if b.is_finite() { b.clamp(0.0, 1.0) } else { 0.0 };
+    [bright.clamp(0.0, 1.0), low, noise]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_hit_features_order_bright_and_dark() {
+        let mut dark = silent_frame();
+        let mut bright = silent_frame();
+        for i in 0..16 {
+            dark[BANDS + i] = 12.0 - 2.0 * i as f32;
+            bright[BANDS + i] = -12.0 + 2.0 * i as f32;
+        }
+        let d = live_hit_features(&dark, 16);
+        let b = live_hit_features(&bright, 16);
+        assert!(d[0] < 0.3 && b[0] > 0.7, "{d:?} {b:?}");
+        assert!(d[1] > 0.5 && b[1] < 0.5);
+        let flat = live_hit_features(&silent_frame(), 16);
+        assert!((flat[0] - 0.5).abs() < 1e-5 && (flat[1] - 0.5).abs() < 1e-5);
+    }
 
     #[test]
     fn sixteen_bands_is_24_floats() {
