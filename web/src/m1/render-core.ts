@@ -188,8 +188,9 @@ export function worstCaseMessages(budget: number): { setup: Msg[]; notes: Msg[] 
   const notes: Msg[] = [];
   for (let l = 0; l < MAX_LAYERS; l++) {
     for (let v = 0; v < VOICES_PER_LAYER; v++) {
-      // 55 Hz up: low notes keep all 64 harmonics under 0.45 fs.
-      notes.push([MSG_NOTE_ON, l, 0, 0, 3300 + 100 * (l * 2 + v * 5)]);
+      // 55 Hz to 223 Hz: every voice keeps all 64 harmonics under 0.45 fs,
+      // so the scene asks for the full 4096 partials.
+      notes.push([MSG_NOTE_ON, l, 0, 0, 3300 + 25 * (l * 2 + v * 5)]);
     }
   }
   return { setup, notes };

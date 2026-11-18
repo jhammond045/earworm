@@ -39,8 +39,9 @@ fn worst_case(budget: u32) -> Box<Engine> {
     e.render(BLOCK);
     for l in 0..MAX_LAYERS as u8 {
         for v in 0..VOICES_PER_LAYER {
-            // 55 Hz up: low notes keep all 64 harmonics under 0.45 fs.
-            let cents = 3300.0 + 100.0 * (l as f32 * 2.0 + v as f32 * 5.0);
+            // 55 Hz to 223 Hz: every voice keeps all 64 harmonics under
+            // 0.45 fs, so the scene asks for the full 4096 partials.
+            let cents = 3300.0 + 25.0 * (l as f32 * 2.0 + v as f32 * 5.0);
             e.push(MSG_NOTE_ON, l, 0, 0, cents, 0);
         }
     }
