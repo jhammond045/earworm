@@ -171,7 +171,6 @@ fn song_sounds_and_is_bounded() {
 }
 
 #[test]
-#[ignore = "M1 WIP: fails at 1-sample calls once beat layer and melody layer play together; see docs/M1.md"]
 fn output_does_not_depend_on_call_length() {
     let n = 48_000;
     let mut a = song(4096);
@@ -208,7 +207,6 @@ fn hit_lands_on_its_sample() {
 }
 
 #[test]
-#[ignore = "M1 WIP: a small tail (rms 1e-3) remains 0.8 s after note off; see docs/M1.md"]
 fn live_note_on_and_off() {
     let mut e = Engine::new(SR, 128);
     set(&mut e, 0, P::SRC_NOISE_MIX, 0.0);
@@ -216,8 +214,12 @@ fn live_note_on_and_off() {
     let (l, _) = render_all(&mut e, 24_000, 128);
     assert!(rms(&l[12_000..]) > 0.01);
     e.push(MSG_NOTE_OFF, 0, 0, 0, 5700.0, 0);
-    let (l, _) = render_all(&mut e, 48_000, 128);
-    assert!(rms(&l[40_000..]) < 1e-4, "{}", rms(&l[40_000..]));
+    // env.release is an exponential time constant (0.2 s neutral), so -60 dB
+    // takes about 1.4 s; the voice goes idle soon after.
+    let (l, _) = render_all(&mut e, 2 * 48_000, 128);
+    assert!(rms(&l[4800..9600]) > 0.01, "release should still sound at first");
+    assert!(rms(&l[90_000..]) < 1e-5, "{}", rms(&l[90_000..]));
+    assert_eq!(e.meter()[M_ACTIVE_VOICES], 0.0);
 }
 
 #[test]

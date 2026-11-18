@@ -107,10 +107,13 @@ struct ShapedNoise {
     target: [f32; N_BANDS],
     norm: f32,
     on: bool,
+    /// Each bank has its own generator: a shared one would hand out numbers
+    /// in an order that depends on how a tick is split into calls.
+    rng: Noise,
 }
 
 impl ShapedNoise {
-    fn new(sr: f32) -> Self {
+    fn new(sr: f32, seed: u32) -> Self {
         let mut c = [0.0; frame::MAX_BANDS];
         band_centres(N_BANDS, &mut c);
         let q = band_q(N_BANDS);
@@ -128,6 +131,7 @@ impl ShapedNoise {
             target: [0.0; N_BANDS],
             norm: NOISE_RMS / (0.577 * frac.sqrt()),
             on: false,
+            rng: Noise::new(seed),
         }
     }
 
@@ -153,12 +157,12 @@ impl ShapedNoise {
         self.on = any;
     }
 
-    fn render(&mut self, noise: &mut Noise, out: &mut [f32]) {
+    fn render(&mut self, out: &mut [f32]) {
         if !self.on {
             return;
         }
         for y in out.iter_mut() {
-            let x = noise.next();
+            let x = self.rng.next();
             let mut s = 0.0;
             for b in 0..N_BANDS {
                 self.gain[b] += self.step[b];
@@ -196,7 +200,7 @@ pub struct Layer {
     pub voices: [Voice; VOICES_PER_LAYER],
     slots: [Slot; VOICES_PER_LAYER],
     noise_banks: [ShapedNoise; SETS],
-    noise: Noise,
+    seed: u32,
     crush: Crush,
     tape: Tape,
     delay: StereoDelay,
@@ -209,6 +213,12 @@ pub struct Layer {
     gl_step: f32,
     gr_step: f32,
     grit_on: bool,
+    /// What renders during the current tick, decided at the tick (or when a
+    /// voice starts) so that splitting a tick into smaller calls cannot change
+    /// which samples a voice or effect is advanced over.
+    voice_on: [bool; VOICES_PER_LAYER],
+    layer_on: bool,
+    space_on: bool,
     pub peak: f32,
     pub steals: u32,
     /// Partial budget share per voice, set by the engine before each tick.
@@ -252,8 +262,8 @@ impl Layer {
             smooth,
             voices: std::array::from_fn(|v| Voice::new(sr, seed ^ (v as u32 + 1).wrapping_mul(0x85EB_CA6B))),
             slots: [Slot::default(); VOICES_PER_LAYER],
-            noise_banks: std::array::from_fn(|_| ShapedNoise::new(sr)),
-            noise: Noise::new(seed ^ 0x5bd1_e995),
+            noise_banks: std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, k))),
+            seed,
             crush: Crush::new(sr, seed ^ 0x27d4_eb2f),
             tape: Tape::new(sr, seed ^ 0x1656_67b1),
             delay: StereoDelay::new(sr),
@@ -266,6 +276,9 @@ impl Layer {
             gl_step: 0.0,
             gr_step: 0.0,
             grit_on: false,
+            voice_on: [false; VOICES_PER_LAYER],
+            layer_on: false,
+            space_on: false,
             peak: 0.0,
             steals: 0,
             max_partials: [crate::voice::MAX_PARTIALS; VOICES_PER_LAYER],
@@ -483,7 +496,8 @@ impl Layer {
         self.slots = [Slot::default(); VOICES_PER_LAYER];
         self.delay.reset();
         self.reverb.reset();
-        self.noise_banks = std::array::from_fn(|_| ShapedNoise::new(self.sr));
+        let (sr, seed) = (self.sr, self.seed);
+        self.noise_banks = std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, k)));
     }
 
     /// Step 6 (and the note's fixed start values). Fills the slot's offsets
@@ -558,6 +572,8 @@ impl Layer {
         let mut c = self.controls(v, frame.then_some(&nf), &mut live);
         c.max_partials = self.max_partials[v];
         self.voices[v].start(start, &c, len);
+        self.voice_on[v] = true;
+        self.layer_on = true;
     }
 
     // ------------------------------------------------------------ control rate
@@ -620,7 +636,8 @@ impl Layer {
         let mut nf = [0.0f32; CURVE_STRIDE];
         let mut live = self.norm[0];
         for v in 0..VOICES_PER_LAYER {
-            if !self.voices[v].active() {
+            self.voice_on[v] = self.voices[v].active();
+            if !self.voice_on[v] {
                 continue;
             }
             let frame = self.read_frame(v, track, curves, &mut nf);
@@ -644,6 +661,12 @@ impl Layer {
             }
             self.noise_banks[s].control(noise_lvl[s], &nb, TICK);
         }
+        self.space_on = self.delay.active() || self.reverb.active();
+        let gain_moving = (self.gl - self.gl_t).abs() > 1e-6 || (self.gr - self.gr_t).abs() > 1e-6;
+        self.layer_on = self.voice_on.iter().any(|&a| a)
+            || self.noise_banks.iter().any(|n| n.on)
+            || self.space_on
+            || gain_moving;
     }
 
     /// Samples until the next note off among this layer's voices (u32::MAX: none).
@@ -675,25 +698,20 @@ impl Layer {
     /// Render `n` samples (n <= TICK) of this layer, adding into `l` and `r`.
     pub fn render(&mut self, l: &mut [f32], r: &mut [f32]) {
         let n = l.len();
+        if !self.layer_on {
+            return;
+        }
         let bus = &mut self.bus[..n];
         bus.fill(0.0);
-        let mut any = false;
-        for v in self.voices.iter_mut() {
-            if v.active() {
+        for (v, on) in self.voices.iter_mut().zip(self.voice_on) {
+            if on {
                 v.render(bus);
-                any = true;
             }
         }
         for nb in self.noise_banks.iter_mut() {
-            any |= nb.on;
-            nb.render(&mut self.noise, bus);
+            nb.render(bus);
         }
-        let space = self.delay.active() || self.reverb.active();
-        let gain_moving = (self.gl - self.gl_t).abs() > 1e-6 || (self.gr - self.gr_t).abs() > 1e-6;
-        if !any && !space && !gain_moving {
-            self.peak = 0.0;
-            return;
-        }
+        let space = self.space_on;
         let (dl, dr) = (self.gl_step, self.gr_step);
         let w = self.real[0][P::WIDTH];
         let mut peak = 0.0f32;
@@ -798,6 +816,10 @@ impl Layer {
             max_partials: crate::voice::MAX_PARTIALS,
         }
     }
+}
+
+fn bank_seed(layer_seed: u32, k: usize) -> u32 {
+    layer_seed ^ 0x5bd1_e995u32.wrapping_mul(k as u32 + 1)
 }
 
 /// Step 5 for stored playback: fixed linear maps from a frame to normalized
