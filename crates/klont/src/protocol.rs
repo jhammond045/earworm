@@ -66,6 +66,22 @@ pub const MSG_SET_TUNE: u16 = 13;
 pub const MSG_SET_LIVE_KIT: u16 = 14;
 /// Forget the learned singer average, openness range and noise floor.
 pub const MSG_RESET_SINGER: u16 = 15;
+/// Metronome. param = METRO_*, value in that field's units. Clicks land on the
+/// sample of a grid beat and are mixed into live output only: `ew_render` and
+/// the mic buffer never contain them.
+pub const MSG_SET_METRO: u16 = 16;
+/// One-bar count-in at `value` bpm (0 uses the transport bpm, or 100). Ignored
+/// while the transport is already playing. When the bar ends, the transport
+/// starts on the next sample.
+pub const MSG_COUNT_IN: u16 = 17;
+
+/// MSG_SET_METRO fields (the `param` field).
+pub const METRO_ON: u16 = 0; // 0 or 1
+pub const METRO_LEVEL: u16 = 1; // 0..1
+pub const METRO_VOICE: u16 = 2; // 0 plain tick, 1 a layer's kit slot
+pub const METRO_LAYER: u16 = 3; // layer index, used when METRO_VOICE is kit
+pub const METRO_SLOT: u16 = 4; // kit slot 0..3
+pub const METRO_BAR: u16 = 5; // beats per bar, 1..32; the downbeat is accented
 
 /// MSG_SET_PARAM targets (the `index` byte).
 pub const SET_BASE: u8 = 0;
@@ -246,6 +262,14 @@ pub const M_CLOCK_LO: usize = 257;
 pub const M_CLOCK_HI: usize = 258;
 /// Transport units (ticks or seconds) per sample at the end of the call; 0 when stopped.
 pub const M_UNITS_PER_SAMPLE: usize = 259;
+/// Metronome enabled, 0 or 1. The click itself is not a meter; it is in the live output.
+pub const M_METRO: usize = 260;
+/// Beat within the bar (0 = downbeat), or -1 when stopped and not counting in.
+pub const M_METRO_BEAT: usize = 261;
+/// Count-in beats still to play, 0 when idle.
+pub const M_COUNTIN: usize = 262;
+/// How many count-ins have finished and started the transport.
+pub const M_COUNT_SEQ: usize = 263;
 pub const M_VOWEL: usize = 264; // 16 slots: live vowel shape, dB
 pub const METER_LEN: usize = 280;
 
@@ -255,14 +279,14 @@ pub const METER_LEN: usize = 280;
 /// all u32 so JS can read it as a Uint32Array.
 #[repr(C)]
 pub struct BufferTable {
-    pub input: u32, // f32[max_block], mono mic in; ew_process high-passes it in place
+    pub input: u32,    // f32[max_block], mono mic in; ew_process high-passes it in place
     pub output_l: u32, // f32[max_block]
     pub output_r: u32, // f32[max_block]
     pub max_block: u32,
     pub control: u32, // u8[CONTROL_CAP * MSG_BYTES], written by the host before each call
     pub control_cap: u32,
     pub control_count: u32, // address of a u32: messages in `control` for the next call
-    pub meter: u32, // f32[METER_LEN]
+    pub meter: u32,         // f32[METER_LEN]
     pub meter_len: u32,
     pub staging: u32, // u8[STAGING_BYTES] for ew_load
     pub staging_cap: u32,

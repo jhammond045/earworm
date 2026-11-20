@@ -11,6 +11,7 @@ pub mod engine;
 pub mod grain;
 pub mod layer;
 pub mod live;
+mod metro;
 pub mod protocol;
 pub mod seq;
 pub mod voice;

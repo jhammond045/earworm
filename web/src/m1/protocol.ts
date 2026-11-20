@@ -29,6 +29,15 @@ export const MSG_ARM = 12;
 export const MSG_SET_TUNE = 13;
 export const MSG_SET_LIVE_KIT = 14;
 export const MSG_RESET_SINGER = 15;
+export const MSG_SET_METRO = 16;
+export const MSG_COUNT_IN = 17;
+
+export const METRO_ON = 0;
+export const METRO_LEVEL = 1;
+export const METRO_VOICE = 2;
+export const METRO_LAYER = 3;
+export const METRO_SLOT = 4;
+export const METRO_BAR = 5;
 
 export const SET_BASE = 0;
 export const SET_KIT = 1;
@@ -154,6 +163,10 @@ export const M_LIVE_HITS = 256;
 export const M_CLOCK_LO = 257;
 export const M_CLOCK_HI = 258;
 export const M_UNITS_PER_SAMPLE = 259;
+export const M_METRO = 260;
+export const M_METRO_BEAT = 261;
+export const M_COUNTIN = 262;
+export const M_COUNT_SEQ = 263;
 export const M_VOWEL = 264;
 export const METER_LEN = 280;
 

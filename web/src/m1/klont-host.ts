@@ -6,8 +6,9 @@
 import workletUrl from './klont-processor.ts?worker&url';
 import type { KlontProcessorOptions } from './klont-processor';
 import { CONTROL_CAP, LOAD_BAD_KIND, LOAD_STATES, METER_LEN, MSG_BYTES, MSG_JUMP, MSG_NOTE_OFF, MSG_NOTE_ON, MSG_PANIC, MSG_PLAY,
-  MSG_ARM, MSG_RESET_SINGER, MSG_SELECT_LAYER, MSG_SET_BUDGET, MSG_SET_LAYER, MSG_SET_LIVE_KIT, MSG_SET_MACRO,
-  MSG_SET_PARAM, MSG_SET_TUNE, MSG_STOP, SET_BASE, encodeMessage } from './protocol';
+  MSG_ARM, MSG_COUNT_IN, MSG_RESET_SINGER, MSG_SELECT_LAYER, MSG_SET_BUDGET, MSG_SET_LAYER, MSG_SET_LIVE_KIT, MSG_SET_MACRO,
+  MSG_SET_METRO, MSG_SET_PARAM, MSG_SET_TUNE, MSG_STOP, METRO_BAR, METRO_LAYER, METRO_LEVEL, METRO_ON, METRO_SLOT,
+  METRO_VOICE, SET_BASE, encodeMessage } from './protocol';
 import { ControlRing, MeterBlock, RecordRing } from '../host/rings';
 import { micConstraints } from '../host/engine-host';
 
@@ -190,6 +191,20 @@ export class KlontHost {
   }
   /** Forget the learned singer average, openness range and noise floor. */
   resetSinger(): void { this.send(MSG_RESET_SINGER, 0, 0, 0, 0); }
+
+  /** Live metronome. `voice` `kit` uses `layer`'s kit `slot`; `tick` is a plain click.
+   *  The click is mixed in the worklet only, so exports and the mic buffer stay free of it. */
+  setMetro(on: boolean, level: number, voice: 'tick' | 'kit', layer: number, slot: number, bar: number): void {
+    this.send(MSG_SET_METRO, 0, 0, METRO_ON, on ? 1 : 0);
+    this.send(MSG_SET_METRO, 0, 0, METRO_LEVEL, level);
+    this.send(MSG_SET_METRO, 0, 0, METRO_VOICE, voice === 'kit' ? 1 : 0);
+    this.send(MSG_SET_METRO, 0, 0, METRO_LAYER, layer);
+    this.send(MSG_SET_METRO, 0, 0, METRO_SLOT, slot);
+    this.send(MSG_SET_METRO, 0, 0, METRO_BAR, bar);
+  }
+
+  /** One-bar count-in at `bpm`, then the engine starts the transport. Ignored while already playing. */
+  countIn(bpm: number): void { this.send(MSG_COUNT_IN, 0, 0, 0, bpm); }
 
   /** Frames written to the frame ring since the engine started (the global frame count). */
   framesTotal(): number { return this.frames?.total() ?? 0; }

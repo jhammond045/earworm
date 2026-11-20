@@ -222,7 +222,14 @@ fn read_section(b: &[u8], i: usize) -> Result<Section, LoadError> {
         return Err(LoadError::Malformed);
     }
     let bpm = if feel == FEEL_GRID { bpm } else { 0.0 };
-    Ok(Section { feel, length, bpm, repeats, ramp_ms, uid })
+    Ok(Section {
+        feel,
+        length,
+        bpm,
+        repeats,
+        ramp_ms,
+        uid,
+    })
 }
 
 /// Sizes of the pools a blob declares, and its version.
@@ -254,7 +261,11 @@ impl Dims {
 fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
     let (n_sections, n_events, n_warp) = (d.sections, d.events, d.warp);
     let o = HEADER_WORDS + n_sections * SECTION_WORDS + i * d.clip_words();
-    let (first_morph, n_morph) = if d.v2 { (word(b, o + 8)?, word(b, o + 9)?) } else { (0, 0) };
+    let (first_morph, n_morph) = if d.v2 {
+        (word(b, o + 8)?, word(b, o + 9)?)
+    } else {
+        (0, 0)
+    };
     let clip = Clip {
         first_morph,
         n_morph,
@@ -267,7 +278,11 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
         first_warp: word(b, o + 6)?,
         n_warp: word(b, o + 7)?,
     };
-    let in_run = |first: u32, n: u32, total: usize| (first as usize).checked_add(n as usize).is_some_and(|e| e <= total);
+    let in_run = |first: u32, n: u32, total: usize| {
+        (first as usize)
+            .checked_add(n as usize)
+            .is_some_and(|e| e <= total)
+    };
     if clip.section as usize >= n_sections
         || clip.layer as usize >= MAX_LAYERS
         || !(clip.loop_len.is_finite() && clip.loop_len > 0.0)
@@ -309,7 +324,10 @@ fn read_event(b: &[u8], base: usize, i: usize) -> Result<Event, LoadError> {
 
 fn read_warp(b: &[u8], base: usize, i: usize) -> Result<WarpAnchor, LoadError> {
     let o = base + i * WARP_WORDS;
-    let a = WarpAnchor { take_sec: fword(b, o)? as f64, clip_t: fword(b, o + 1)? as f64 };
+    let a = WarpAnchor {
+        take_sec: fword(b, o)? as f64,
+        clip_t: fword(b, o + 1)? as f64,
+    };
     if !(a.take_sec.is_finite() && a.clip_t.is_finite()) {
         return Err(LoadError::Malformed);
     }
@@ -318,7 +336,12 @@ fn read_warp(b: &[u8], base: usize, i: usize) -> Result<WarpAnchor, LoadError> {
 
 fn read_morph(b: &[u8], base: usize, i: usize) -> Result<Morph, LoadError> {
     let o = base + i * MORPH_WORDS;
-    let m = Morph { t: fword(b, o)? as f64, state: word(b, o + 1)?, len_ms: fword(b, o + 2)? as f64, shape: word(b, o + 3)? };
+    let m = Morph {
+        t: fword(b, o)? as f64,
+        state: word(b, o + 1)?,
+        len_ms: fword(b, o + 2)? as f64,
+        shape: word(b, o + 3)?,
+    };
     if !(m.t.is_finite() && m.t >= 0.0 && m.len_ms.is_finite() && m.len_ms >= 0.0)
         || m.state as usize >= MAX_STATES
         || m.shape > MORPH_WOBBLE
@@ -385,7 +408,12 @@ impl Track {
             v2,
         };
         let flags = word(bytes, 5)?;
-        if d.sections > MAX_SECTIONS || d.clips > MAX_CLIPS || d.events > MAX_EVENTS || d.warp > MAX_WARP || d.morph > MAX_MORPH {
+        if d.sections > MAX_SECTIONS
+            || d.clips > MAX_CLIPS
+            || d.events > MAX_EVENTS
+            || d.warp > MAX_WARP
+            || d.morph > MAX_MORPH
+        {
             return Err(LoadError::TooBig);
         }
         let words = d.morph_base() + d.morph * MORPH_WORDS;
@@ -512,10 +540,15 @@ impl Track {
         let x = match mk.shape {
             MORPH_EASE => raw * raw * (3.0 - 2.0 * raw),
             MORPH_LATE => raw * raw * raw,
-            MORPH_WOBBLE => (raw + 0.12 * (6.0 * std::f64::consts::PI * raw).sin() * (1.0 - raw)).clamp(0.0, 1.0),
+            MORPH_WOBBLE => (raw + 0.12 * (6.0 * std::f64::consts::PI * raw).sin() * (1.0 - raw))
+                .clamp(0.0, 1.0),
             _ => raw,
         };
-        Some(MorphBlend { from: m[prev].state, to: mk.state, x: x as f32 })
+        Some(MorphBlend {
+            from: m[prev].state,
+            to: mk.state,
+            x: x as f32,
+        })
     }
     pub fn n_sections(&self) -> usize {
         self.sections.len()
@@ -587,7 +620,11 @@ pub struct EventList {
 
 impl EventList {
     pub fn new() -> Self {
-        Self { items: [SeqEvent::default(); MAX_SPAN_EVENTS], len: 0, dropped: 0 }
+        Self {
+            items: [SeqEvent::default(); MAX_SPAN_EVENTS],
+            len: 0,
+            dropped: 0,
+        }
     }
     pub fn clear(&mut self) {
         self.len = 0;
@@ -650,6 +687,13 @@ pub struct Transport {
     clip: [u32; MAX_LAYERS],
     idx: [u32; MAX_LAYERS],
     wraps: [f64; MAX_LAYERS],
+    /// Beat crossings in the last `advance` (offsets from the start of that call).
+    pub beat_off: [u32; 8],
+    pub beat_index: [i32; 8],
+    pub n_beats: usize,
+    /// Beat index of the previous sample, so a crossing clicks once. -1 arms
+    /// a click on the next sample that sits on a beat (the start of play).
+    prev_beat: i64,
 }
 
 impl Transport {
@@ -671,6 +715,10 @@ impl Transport {
             clip: [NO_CLIP; MAX_LAYERS],
             idx: [0; MAX_LAYERS],
             wraps: [0.0; MAX_LAYERS],
+            beat_off: [0; 8],
+            beat_index: [0; 8],
+            n_beats: 0,
+            prev_beat: -1,
         }
     }
 
@@ -726,7 +774,8 @@ impl Transport {
                         let lp = p - w * clip.loop_len;
                         self.wraps[l] = w;
                         let ev = track.clip_events(clip);
-                        self.idx[l] = ev.iter().position(|e| e.t >= lp - EPS).unwrap_or(ev.len()) as u32;
+                        self.idx[l] =
+                            ev.iter().position(|e| e.t >= lp - EPS).unwrap_or(ev.len()) as u32;
                     }
                 }
             }
@@ -745,9 +794,15 @@ impl Transport {
         self.jump = None;
         self.ended = false;
         let len = track.section(self.section).length;
-        let p = if pos.is_finite() { pos.clamp(0.0, len) } else { 0.0 };
+        let p = if pos.is_finite() {
+            pos.clamp(0.0, len)
+        } else {
+            0.0
+        };
         self.set_segment(track, p);
         self.set_cursors(track, false);
+        // Landing on a beat (including the start) clicks on the next sample.
+        self.arm_beat(true);
     }
     pub fn queued_jump(&self) -> Option<usize> {
         self.jump
@@ -760,7 +815,11 @@ impl Transport {
     /// removing or moving sections before the playhead keeps the same music
     /// playing. A uid of 0, or one the new track lacks, leaves the index as is.
     pub fn follow_uids(&mut self, track: &Track, cur_uid: u32, jump_uid: u32) {
-        let find = |uid: u32| (uid != 0).then(|| (0..track.n_sections()).find(|&i| track.section(i).uid == uid)).flatten();
+        let find = |uid: u32| {
+            (uid != 0)
+                .then(|| (0..track.n_sections()).find(|&i| track.section(i).uid == uid))
+                .flatten()
+        };
         if let Some(i) = find(cur_uid) {
             self.section = i;
         }
@@ -789,6 +848,10 @@ impl Transport {
         }
         self.set_segment(track, was.clamp(0.0, s.length));
         self.set_cursors(track, false);
+        // While playing, hold the current beat so a reload does not click
+        // again. While stopped, a beat under the playhead (including the
+        // start) clicks when play begins.
+        self.arm_beat(!self.playing);
     }
 
     fn bpm_at(&self, j: f64) -> f64 {
@@ -820,7 +883,11 @@ impl Transport {
     }
 
     fn rate_at(&self, j: u64) -> f64 {
-        if self.free { 1.0 / self.sr } else { self.bpm_at(j as f64) * PPQ / (60.0 * self.sr) }
+        if self.free {
+            1.0 / self.sr
+        } else {
+            self.bpm_at(j as f64) * PPQ / (60.0 * self.sr)
+        }
     }
 
     /// Handle the end of a pass at position `pos` (>= length). Returns false
@@ -881,10 +948,29 @@ impl Transport {
         true
     }
 
+    /// Grid position is on a beat boundary when `edge` is set, so the next
+    /// sample clicks; otherwise the current beat is already accounted for.
+    fn arm_beat(&mut self, edge: bool) {
+        if self.free {
+            self.prev_beat = -1;
+            return;
+        }
+        let q = (self.pos_at(self.j) + EPS) / PPQ;
+        let beat = q.floor() as i64;
+        let on = (q - q.floor()) * PPQ < 1e-3;
+        self.prev_beat = if edge && on { beat - 1 } else { beat };
+    }
+
+    pub fn is_free(&self) -> bool {
+        self.free
+    }
+
     /// Advance `n` samples while playing, appending fired events to `out`
     /// (which the caller clears). Does nothing when stopped. Events beyond
     /// MAX_SPAN_EVENTS are dropped and counted in `out.dropped`.
+    /// Beat crossings in this call are left in `beat_off` / `beat_index`.
     pub fn advance(&mut self, track: &Track, n: usize, out: &mut EventList) {
+        self.n_beats = 0;
         if !self.playing {
             return;
         }
@@ -914,6 +1000,17 @@ impl Transport {
                     self.j = 0;
                     pos = 0.0;
                     break;
+                }
+            }
+            if !self.free {
+                let beat = ((pos + EPS) / PPQ).floor() as i64;
+                if beat != self.prev_beat {
+                    if self.n_beats < 8 {
+                        self.beat_off[self.n_beats] = i as u32;
+                        self.beat_index[self.n_beats] = beat as i32;
+                        self.n_beats += 1;
+                    }
+                    self.prev_beat = beat;
                 }
             }
             for l in 0..MAX_LAYERS {
@@ -995,10 +1092,22 @@ mod tests {
         ramp_ms: f32,
     }
     fn grid(beats: f32, bpm: f32, repeats: u32, ramp_ms: f32) -> S {
-        S { feel: FEEL_GRID, length: beats * 960.0, bpm, repeats, ramp_ms }
+        S {
+            feel: FEEL_GRID,
+            length: beats * 960.0,
+            bpm,
+            repeats,
+            ramp_ms,
+        }
     }
     fn free(secs: f32) -> S {
-        S { feel: FEEL_FREE, length: secs, bpm: 0.0, repeats: 1, ramp_ms: 0.0 }
+        S {
+            feel: FEEL_FREE,
+            length: secs,
+            bpm: 0.0,
+            repeats: 1,
+            ramp_ms: 0.0,
+        }
     }
     struct C {
         section: u32,
@@ -1009,16 +1118,41 @@ mod tests {
         warp: Vec<(f32, f32)>,
     }
     fn clip(section: u32, layer: u32, loop_len: f32, events: &[f32]) -> C {
-        C { section, layer, loop_len, curve: -1, events: events.iter().map(|&t| (t, 10.0)).collect(), warp: vec![] }
+        C {
+            section,
+            layer,
+            loop_len,
+            curve: -1,
+            events: events.iter().map(|&t| (t, 10.0)).collect(),
+            warp: vec![],
+        }
     }
 
     fn blob(secs: &[S], clips: &[C], looping: bool) -> Vec<u8> {
         let mut w: Vec<u32> = vec![];
         let ne: usize = clips.iter().map(|c| c.events.len()).sum();
         let nw: usize = clips.iter().map(|c| c.warp.len()).sum();
-        w.extend([TRACK_MAGIC, secs.len() as u32, clips.len() as u32, ne as u32, nw as u32, looping as u32, 0, 0]);
+        w.extend([
+            TRACK_MAGIC,
+            secs.len() as u32,
+            clips.len() as u32,
+            ne as u32,
+            nw as u32,
+            looping as u32,
+            0,
+            0,
+        ]);
         for s in secs {
-            w.extend([s.feel, s.length.to_bits(), s.bpm.to_bits(), s.repeats, s.ramp_ms.to_bits(), 0, 0, 0]);
+            w.extend([
+                s.feel,
+                s.length.to_bits(),
+                s.bpm.to_bits(),
+                s.repeats,
+                s.ramp_ms.to_bits(),
+                0,
+                0,
+                0,
+            ]);
         }
         let (mut fe, mut fw) = (0u32, 0u32);
         for c in clips {
@@ -1081,10 +1215,16 @@ mod tests {
     #[test]
     fn exact_offsets_any_split() {
         let secs = [grid(4.0, 120.0, 1, 0.0)];
-        let clips = [clip(0, 0, 3840.0, &[0.0, 960.0, 1920.0]), clip(0, 2, 3840.0, &[960.0])];
+        let clips = [
+            clip(0, 0, 3840.0, &[0.0, 960.0, 1920.0]),
+            clip(0, 2, 3840.0, &[960.0]),
+        ];
         let (t, mut tr) = setup(&secs, &clips, false);
         let reference = run(&mut tr, &t, 60000, 60000);
-        assert_eq!(reference, vec![(0, 0, 0), (24000, 0, 1), (24000, 2, 3), (48000, 0, 2)]);
+        assert_eq!(
+            reference,
+            vec![(0, 0, 0), (24000, 0, 1), (24000, 2, 3), (48000, 0, 2)]
+        );
         for span in [1, 7, 128, 4096] {
             let mut tr = Transport::new(SR);
             tr.play();
@@ -1124,7 +1264,10 @@ mod tests {
         let (t, mut tr) = setup(&secs, &clips, true);
         let got = run(&mut tr, &t, 100000, 1000);
         let at: Vec<_> = got.iter().map(|g| (g.0, g.2)).collect();
-        assert_eq!(at, vec![(0, 0), (24000, 1), (48000, 0), (72000, 1), (96000, 0)]);
+        assert_eq!(
+            at,
+            vec![(0, 0), (24000, 1), (48000, 0), (72000, 1), (96000, 0)]
+        );
         assert!(!tr.ended());
         assert_eq!(tr.section(), 0);
     }
@@ -1198,7 +1341,10 @@ mod tests {
             };
             24000 + j.ceil() as usize
         };
-        let want: Vec<usize> = [100.0, 400.0, 1000.0, 2000.0].iter().map(|&t| expect(t)).collect();
+        let want: Vec<usize> = [100.0, 400.0, 1000.0, 2000.0]
+            .iter()
+            .map(|&t| expect(t))
+            .collect();
         let at: Vec<usize> = got.iter().map(|g| g.0).collect();
         assert_eq!(at, want);
     }
@@ -1222,7 +1368,11 @@ mod tests {
 
     #[test]
     fn queued_jump_lands_at_section_end() {
-        let secs = [grid(2.0, 120.0, 4, 0.0), grid(1.0, 120.0, 1, 0.0), grid(1.0, 120.0, 1, 0.0)];
+        let secs = [
+            grid(2.0, 120.0, 4, 0.0),
+            grid(1.0, 120.0, 1, 0.0),
+            grid(1.0, 120.0, 1, 0.0),
+        ];
         let clips = [clip(0, 0, 1920.0, &[0.0]), clip(2, 0, 960.0, &[0.0])];
         let (t, mut tr) = setup(&secs, &clips, false);
         let mut out = EventList::new();
@@ -1235,7 +1385,13 @@ mod tests {
         assert_eq!((tr.section(), tr.repeat()), (2, 0));
         assert!(tr.pos() < 1.0);
         // Section 2's t=0 event (global index 1) fired on the sample that entered it.
-        assert_eq!(out.as_slice().iter().map(|e| (e.offset, e.layer, e.event)).collect::<Vec<_>>(), vec![(0, 0, 1)]);
+        assert_eq!(
+            out.as_slice()
+                .iter()
+                .map(|e| (e.offset, e.layer, e.event))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 1)]
+        );
         assert!(run(&mut tr, &t, 30000, 100).is_empty());
         assert!(tr.ended());
     }
@@ -1243,7 +1399,10 @@ mod tests {
     #[test]
     fn seek_and_stop() {
         let secs = [grid(4.0, 120.0, 1, 0.0), grid(4.0, 120.0, 1, 0.0)];
-        let clips = [clip(0, 0, 3840.0, &[0.0, 960.0, 1920.0]), clip(1, 0, 3840.0, &[0.0, 960.0])];
+        let clips = [
+            clip(0, 0, 3840.0, &[0.0, 960.0, 1920.0]),
+            clip(1, 0, 3840.0, &[0.0, 960.0]),
+        ];
         let (t, mut tr) = setup(&secs, &clips, false);
         tr.seek(&t, 1, 960.0);
         assert_eq!((tr.section(), tr.pos()), (1, 960.0));
@@ -1269,7 +1428,8 @@ mod tests {
         tr.seek(&t, 1, 3000.0);
         let short = [grid(2.0, 90.0, 1, 0.0)];
         let mut t2 = Track::new();
-        t2.load(&blob(&short, &[clip(0, 0, 1920.0, &[0.0, 960.0])], false)).unwrap();
+        t2.load(&blob(&short, &[clip(0, 0, 1920.0, &[0.0, 960.0])], false))
+            .unwrap();
         tr.track_changed(&t2);
         assert_eq!(tr.section(), 0);
         assert_eq!(tr.pos(), 1920.0);
@@ -1341,29 +1501,63 @@ mod tests {
         t.load(&blob(&secs, &[c, dup], true)).unwrap();
         assert!(t.looping());
         assert_eq!(t.n_sections(), 2);
-        assert_eq!(*t.section(0), Section { feel: 0, length: 960.0, bpm: 100.0, repeats: 2, ramp_ms: 250.0, uid: 0 });
+        assert_eq!(
+            *t.section(0),
+            Section {
+                feel: 0,
+                length: 960.0,
+                bpm: 100.0,
+                repeats: 2,
+                ramp_ms: 250.0,
+                uid: 0
+            }
+        );
         assert_eq!(t.section(1).feel, FEEL_FREE);
         assert_eq!(t.section(1).length, 2.5);
         assert_eq!(t.clip_index_for(0, 1), Some(0));
         let cl = t.clip_for(0, 1).unwrap();
         assert_eq!((cl.curve, cl.loop_len, cl.n_events), (5, 960.0, 2));
-        assert!(t.clip_for(0, 0).is_none() && t.clip_for(1, 1).is_none() && t.clip_for(9, 1).is_none());
-        assert_eq!(t.warp(cl), &[WarpAnchor { take_sec: 0.0, clip_t: 0.0 }, WarpAnchor { take_sec: 1.0, clip_t: 960.0 }]);
+        assert!(
+            t.clip_for(0, 0).is_none() && t.clip_for(1, 1).is_none() && t.clip_for(9, 1).is_none()
+        );
+        assert_eq!(
+            t.warp(cl),
+            &[
+                WarpAnchor {
+                    take_sec: 0.0,
+                    clip_t: 0.0
+                },
+                WarpAnchor {
+                    take_sec: 1.0,
+                    clip_t: 960.0
+                }
+            ]
+        );
         assert_eq!(t.event(1).t, 2.0);
         assert!(t.event(0).cents.is_nan());
     }
 
     #[test]
     fn malformed_blobs_keep_previous_contents() {
-        let good = blob(&[grid(1.0, 120.0, 1, 0.0)], &[clip(0, 0, 960.0, &[0.0])], false);
+        let good = blob(
+            &[grid(1.0, 120.0, 1, 0.0)],
+            &[clip(0, 0, 960.0, &[0.0])],
+            false,
+        );
         let mut t = Track::new();
         t.load(&good).unwrap();
         let patch = |f: &dyn Fn(&mut Vec<u8>)| {
-            let mut b = blob(&[grid(2.0, 90.0, 1, 0.0), grid(2.0, 90.0, 1, 0.0)], &[clip(1, 0, 960.0, &[0.0, 1.0])], false);
+            let mut b = blob(
+                &[grid(2.0, 90.0, 1, 0.0), grid(2.0, 90.0, 1, 0.0)],
+                &[clip(1, 0, 960.0, &[0.0, 1.0])],
+                false,
+            );
             f(&mut b);
             b
         };
-        let w = |b: &mut Vec<u8>, i: usize, v: u32| b[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        let w = |b: &mut Vec<u8>, i: usize, v: u32| {
+            b[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes())
+        };
         let sec0 = 8;
         let clip0 = 8 + 16;
         let ev0 = clip0 + 8;
@@ -1376,7 +1570,10 @@ mod tests {
             (patch(&|b| b.push(0)), LoadError::Malformed),
             (patch(&|b| w(b, sec0, 3)), LoadError::Malformed),
             (patch(&|b| w(b, sec0 + 1, 0)), LoadError::Malformed),
-            (patch(&|b| w(b, sec0 + 1, f32::NAN.to_bits())), LoadError::Malformed),
+            (
+                patch(&|b| w(b, sec0 + 1, f32::NAN.to_bits())),
+                LoadError::Malformed,
+            ),
             (patch(&|b| w(b, sec0 + 3, 0)), LoadError::Malformed),
             (patch(&|b| w(b, clip0, 2)), LoadError::Malformed),
             (patch(&|b| w(b, clip0 + 1, 8)), LoadError::Malformed),
@@ -1385,8 +1582,14 @@ mod tests {
             (patch(&|b| w(b, clip0 + 3, u32::MAX)), LoadError::Malformed),
             (patch(&|b| w(b, clip0 + 5, 64)), LoadError::Malformed),
             (patch(&|b| w(b, clip0 + 7, 1)), LoadError::Malformed),
-            (patch(&|b| w(b, ev0, 2000f32.to_bits())), LoadError::Malformed), // unsorted
-            (patch(&|b| w(b, ev0, f32::INFINITY.to_bits())), LoadError::Malformed),
+            (
+                patch(&|b| w(b, ev0, 2000f32.to_bits())),
+                LoadError::Malformed,
+            ), // unsorted
+            (
+                patch(&|b| w(b, ev0, f32::INFINITY.to_bits())),
+                LoadError::Malformed,
+            ),
         ];
         for (i, (b, e)) in cases.iter().enumerate() {
             assert_eq!(t.load(b), Err(*e), "case {i}");
@@ -1409,13 +1612,38 @@ mod tests {
         // first section is removed and the rest reordered. The transport must stay
         // on uid 30 at the same position, and the jump must still go to uid 10.
         let mut t = Track::new();
-        t.load(&with_uids(blob(&[grid(4.0, 120.0, 1, 0.0), grid(4.0, 120.0, 1, 0.0), grid(8.0, 120.0, 1, 0.0), free(2.0)], &[], true), &[20, 10, 30, 40])).unwrap();
+        t.load(&with_uids(
+            blob(
+                &[
+                    grid(4.0, 120.0, 1, 0.0),
+                    grid(4.0, 120.0, 1, 0.0),
+                    grid(8.0, 120.0, 1, 0.0),
+                    free(2.0),
+                ],
+                &[],
+                true,
+            ),
+            &[20, 10, 30, 40],
+        ))
+        .unwrap();
         let mut tr = Transport::new(SR);
         tr.seek(&t, 2, 1000.0);
         tr.play();
         tr.queue_jump(1);
         let (cur, jump) = (t.section(2).uid, t.section(1).uid);
-        t.load(&with_uids(blob(&[grid(8.0, 120.0, 1, 0.0), grid(4.0, 120.0, 1, 0.0), free(2.0)], &[], true), &[30, 10, 40])).unwrap();
+        t.load(&with_uids(
+            blob(
+                &[
+                    grid(8.0, 120.0, 1, 0.0),
+                    grid(4.0, 120.0, 1, 0.0),
+                    free(2.0),
+                ],
+                &[],
+                true,
+            ),
+            &[30, 10, 40],
+        ))
+        .unwrap();
         tr.follow_uids(&t, cur, jump);
         tr.track_changed(&t);
         assert_eq!(tr.section(), 0);
@@ -1425,7 +1653,6 @@ mod tests {
         tr.follow_uids(&t, 99, 0);
         assert_eq!(tr.section(), 0);
     }
-
 
     // ---- v2: morph markers
 
@@ -1440,7 +1667,20 @@ mod tests {
         w.extend([FEEL_GRID, len.to_bits(), 120f32.to_bits(), 1, 0, 0, 0, 0]);
         let mut first = 0u32;
         for (i, c) in clips.iter().enumerate() {
-            w.extend([0, i as u32, len.to_bits(), 0, 0, (-1i32) as u32, 0, 0, first, c.len() as u32, 0, 0]);
+            w.extend([
+                0,
+                i as u32,
+                len.to_bits(),
+                0,
+                0,
+                (-1i32) as u32,
+                0,
+                0,
+                first,
+                c.len() as u32,
+                0,
+                0,
+            ]);
             first += c.len() as u32;
         }
         for c in clips {
@@ -1458,16 +1698,31 @@ mod tests {
     #[test]
     fn v2_loads_markers_and_v1_still_loads() {
         let mut t = Track::new();
-        let w = blob2(3840.0, &[vec![(0.0, 0, 0.0, MORPH_LINE), (1920.0, 1, 500.0, MORPH_EASE)], vec![]]);
+        let w = blob2(
+            3840.0,
+            &[
+                vec![(0.0, 0, 0.0, MORPH_LINE), (1920.0, 1, 500.0, MORPH_EASE)],
+                vec![],
+            ],
+        );
         t.load(&bytes(&w)).unwrap();
         assert_eq!(t.n_clips(), 2);
         assert_eq!(t.clip(0).n_morph, 2);
-        assert_eq!(t.clip_morph(t.clip(0))[1], Morph { t: 1920.0, state: 1, len_ms: 500.0, shape: MORPH_EASE });
+        assert_eq!(
+            t.clip_morph(t.clip(0))[1],
+            Morph {
+                t: 1920.0,
+                state: 1,
+                len_ms: 500.0,
+                shape: MORPH_EASE
+            }
+        );
         assert_eq!(t.clip(1).n_morph, 0);
         assert!(t.morph_blend(1, 10.0, 1.0).is_none());
         // A v1 blob replaces it and has no markers.
         let secs = [grid(4.0, 120.0, 1, 0.0)];
-        t.load(&blob(&secs, &[clip(0, 0, 3840.0, &[0.0])], false)).unwrap();
+        t.load(&blob(&secs, &[clip(0, 0, 3840.0, &[0.0])], false))
+            .unwrap();
         assert_eq!((t.n_clips(), t.clip(0).n_morph), (1, 0));
         assert!(t.morph_blend(0, 0.0, 1.0).is_none());
     }
@@ -1479,15 +1734,84 @@ mod tests {
         t.load(&bytes(&good)).unwrap();
         let first_marker = 8 + 8 + 12;
         let bad: Vec<(&str, Vec<u32>, LoadError)> = vec![
-            ("state out of range", { let mut w = good.clone(); w[first_marker + 1] = MAX_STATES as u32; w }, LoadError::Malformed),
-            ("unknown shape", { let mut w = good.clone(); w[first_marker + 3] = 9; w }, LoadError::Malformed),
-            ("negative length", { let mut w = good.clone(); w[first_marker + 2] = (-5f32).to_bits(); w }, LoadError::Malformed),
-            ("NaN time", { let mut w = good.clone(); w[first_marker] = f32::NAN.to_bits(); w }, LoadError::Malformed),
-            ("unsorted", { let mut w = good.clone(); w[first_marker + 4] = 0f32.to_bits(); w[first_marker] = 5f32.to_bits(); w }, LoadError::Malformed),
-            ("run past the array", { let mut w = good.clone(); w[8 + 8 + 9] = 3; w }, LoadError::Malformed),
-            ("short", good[..good.len() - 1].to_vec(), LoadError::Malformed),
-            ("long", { let mut w = good.clone(); w.push(0); w }, LoadError::Malformed),
-            ("too many markers", { let mut w = good.clone(); w[6] = MAX_MORPH as u32 + 1; w }, LoadError::TooBig),
+            (
+                "state out of range",
+                {
+                    let mut w = good.clone();
+                    w[first_marker + 1] = MAX_STATES as u32;
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "unknown shape",
+                {
+                    let mut w = good.clone();
+                    w[first_marker + 3] = 9;
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "negative length",
+                {
+                    let mut w = good.clone();
+                    w[first_marker + 2] = (-5f32).to_bits();
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "NaN time",
+                {
+                    let mut w = good.clone();
+                    w[first_marker] = f32::NAN.to_bits();
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "unsorted",
+                {
+                    let mut w = good.clone();
+                    w[first_marker + 4] = 0f32.to_bits();
+                    w[first_marker] = 5f32.to_bits();
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "run past the array",
+                {
+                    let mut w = good.clone();
+                    w[8 + 8 + 9] = 3;
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "short",
+                good[..good.len() - 1].to_vec(),
+                LoadError::Malformed,
+            ),
+            (
+                "long",
+                {
+                    let mut w = good.clone();
+                    w.push(0);
+                    w
+                },
+                LoadError::Malformed,
+            ),
+            (
+                "too many markers",
+                {
+                    let mut w = good.clone();
+                    w[6] = MAX_MORPH as u32 + 1;
+                    w
+                },
+                LoadError::TooBig,
+            ),
         ];
         for (what, w, err) in bad {
             assert_eq!(t.load(&bytes(&w)), Err(err), "{what}");
@@ -1503,16 +1827,37 @@ mod tests {
     fn morph_blend_follows_the_lane() {
         // 120 bpm: 1 ms is 1.92 ticks.
         let ms = 1.0 / 1.92;
-        let w = blob2(3840.0, &[vec![(0.0, 0, 0.0, MORPH_LINE), (1920.0, 1, 500.0, MORPH_LINE), (2880.0, 2, 200.0, MORPH_STEP)]]);
+        let w = blob2(
+            3840.0,
+            &[vec![
+                (0.0, 0, 0.0, MORPH_LINE),
+                (1920.0, 1, 500.0, MORPH_LINE),
+                (2880.0, 2, 200.0, MORPH_STEP),
+            ]],
+        );
         let mut t = Track::new();
         t.load(&bytes(&w)).unwrap();
         let at = |p: f64| t.morph_blend(0, p, ms).unwrap();
-        assert_eq!(at(100.0), MorphBlend { from: 2, to: 0, x: 1.0 }); // len 0 on the first marker
+        assert_eq!(
+            at(100.0),
+            MorphBlend {
+                from: 2,
+                to: 0,
+                x: 1.0
+            }
+        ); // len 0 on the first marker
         let b = at(1920.0 + 480.0); // 250 ms into the 500 ms line
         assert_eq!((b.from, b.to), (0, 1));
         assert!((b.x - 0.5).abs() < 1e-3, "{}", b.x);
         assert_eq!(at(1920.0 + 2000.0).x, 1.0);
-        assert_eq!(at(2880.0 + 1.0), MorphBlend { from: 1, to: 2, x: 1.0 }); // step: at once
+        assert_eq!(
+            at(2880.0 + 1.0),
+            MorphBlend {
+                from: 1,
+                to: 2,
+                x: 1.0
+            }
+        ); // step: at once
         // The position wraps with the loop.
         assert_eq!(at(3840.0 + 1920.0 + 480.0).x, b.x);
         // No rate: everything completes.
@@ -1522,7 +1867,10 @@ mod tests {
     #[test]
     fn morph_shapes() {
         let mk = |shape| {
-            let w = blob2(3840.0, &[vec![(0.0, 0, 0.0, 0), (1000.0, 1, 1000.0, shape)]]);
+            let w = blob2(
+                3840.0,
+                &[vec![(0.0, 0, 0.0, 0), (1000.0, 1, 1000.0, shape)]],
+            );
             let mut t = Track::new();
             t.load(&bytes(&w)).unwrap();
             // 1000 ms per 1920 ticks: half way is 500 ms in.

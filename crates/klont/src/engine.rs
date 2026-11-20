@@ -9,6 +9,7 @@
 use crate::curve::CurvePool;
 use crate::layer::Layer;
 use crate::live::{Action, LiveCapture};
+use crate::metro::Metro;
 use crate::protocol::*;
 use crate::seq::{EventList, Track, Transport};
 use crate::voice::{MAX_PARTIALS, TICK};
@@ -46,6 +47,7 @@ pub struct Engine {
     track: Box<Track>,
     curves: Box<CurvePool>,
     transport: Transport,
+    metro: Metro,
     events: EventList,
     live: Vec<LiveMsg>,
     capture: LiveCapture,
@@ -77,7 +79,11 @@ fn soft_clip(x: f32) -> f32 {
 
 impl Engine {
     pub fn new(sample_rate: f32, max_block: usize) -> Box<Engine> {
-        let sr = if sample_rate.is_finite() { sample_rate.clamp(8000.0, 192_000.0) } else { 48_000.0 };
+        let sr = if sample_rate.is_finite() {
+            sample_rate.clamp(8000.0, 192_000.0)
+        } else {
+            48_000.0
+        };
         let max_block = max_block.clamp(1, 1 << 16);
         let mut e = Box::new(Engine {
             sr,
@@ -111,6 +117,7 @@ impl Engine {
             track: Box::new(Track::new()),
             curves: Box::new(CurvePool::new()),
             transport: Transport::new(sr),
+            metro: Metro::new(sr),
             events: EventList::new(),
             live: Vec::with_capacity(CONTROL_CAP + 4),
             capture: LiveCapture::new(sr, max_block),
@@ -163,6 +170,9 @@ impl Engine {
     pub fn meter(&self) -> &[f32] {
         &self.meter
     }
+    pub fn input(&self) -> &[f32] {
+        &self.input
+    }
     pub fn input_mut(&mut self) -> &mut [f32] {
         &mut self.input
     }
@@ -202,18 +212,24 @@ impl Engine {
     fn load_inner(&mut self, slot: u32, kind: u32, bytes: &[u8]) -> i32 {
         match kind {
             LOAD_TRACK => {
-                let uid = |i: usize| if i < self.track.n_sections() { self.track.section(i).uid } else { 0 };
+                let uid = |i: usize| {
+                    if i < self.track.n_sections() {
+                        self.track.section(i).uid
+                    } else {
+                        0
+                    }
+                };
                 let cur_uid = uid(self.transport.section());
                 let jump_uid = self.transport.queued_jump().map_or(0, uid);
                 match self.track.load(bytes) {
-                Ok(()) => {
-                    self.transport.follow_uids(&self.track, cur_uid, jump_uid);
-                    self.transport.track_changed(&self.track);
-                    LOAD_OK
-                }
-                Err(crate::seq::LoadError::BadMagic) => LOAD_BAD_MAGIC,
-                Err(crate::seq::LoadError::TooBig) => LOAD_TOO_BIG,
-                Err(crate::seq::LoadError::Malformed) => LOAD_MALFORMED,
+                    Ok(()) => {
+                        self.transport.follow_uids(&self.track, cur_uid, jump_uid);
+                        self.transport.track_changed(&self.track);
+                        LOAD_OK
+                    }
+                    Err(crate::seq::LoadError::BadMagic) => LOAD_BAD_MAGIC,
+                    Err(crate::seq::LoadError::TooBig) => LOAD_TOO_BIG,
+                    Err(crate::seq::LoadError::Malformed) => LOAD_MALFORMED,
                 }
             }
             LOAD_LAYER => {
@@ -224,7 +240,14 @@ impl Engine {
                 if bytes.len() != LAYER_WORDS * 4 {
                     return LOAD_MALFORMED;
                 }
-                let word = |i: usize| u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]]);
+                let word = |i: usize| {
+                    u32::from_le_bytes([
+                        bytes[i * 4],
+                        bytes[i * 4 + 1],
+                        bytes[i * 4 + 2],
+                        bytes[i * 4 + 3],
+                    ])
+                };
                 if word(0) != LAYER_MAGIC {
                     return LOAD_BAD_MAGIC;
                 }
@@ -244,19 +267,36 @@ impl Engine {
                 if bytes.len() < hdr {
                     return LOAD_MALFORMED;
                 }
-                let word = |i: usize| u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]]);
+                let word = |i: usize| {
+                    u32::from_le_bytes([
+                        bytes[i * 4],
+                        bytes[i * 4 + 1],
+                        bytes[i * 4 + 2],
+                        bytes[i * 4 + 3],
+                    ])
+                };
                 if word(0) != GRAIN_MAGIC {
                     return LOAD_BAD_MAGIC;
                 }
-                let (rate, ref_cents, n) = (f32::from_bits(word(1)), f32::from_bits(word(2)), word(3) as usize);
+                let (rate, ref_cents, n) = (
+                    f32::from_bits(word(1)),
+                    f32::from_bits(word(2)),
+                    word(3) as usize,
+                );
                 if n > GRAIN_MAX_SAMPLES {
                     return LOAD_TOO_BIG;
                 }
-                if bytes.len() != hdr + n * 4 || (n > 0 && !(rate.is_finite() && (1000.0..=384_000.0).contains(&rate))) {
+                if bytes.len() != hdr + n * 4
+                    || (n > 0 && !(rate.is_finite() && (1000.0..=384_000.0).contains(&rate)))
+                {
                     return LOAD_MALFORMED;
                 }
                 // NaN means unpitched; any other value is a pitch in cents.
-                let ref_cents = if ref_cents.is_finite() { ref_cents.clamp(0.0, 13_000.0) } else { f32::NAN };
+                let ref_cents = if ref_cents.is_finite() {
+                    ref_cents.clamp(0.0, 13_000.0)
+                } else {
+                    f32::NAN
+                };
                 self.layers[s].load_grain(rate, ref_cents, n, &bytes[hdr..]);
                 LOAD_OK
             }
@@ -268,7 +308,14 @@ impl Engine {
                 if bytes.len() < 8 {
                     return LOAD_MALFORMED;
                 }
-                let word = |i: usize| u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]]);
+                let word = |i: usize| {
+                    u32::from_le_bytes([
+                        bytes[i * 4],
+                        bytes[i * 4 + 1],
+                        bytes[i * 4 + 2],
+                        bytes[i * 4 + 3],
+                    ])
+                };
                 if word(0) != STATES_MAGIC {
                     return LOAD_BAD_MAGIC;
                 }
@@ -319,14 +366,19 @@ impl Engine {
             let index = m[3];
             let param = u16::from_le_bytes([m[4], m[5]]);
             let value = f32::from_le_bytes([m[8], m[9], m[10], m[11]]);
-            let time = u32::from_le_bytes([m[12], m[13], m[14], m[15]]).min(frames.saturating_sub(1) as u32);
+            let time = u32::from_le_bytes([m[12], m[13], m[14], m[15]])
+                .min(frames.saturating_sub(1) as u32);
             let lay = layer < MAX_LAYERS;
             match ty {
                 MSG_SET_PARAM if lay => self.layers[layer].set_param(index, param as usize, value),
                 MSG_SET_MACRO if lay => self.layers[layer].set_macro(index as usize, value),
                 MSG_SET_LAYER if lay => self.layers[layer].set_field(param, value),
                 MSG_NOTE_ON | MSG_NOTE_OFF if lay => {
-                    let velocity = if param == 0 { 1.0 } else { (param as f32 / 1000.0).min(1.0) };
+                    let velocity = if param == 0 {
+                        1.0
+                    } else {
+                        (param as f32 / 1000.0).min(1.0)
+                    };
                     self.live.push(LiveMsg {
                         time,
                         on: ty == MSG_NOTE_ON,
@@ -340,7 +392,13 @@ impl Engine {
                 }
                 MSG_ARM if lay => {
                     let was = self.capture.armed;
-                    let now = if value > 0.5 { layer as i32 } else if was == layer as i32 { -1 } else { was };
+                    let now = if value > 0.5 {
+                        layer as i32
+                    } else if was == layer as i32 {
+                        -1
+                    } else {
+                        was
+                    };
                     if now != was {
                         if was >= 0 {
                             self.layers[was as usize].follow_release();
@@ -349,10 +407,28 @@ impl Engine {
                     }
                 }
                 MSG_SET_TUNE if lay => self.capture.set_tune(layer, param, value),
-                MSG_SET_LIVE_KIT if lay => self.capture.set_kit(layer, index as usize, param, value),
+                MSG_SET_LIVE_KIT if lay => {
+                    self.capture.set_kit(layer, index as usize, param, value)
+                }
                 MSG_RESET_SINGER => self.capture.reset_singer(),
-                MSG_PLAY => self.transport.play(),
+                MSG_SET_METRO => self.metro.set(param, value),
+                MSG_COUNT_IN => {
+                    if !self.transport.playing() && !self.metro.counting() {
+                        let bpm = if value.is_finite() && value >= 20.0 {
+                            value
+                        } else {
+                            let b = self.transport.bpm();
+                            if b >= 20.0 { b as f32 } else { 100.0 }
+                        };
+                        self.metro.start_count(bpm as f64);
+                    }
+                }
+                MSG_PLAY => {
+                    self.metro.cancel();
+                    self.transport.play();
+                }
                 MSG_STOP => {
+                    self.metro.cancel();
                     self.transport.stop();
                     for l in self.layers.iter_mut() {
                         l.release_sequenced();
@@ -360,7 +436,8 @@ impl Engine {
                 }
                 MSG_JUMP => self.transport.queue_jump(index as usize),
                 MSG_SET_BUDGET if value.is_finite() => {
-                    self.budget_fixed = (value.max(0.0) as u32).min(MAX_LAYERS as u32 * VOICES_PER_LAYER as u32 * MAX_PARTIALS as u32);
+                    self.budget_fixed = (value.max(0.0) as u32)
+                        .min(MAX_LAYERS as u32 * VOICES_PER_LAYER as u32 * MAX_PARTIALS as u32);
                 }
                 MSG_SELECT_LAYER if lay => self.selected = layer,
                 MSG_PANIC => {
@@ -395,13 +472,29 @@ impl Engine {
         if armed >= 0 {
             let msg = match action {
                 Action::None => None,
-                Action::Start { slot, velocity, hard } => Some((1, slot, velocity, hard)),
+                Action::Start {
+                    slot,
+                    velocity,
+                    hard,
+                } => Some((1, slot, velocity, hard)),
                 Action::Release => Some((2, 0, 0.0, 0.0)),
             };
             if let Some((follow, slot, velocity, hard)) = msg {
                 if self.live.len() < self.live.capacity() {
                     // Time 0: the sound starts in this quantum.
-                    self.live.insert(0, LiveMsg { time: 0, on: true, layer: armed as u8, slot, cents: f32::NAN, velocity, follow, hard });
+                    self.live.insert(
+                        0,
+                        LiveMsg {
+                            time: 0,
+                            on: true,
+                            layer: armed as u8,
+                            slot,
+                            cents: f32::NAN,
+                            velocity,
+                            follow,
+                            hard,
+                        },
+                    );
                 }
             }
         }
@@ -470,27 +563,85 @@ impl Engine {
                 self.call_pos = pos;
                 self.tick();
             }
-            let span = (TICK - self.tick_phase).min(frames - pos);
+            let mut span = (TICK - self.tick_phase).min(frames - pos);
+
+            // Count-in runs with the transport stopped. Clicks are mixed here;
+            // the downbeat sample is left for the transport so the song and
+            // the accented click start on the same sample.
+            if self.live_on && self.metro.counting() {
+                let (n, start) = self.metro.advance_count(span);
+                if n > 0 {
+                    self.render_count_span(pos, n);
+                    self.tick_phase = (self.tick_phase + n) % TICK;
+                    pos += n;
+                }
+                if !start {
+                    continue;
+                }
+                self.transport.play();
+                if pos >= frames {
+                    break;
+                }
+                if n > 0 && self.tick_phase == 0 {
+                    self.call_pos = pos;
+                    self.tick();
+                }
+                span = (TICK - self.tick_phase).min(frames - pos);
+                if span == 0 {
+                    continue;
+                }
+            }
+
             self.events.clear();
             self.transport.advance(&self.track, span, &mut self.events);
+            let beats_on = self.live_on && self.metro.on;
+            let n_beats = if beats_on { self.transport.n_beats } else { 0 };
+            let beat_off = self.transport.beat_off;
+            let beat_index = self.transport.beat_index;
+            let mut beat_i = 0;
             let mut ev_i = 0;
             let mut sub: usize = 0;
             loop {
-                let next_seq = self.events.as_slice().get(ev_i).map_or(span, |e| e.offset as usize);
-                let next_live = self.live.get(live_i).map_or(span, |m| (m.time as usize).saturating_sub(pos).min(span));
-                let next_off = self.layers.iter().map(|l| l.next_off()).min().unwrap_or(u32::MAX) as usize;
-                let stop = next_seq.min(next_live).min(sub.saturating_add(next_off)).min(span).max(sub);
+                let next_seq = self
+                    .events
+                    .as_slice()
+                    .get(ev_i)
+                    .map_or(span, |e| e.offset as usize);
+                let next_live = self
+                    .live
+                    .get(live_i)
+                    .map_or(span, |m| (m.time as usize).saturating_sub(pos).min(span));
+                let next_beat = if beat_i < n_beats {
+                    beat_off[beat_i] as usize
+                } else {
+                    span
+                };
+                let next_off = self
+                    .layers
+                    .iter()
+                    .map(|l| l.next_off())
+                    .min()
+                    .unwrap_or(u32::MAX) as usize;
+                let stop = next_seq
+                    .min(next_live)
+                    .min(next_beat)
+                    .min(sub.saturating_add(next_off))
+                    .min(span)
+                    .max(sub);
                 if stop > sub {
-                    self.render_span(pos + sub, pos + stop);
-                    for l in self.layers.iter_mut() {
-                        l.count_offs((stop - sub) as u32);
-                    }
+                    self.paint(pos + sub, pos + stop);
                     sub = stop;
                 }
                 if sub >= span {
                     break;
                 }
                 let len = TICK - (self.tick_phase + sub);
+                if beat_i < n_beats && beat_off[beat_i] as usize == sub {
+                    let bar = self.metro.bar.max(1) as i32;
+                    let accent = beat_index[beat_i].rem_euclid(bar) == 0;
+                    self.fire_click(accent, false, len);
+                    beat_i += 1;
+                }
                 while let Some(m) = self.live.get(live_i).copied() {
                     if (m.time as usize).saturating_sub(pos) > sub {
                         break;
@@ -502,7 +653,14 @@ impl Engine {
                     }
                     let l = &mut self.layers[m.layer as usize];
                     if m.on {
-                        l.note_on_live(m.slot as usize, m.cents, m.velocity, &self.track, &self.curves, len);
+                        l.note_on_live(
+                            m.slot as usize,
+                            m.cents,
+                            m.velocity,
+                            &self.track,
+                            &self.curves,
+                            len,
+                        );
                     } else {
                         l.note_off_live(m.cents);
                     }
@@ -514,7 +672,14 @@ impl Engine {
                     ev_i += 1;
                     let ev = *self.track.event(e.event as usize);
                     if let Some(l) = self.layers.get_mut(e.layer as usize) {
-                        l.note_from_event(&self.track, &self.curves, e.clip, &ev, e.dur_samples, len);
+                        l.note_from_event(
+                            &self.track,
+                            &self.curves,
+                            e.clip,
+                            &ev,
+                            e.dur_samples,
+                            len,
+                        );
                     }
                 }
             }
@@ -548,7 +713,14 @@ impl Engine {
         }
         self.push_follow_record(self.call_pos);
         let l = &mut self.layers[layer];
-        l.follow_start(m.slot as usize, m.velocity, m.hard, &self.track, &self.curves, len);
+        l.follow_start(
+            m.slot as usize,
+            m.velocity,
+            m.hard,
+            &self.track,
+            &self.curves,
+            len,
+        );
     }
 
     /// Give the armed layer the live frame for the tick starting at `pos`.
@@ -566,6 +738,62 @@ impl Engine {
         for layer in self.layers.iter_mut() {
             layer.render(l, r);
         }
+    }
+
+    /// Render layers for `[a, b)` and mix a ringing tick on top. The tick is
+    /// live-only; `render` leaves `live_on` false so exports stay clean.
+    fn paint(&mut self, a: usize, b: usize) {
+        if b <= a {
+            return;
+        }
+        self.render_span(a, b);
+        if self.live_on {
+            self.metro.mix(&mut self.out_l[a..b], &mut self.out_r[a..b]);
+        }
+        for l in self.layers.iter_mut() {
+            l.count_offs((b - a) as u32);
+        }
+    }
+
+    /// Count-in clicks in a span of `n` samples starting at `pos`. The click
+    /// list was filled by `advance_count` and is not a transport beat.
+    fn render_count_span(&mut self, pos: usize, n: usize) {
+        let n_clicks = self.metro.n_clicks;
+        let clicks = self.metro.clicks;
+        let mut s = 0usize;
+        for i in 0..n_clicks {
+            let at = clicks[i].offset as usize;
+            if at > n {
+                break;
+            }
+            if at > s {
+                self.paint(pos + s, pos + at);
+            }
+            let len = (TICK - self.tick_phase).saturating_sub(at).max(1);
+            self.fire_click(clicks[i].accent, true, len);
+            s = at;
+        }
+        if n > s {
+            self.paint(pos + s, pos + n);
+        }
+    }
+
+    /// A click. A kit voice is a real note on the chosen beat layer, so it
+    /// uses that slot's sound. Anything else (or a muted layer) is a plain tick.
+    /// Neither path writes the mic buffer.
+    fn fire_click(&mut self, accent: bool, count_in: bool, len: usize) {
+        if self.metro.kit {
+            let li = self.metro.kit_layer;
+            if let Some(l) = self.layers.get_mut(li) {
+                if l.kind == KIND_BEAT && !l.mute {
+                    let slot = self.metro.kit_slot;
+                    let vel = if accent { 1.0 } else { 0.7 };
+                    l.note_on_live(slot, f32::NAN, vel, &self.track, &self.curves, len.max(1));
+                    return;
+                }
+            }
+        }
+        self.metro.trigger(accent, count_in);
     }
 
     /// Control tick: resolution and budget for every layer, then every voice.
@@ -592,7 +820,11 @@ impl Engine {
         let section = self.transport.section();
         let pos = self.transport.pos();
         let ups = self.transport.units_per_sample();
-        let ms_per_unit = if ups > 0.0 { 1000.0 / (ups * self.sr as f64) } else { 0.0 };
+        let ms_per_unit = if ups > 0.0 {
+            1000.0 / (ups * self.sr as f64)
+        } else {
+            0.0
+        };
         for (li, l) in self.layers.iter_mut().enumerate() {
             if !l.has_states() {
                 continue;
@@ -609,7 +841,11 @@ impl Engine {
     }
 
     pub fn budget(&self) -> u32 {
-        if self.budget_fixed > 0 { self.budget_fixed } else { self.budget as u32 }
+        if self.budget_fixed > 0 {
+            self.budget_fixed
+        } else {
+            self.budget as u32
+        }
     }
 
     /// Share the active-partial budget among sounding voices by loudness
@@ -674,7 +910,11 @@ impl Engine {
         for (li, l) in self.layers.iter_mut().enumerate() {
             for vi in 0..VOICES_PER_LAYER {
                 let k = li * VOICES_PER_LAYER + vi;
-                l.max_partials[vi] = if want[k] > 0.0 { (give[k].floor() as usize).clamp(2, MAX_PARTIALS) } else { idle_share };
+                l.max_partials[vi] = if want[k] > 0.0 {
+                    (give[k].floor() as usize).clamp(2, MAX_PARTIALS)
+                } else {
+                    idle_share
+                };
             }
         }
     }
@@ -690,16 +930,39 @@ impl Engine {
         m[M_BPM] = self.transport.bpm() as f32;
         m[M_CLOCK_LO] = (self.clock & ((1 << 20) - 1)) as f32;
         m[M_CLOCK_HI] = (self.clock >> 20) as f32;
-        m[M_UNITS_PER_SAMPLE] =
-            if self.transport.playing() { self.transport.units_per_sample() as f32 } else { 0.0 };
+        m[M_UNITS_PER_SAMPLE] = if self.transport.playing() {
+            self.transport.units_per_sample() as f32
+        } else {
+            0.0
+        };
+        m[M_METRO] = if self.metro.on { 1.0 } else { 0.0 };
+        m[M_COUNTIN] = self.metro.remaining() as f32;
+        m[M_COUNT_SEQ] = self.metro.count_seq as f32;
+        m[M_METRO_BEAT] = if self.metro.counting() {
+            self.metro.shown_beat() as f32
+        } else if self.transport.playing() && !self.transport.is_free() {
+            let beat = ((self.transport.pos() + 1e-6) / 960.0).floor() as i32;
+            beat.rem_euclid(self.metro.bar.max(1) as i32) as f32
+        } else {
+            -1.0
+        };
         m[M_LOAD] = self.host_load;
-        m[M_BUDGET] = if self.budget_fixed > 0 { self.budget_fixed as f32 } else { self.budget.floor() };
+        m[M_BUDGET] = if self.budget_fixed > 0 {
+            self.budget_fixed as f32
+        } else {
+            self.budget.floor()
+        };
         let (mut parts, mut voices, mut steals) = (0usize, 0usize, 0u32);
         for (i, l) in self.layers.iter().enumerate() {
             let n = l.sounding();
             voices += n;
             steals += l.steals;
-            parts += l.voices.iter().filter(|v| v.active()).map(|v| v.active_partials()).sum::<usize>();
+            parts += l
+                .voices
+                .iter()
+                .filter(|v| v.active())
+                .map(|v| v.active_partials())
+                .sum::<usize>();
             m[M_LAYER_PEAK + i] = l.peak;
             m[M_LAYER_VOICES + i] = n as f32;
         }
@@ -752,9 +1015,19 @@ pub unsafe extern "C" fn ew_render(e: *mut Engine, frames: u32) -> u32 {
 /// `e` must come from `ew_init`; `ptr..ptr+len` must be readable (normally
 /// the staging area from `ew_buffers`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ew_load(e: *mut Engine, slot: u32, kind: u32, ptr: *const u8, len: u32) -> i32 {
+pub unsafe extern "C" fn ew_load(
+    e: *mut Engine,
+    slot: u32,
+    kind: u32,
+    ptr: *const u8,
+    len: u32,
+) -> i32 {
     unsafe {
-        let bytes = if ptr.is_null() || len == 0 { &[][..] } else { std::slice::from_raw_parts(ptr, len as usize) };
+        let bytes = if ptr.is_null() || len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(ptr, len as usize)
+        };
         (*e).load_bytes(slot, kind, bytes)
     }
 }
