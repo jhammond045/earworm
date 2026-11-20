@@ -326,9 +326,9 @@ export class GlTimeline {
     if (!sec) { this.dirty = false; return; }
 
     const mesh = new Mesh();
-    const bg: Rgba = [0.05, 0.07, 0.1, 1];
-    const line: Rgba = [0.17, 0.32, 0.44, 1];
-    const accent: Rgba = [0.90, 0.69, 0.35, 1];
+    const bg: Rgba = [0.039, 0.051, 0.071, 1];
+    const line: Rgba = [0.24, 0.32, 0.40, 1];
+    const accent: Rgba = [0.941, 0.706, 0.161, 1];
     const dim: Rgba = [0.54, 0.63, 0.71, 0.7];
     mesh.quad(0, 0, cssW, cssH, bg);
     const vp = { ppu, x0: X0 };

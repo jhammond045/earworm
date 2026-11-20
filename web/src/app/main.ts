@@ -6,7 +6,7 @@ import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { soundToSet } from '../m1/layer';
 import {
   LAYER_DEPTH_BREATH, LAYER_DEPTH_HARD, LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_DEPTH_OPEN, LAYER_FOLLOW,
-  LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, M_LAYER_VOICES, M_METRO_BEAT,
+  LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, LAYER_PAN, M_LAYER_VOICES, M_METRO_BEAT,
   M_PLAYING, M_SECTION, M_SECTION_POS, SET_INFLUENCE,
 } from '../m1/protocol';
 import { Analysis } from '../m2/analysis';
@@ -22,7 +22,7 @@ import { exportProject, importProject } from '../project/archive';
 import { applyOps } from '../project/patch';
 import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
 import { MACRO_NAMES, N_MACROS } from '../gen/params';
-import { PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
+import { MAX_STATES, PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
 import { GlTimeline } from './gl-timeline';
 import { startLogo } from './logo';
 import { AppCapture } from './capture';
@@ -38,6 +38,12 @@ const ASPECTS: { label: string; bit: number }[] = [
 
 const btn = (id: string) => $<HTMLButtonElement>(id);
 const num = (id: string) => $<HTMLInputElement>(id);
+
+/** Pan as a letter plus a number, so the slider is not the only cue. */
+function panLabel(pan: number): string {
+  if (Math.abs(pan) < 0.05) return 'C';
+  return pan < 0 ? `L ${Math.round(-pan * 100)}` : `R ${Math.round(pan * 100)}`;
+}
 
 async function main(): Promise<void> {
   let kv: Kv;
@@ -80,8 +86,8 @@ async function main(): Promise<void> {
     $('tourBody').textContent = step.body;
     btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
     document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
-    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit';
-    const panel = step.target === 'layers' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' ? 'pattern' : '';
+    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'pan';
+    const panel = step.target === 'layers' || step.target === 'section-edit' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' ? 'pattern' : '';
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
 
@@ -106,14 +112,16 @@ async function main(): Promise<void> {
       b.setAttribute('aria-selected', String(l.id === app.ui.layerId));
       const sw = document.createElement('span');
       sw.className = 'sw';
+      sw.dataset.kind = l.kind;
       sw.style.background = '#' + l.color.toString(16).padStart(6, '0');
+      sw.title = l.kind;
       const name = document.createElement('span');
       name.textContent = `${i + 1}  ${l.name}`;
       name.className = 'mono';
       b.append(sw, name);
       if (l.mute) {
         const tag = document.createElement('span');
-        tag.className = 'dim';
+        tag.className = 'tag';
         tag.textContent = 'mute';
         b.append(tag);
       }
@@ -160,7 +168,7 @@ async function main(): Promise<void> {
         const view = cellView(sec, l, r);
         const cell = document.createElement('button');
         cell.type = 'button';
-        cell.className = 'cell' + (cursor.row === r && cursor.col === c ? ' cursor' : '');
+        cell.className = 'cell' + (view.eventId ? ' has' : '') + (cursor.row === r && cursor.col === c ? ' cursor' : '');
         cell.textContent = view.label;
         cell.title = view.title;
         cell.setAttribute('role', 'gridcell');
@@ -224,8 +232,17 @@ async function main(): Promise<void> {
       state.value = cur;
     }
     num('level').value = String(l.level);
+    if (document.activeElement !== num('pan')) {
+      num('pan').value = String(Math.round(l.pan * 100));
+      $('panRead').textContent = panLabel(l.pan);
+    }
     btn('mute').setAttribute('aria-pressed', String(l.mute));
     btn('mute').classList.toggle('down', l.mute);
+    btn('mute').textContent = l.mute ? 'Muted' : 'Mute';
+    const statesFull = l.states.length >= MAX_STATES;
+    btn('addState').disabled = statesFull;
+    btn('copyState').disabled = statesFull;
+    btn('removeState').disabled = l.states.length < 2;
     const st = app.ui.editState(l);
     if (document.activeElement !== num('amount')) num('amount').value = String(Math.round(st.influenceAmount * 100));
     const infl = l.influence;
@@ -262,9 +279,19 @@ async function main(): Promise<void> {
     $('secName').textContent = sec ? `${sec.name} ${sec.feel === 'grid' ? `${sec.beats} beats` : `${sec.seconds}s`}` : '—';
     if (document.activeElement !== num('bpm') && sec?.feel === 'grid') num('bpm').value = String(sec.bpm);
     num('bpm').disabled = !sec || sec.feel !== 'grid';
+    if (sec && document.activeElement !== num('secRename')) num('secRename').value = sec.name;
+    const beatsLabel = $('beatsLabel');
+    const secondsLabel = $('secondsLabel');
+    beatsLabel.hidden = !sec || sec.feel !== 'grid';
+    secondsLabel.hidden = !sec || sec.feel !== 'free';
+    if (sec && document.activeElement !== num('beats')) num('beats').value = String(sec.beats);
+    if (sec && document.activeElement !== num('seconds')) num('seconds').value = String(sec.seconds);
+    if (sec && document.activeElement !== num('repeats')) num('repeats').value = String(sec.repeats);
+    btn('removeSection').disabled = doc.sections.length < 2;
     const m = doc.metro ?? defaultMetro();
     btn('metro').setAttribute('aria-pressed', String(m.on));
     btn('metro').classList.toggle('down', m.on);
+    btn('metro').textContent = m.on ? 'Metro on' : 'Metro';
     if (document.activeElement !== num('metroLevel')) num('metroLevel').value = String(Math.round(m.level * 100));
     btn('metroVoice').textContent = m.voice === 'kit' ? 'Kit' : 'Tick';
     btn('undo').disabled = !app.store.history.canUndo;
@@ -289,14 +316,22 @@ async function main(): Promise<void> {
       const d = document.createElement('div');
       d.className = 'scope';
       d.title = 'Voices sounding on this layer';
+      d.setAttribute('role', 'meter');
+      d.setAttribute('aria-label', `${l.name} voices sounding`);
+      d.setAttribute('aria-valuemin', '0');
+      d.setAttribute('aria-valuemax', '8');
+      d.setAttribute('aria-valuenow', '0');
       const name = document.createElement('div');
       name.className = 'name';
       name.textContent = l.name;
+      const voices = document.createElement('span');
+      voices.className = 'voices';
+      voices.textContent = '0';
       const bar = document.createElement('div');
       bar.className = 'bar';
       const span = document.createElement('span');
       bar.append(span);
-      d.append(name, bar);
+      d.append(name, voices, bar);
       box.append(d);
     }
   }
@@ -440,6 +475,52 @@ async function main(): Promise<void> {
     const bpm = Number(num('bpm').value);
     app.run(() => app.store.dispatch('setSection', { id: sec.id, bpm }));
   });
+  num('secRename').addEventListener('change', () => {
+    const sec = section();
+    const name = num('secRename').value.trim();
+    if (!sec || !name) { if (sec) num('secRename').value = sec.name; return; }
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, name }));
+  });
+  num('beats').addEventListener('change', () => {
+    const sec = section();
+    const beats = Number(num('beats').value);
+    if (!sec || !(beats > 0)) return;
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, beats }));
+  });
+  num('seconds').addEventListener('change', () => {
+    const sec = section();
+    const seconds = Number(num('seconds').value);
+    if (!sec || !(seconds > 0)) return;
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, seconds }));
+  });
+  num('repeats').addEventListener('change', () => {
+    const sec = section();
+    const repeats = Number(num('repeats').value);
+    if (!sec || !Number.isInteger(repeats) || repeats < 1) { if (sec) num('repeats').value = String(sec.repeats); return; }
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, repeats }));
+  });
+  btn('dupSection').addEventListener('click', () => {
+    const sec = section();
+    if (!sec) return;
+    const i = app.doc.sections.findIndex((s) => s.id === sec.id);
+    if (app.run(() => app.store.dispatch('duplicateSection', { id: sec.id }))) {
+      const copy = app.doc.sections[i + 1];
+      if (copy) { app.ui.sectionId = copy.id; app.ui.changed(); }
+    }
+  });
+  btn('removeSection').addEventListener('click', () => {
+    const sec = section();
+    if (!sec || app.doc.sections.length < 2) return;
+    const i = app.doc.sections.findIndex((s) => s.id === sec.id);
+    if (!app.run(() => app.store.dispatch('removeSection', { id: sec.id }))) return;
+    const next = app.doc.sections[Math.min(i, app.doc.sections.length - 1)];
+    if (next) { app.ui.sectionId = next.id; app.ui.changed(); }
+  });
+  num('roundTrip').addEventListener('change', () => {
+    const v = Number(num('roundTrip').value);
+    capture.roundTripMs = Number.isFinite(v) ? Math.max(0, Math.min(400, v)) : 30;
+    num('roundTrip').value = String(capture.roundTripMs);
+  });
   btn('metro').addEventListener('click', () => {
     const on = !(app.doc.metro?.on);
     app.run(() => app.store.dispatch('setMetro', { on }));
@@ -509,6 +590,17 @@ async function main(): Promise<void> {
   num('level').addEventListener('change', () => {
     const l = layer();
     if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, level: Number(num('level').value) }));
+  });
+  num('pan').addEventListener('input', () => {
+    const l = layer();
+    const pan = Number(num('pan').value) / 100;
+    $('panRead').textContent = panLabel(pan);
+    const i = app.doc.layers.findIndex((x) => x.id === l?.id);
+    if (i >= 0) app.host?.setLayer(i, LAYER_PAN, pan);
+  });
+  num('pan').addEventListener('change', () => {
+    const l = layer();
+    if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, pan: Number(num('pan').value) / 100 }));
   });
   btn('mute').addEventListener('click', () => {
     const l = layer();
@@ -675,6 +767,22 @@ async function main(): Promise<void> {
       if (added) app.ui.setEditState(l, added.id);
       acted('state');
     }
+  });
+  btn('copyState').addEventListener('click', () => {
+    const l = layer();
+    if (!l) return;
+    const from = app.ui.editState(l).id;
+    if (app.run(() => app.store.dispatch('addState', { layer: l.id, from }))) {
+      const added = app.doc.layers.find((x) => x.id === l.id)?.states.at(-1);
+      if (added) app.ui.setEditState(l, added.id);
+      acted('state');
+    }
+  });
+  btn('removeState').addEventListener('click', () => {
+    const l = layer();
+    if (!l || l.states.length < 2) return;
+    const id = app.ui.editState(l).id;
+    app.run(() => app.store.dispatch('removeState', { layer: l.id, id }));
   });
   btn('addMarker').addEventListener('click', () => {
     const sec = section();
@@ -1042,6 +1150,8 @@ async function main(): Promise<void> {
     const secNow = section();
     if (m && secNow) {
       const playing = m[M_PLAYING] === 1;
+      btn('play').setAttribute('aria-pressed', String(playing));
+      btn('play').textContent = playing ? '■ Playing' : '▶ Play';
       const pos = m[M_SECTION_POS];
       $('posRead').textContent = playing ? positionLabel(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : positionLabel(secNow, 0);
       const row = playing ? playRow(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : -1;
@@ -1052,9 +1162,13 @@ async function main(): Promise<void> {
       });
       if (performance.now() - lastMeters > 200) {
         lastMeters = performance.now();
-        document.querySelectorAll('#scopes .bar > span').forEach((el, i) => {
+        document.querySelectorAll('#scopes .scope').forEach((el, i) => {
           const voices = m[M_LAYER_VOICES + i] ?? 0;
-          if (el instanceof HTMLElement) el.style.width = `${Math.min(100, voices * 25)}%`;
+          const bar = el.querySelector('.bar > span');
+          if (bar instanceof HTMLElement) bar.style.width = `${Math.min(100, voices * 25)}%`;
+          const n = el.querySelector('.voices');
+          if (n) n.textContent = String(Math.round(voices));
+          el.setAttribute('aria-valuenow', String(Math.round(voices)));
         });
       }
     }
@@ -1064,9 +1178,21 @@ async function main(): Promise<void> {
   app.refreshAll();
   showPanel('pattern');
   requestAnimationFrame(tick);
-  void storageEstimate().then((s) => {
-    if (s.quota > 0) $('storageStatus').textContent = `${(s.usage / 1e6).toFixed(1)} / ${(s.quota / 1e6).toFixed(0)} MB`;
-  });
+  let storageSnap = { usage: 0, quota: 0 };
+  const paintStorage = () => {
+    const el = $('storageStatus');
+    const n = db.pending;
+    const save = n === 0 ? 'Saved' : `Saving ${n}`;
+    const s = storageSnap;
+    const full = s.quota > 0 && s.usage / s.quota >= 0.8;
+    const use = s.quota > 0 ? `${(s.usage / 1e6).toFixed(1)} / ${(s.quota / 1e6).toFixed(0)} MB` : '';
+    el.textContent = [save, use, full ? 'nearly full' : ''].filter(Boolean).join(' · ');
+    el.classList.toggle('warn', full);
+  };
+  const readStorage = () => storageEstimate().then((s) => { storageSnap = s; paintStorage(); }).catch(() => paintStorage());
+  void readStorage();
+  window.setInterval(() => { paintStorage(); }, 400);
+  window.setInterval(() => { void readStorage(); }, 10000);
 }
 
 main().catch((e) => {

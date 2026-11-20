@@ -10,23 +10,29 @@
 <body>
   <p id="error" class="err" role="alert" hidden></p>
   <header class="strip" data-tour="transport" role="toolbar" aria-label="Transport">
-    <span class="brand" aria-label="Earworm"><span id="logo" class="logo" aria-hidden="true">EARWORM</span></span>
-    <span id="projectName" class="readout" aria-live="polite">—</span>
-    <span class="stepper" data-tour="section">
+    <span class="cluster">
+      <span class="brand" aria-label="Earworm"><span id="logo" class="logo" aria-hidden="true">EARWORM</span></span>
+      <span id="projectName" class="readout" aria-live="polite">—</span>
+    </span>
+    <span class="cluster stepper" data-tour="section">
       <button type="button" id="secPrev" aria-label="Previous section">−</button>
       <span id="secName" class="readout" aria-live="polite">A</span>
       <button type="button" id="secNext" aria-label="Next section">+</button>
     </span>
-    <label>BPM <input id="bpm" type="number" min="20" max="400" step="1" value="100" aria-label="Tempo in beats per minute" style="width:4.5em"></label>
-    <span id="posRead" class="readout" aria-live="polite">1.1</span>
-    <button type="button" id="play" disabled>Play</button>
-    <button type="button" id="stop" disabled>Stop</button>
-    <span class="stepper" data-tour="metro">
+    <span class="cluster">
+      <label>BPM <input id="bpm" type="number" min="20" max="400" step="1" value="100" aria-label="Tempo in beats per minute"></label>
+      <span id="posRead" class="readout" aria-live="polite">1.1</span>
+    </span>
+    <span class="cluster">
+      <button type="button" id="play" disabled aria-pressed="false">▶ Play</button>
+      <button type="button" id="stop" disabled>■ Stop</button>
+    </span>
+    <span class="cluster stepper" data-tour="metro">
       <button type="button" id="metro" aria-pressed="false" title="Click on the beat. Heard live only.">Metro</button>
       <label class="dim">Lvl <input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></label>
       <button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button>
     </span>
-    <span data-tour="undo">
+    <span class="cluster" data-tour="undo">
       <button type="button" id="undo">Undo</button>
       <button type="button" id="redo">Redo</button>
     </span>
@@ -39,6 +45,7 @@
     <button type="button" id="startMic">Start with mic</button>
     <button type="button" id="enableMic" hidden>Enable mic</button>
     <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">Capture</button>
+    <label class="dim" data-tour="align">Align <input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"> ms</label>
     <span data-tour="help">
       <button type="button" id="helpBtn">Learn</button>
       <button type="button" id="testsBtn">Tests</button>
@@ -61,7 +68,17 @@
         <button type="button" id="addTexture">+ Texture</button>
         <button type="button" id="addSection">+ Section</button>
       </div>
-      <p class="hint">Up to 8 layers. The selected layer is the one Capture, Sound and the pattern cursor edit.</p>
+      <div class="section-edit" data-tour="section-edit">
+        <label>Name <input id="secRename" type="text" aria-label="Section name"></label>
+        <label id="beatsLabel">Beats <input id="beats" type="number" min="1" max="64" step="1" value="8" aria-label="Section length in beats"></label>
+        <label id="secondsLabel" hidden>Seconds <input id="seconds" type="number" min="1" max="120" step="1" value="8" aria-label="Section length in seconds"></label>
+        <label>Repeats <input id="repeats" type="number" min="1" max="32" step="1" value="1" aria-label="How many times the section plays"></label>
+        <div class="row">
+          <button type="button" id="dupSection">Copy</button>
+          <button type="button" id="removeSection">Remove</button>
+        </div>
+      </div>
+      <p class="hint">Up to 8 layers. A circle is melody, a square is a beat, a diamond is texture. The selected layer is the one Capture, Sound and the pattern cursor edit.</p>
     </aside>
     <main class="panel on" id="panel-pattern">
       <h2>Pattern</h2>
@@ -85,7 +102,7 @@
             <option>line</option><option>ease</option><option>late</option><option>step</option><option>wobble</option>
           </select>
         </label>
-        <label>Length <input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds" style="width:5em"> ms</label>
+        <label>Length <input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds"> ms</label>
         <span id="morphList" class="dim"></span>
       </div>
     </main>
@@ -97,6 +114,7 @@
           <div class="row">
             <label>Preset <select id="preset" aria-label="Sound preset"></select></label>
             <label>Level <input id="level" type="range" min="-60" max="12" step="1" value="0" aria-label="Layer level"></label>
+            <label data-tour="pan">Pan <input id="pan" type="range" min="-100" max="100" step="1" value="0" aria-label="Layer pan, left to right"> <output id="panRead">C</output></label>
             <button type="button" id="mute" aria-pressed="false">Mute</button>
           </div>
         </fieldset>
@@ -105,6 +123,8 @@
           <div class="row">
             <label>Editing <select id="state" aria-label="Sound state"></select></label>
             <button type="button" id="addState">Add state</button>
+            <button type="button" id="copyState">Copy state</button>
+            <button type="button" id="removeState">Remove state</button>
           </div>
           <p class="hint">The preset edits this state. Markers on the morph lane move from one state to the next.</p>
         </fieldset>
