@@ -102,6 +102,15 @@ describe('project and sections', () => {
     expect(() => store.dispatch('removeSection', { id: store.doc.sections[0].id })).toThrow(/last section/);
   });
 
+  it('turns the track loop off and leaves it when the value is unchanged', () => {
+    const { store } = setup();
+    expect(store.doc.loop).toBe(true);
+    expect(store.dispatch('setLoop', { loop: false })).toBe(true);
+    expect(store.doc.loop).toBe(false);
+    expect(store.dispatch('setLoop', { loop: false })).toBe(false);
+    expect(() => store.dispatch('setLoop', { loop: 1 as unknown as boolean })).toThrow(/true or false/);
+  });
+
   it('feel change converts note, hit and loop times at the section bpm', () => {
     const { store, sec, mel, beat } = setup();
     // 100 bpm: one beat = 0.6 s = 960 ticks

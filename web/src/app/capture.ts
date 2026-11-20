@@ -4,6 +4,7 @@
 import { micConstraints } from '../m1/klont-host';
 import { M_COUNT_SEQ, M_PLAYING, M_SECTION } from '../m1/protocol';
 import type { App } from '../m3/app';
+import { tuneFromTake } from './tune';
 import { newId } from '../project/commands';
 import { clockMark, placeTake, type ClockMark } from '../project/overdub';
 import type { Take } from '../project/types';
@@ -149,9 +150,11 @@ export class AppCapture {
       doc: app.doc, sectionId: a.sectionId, layerId: a.layerId, take, startSample: a.f0 * host.frameLen(), mark,
       roundTripSamples: Math.round((rt * host.sampleRate) / 1000), notes: sp.notes, hits: sp.hits,
     });
+    const tune = layer.kind === 'beat' ? null : tuneFromTake(sp);
     app.store.batch('Capture take', (run) => {
       run('addTake', { take });
       run('setClip', { section: a.sectionId, layer: a.layerId, clip });
+      if (tune) run('setLayer', { id: a.layerId, tune });
     });
     app.ui.select(a.layerId, []);
     app.clearError();

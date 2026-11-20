@@ -36,7 +36,7 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 | Capability | Stage | Status | Notes |
 | --- | --- | --- | --- |
 | Hold to capture. The second pass turns it into notes or hits | M2 | supported | Capture, with the M5 count-in when the transport is stopped. Walkthrough "Capture onto the track". `m2.html` still loops a take on its own. |
-| Mouth, Snap and the slide modes while you sing | M2 | partial | Mouth, loud, open, hard and breath are gesture depths, with a walkthrough step. Snap, speed, glide, gliss, jump, vibrato, root and scale are on `m2.html` and `m3.html` only. |
+| Mouth, Snap and the slide modes while you sing | M2 | supported | Mouth, loud, open, hard and breath are gesture depths. Snap, speed, glide, gliss, jump, vibrato, root, scale and level are Tune, with the walkthrough "Tune a take". The same controls stay on `m2.html`. |
 | Keep / Redo tally, and Save take as files | M2 | test-page only | `m2.html`. |
 | Teach my kit | M2 | test-page only | `m2.html`. M3 left it off the track page on purpose. |
 | Per-take engine follow readout, and play voice against synth | M2 | test-page only | `m2.html`. |
@@ -53,12 +53,12 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 | Play, Stop, Undo, Redo, including the keyboard | M3 | supported | Walkthrough. Play seeks to the start of the selected section and then plays. |
 | Go to the start of the section without the Play key | M3 | partial | There is no separate seek. Pressing Play restarts the section. |
 | Add, select, name, length, bpm, repeats, copy and remove a section | M3 | supported | The stepper, BPM, and the section block under Layers. Walkthrough "Shape the section". The last section cannot be removed. |
-| Grid or free feel, tempo ramp, reorder sections | M3 | missing | The commands exist. A free section that is already in a file shows its length in seconds. The app cannot switch the feel, set a ramp, or move a section. |
-| Loop the track | M3 | missing | New projects loop. There is still no control, as M3 noted. |
+| Grid or free feel, tempo ramp, reorder sections | M3 | supported | Feel, Ramp, Earlier and Later. Walkthrough "Grid or free time". A free section shows its length in seconds. |
+| Loop the track | M3 | supported | Loop in the transport. New projects start on. Walkthrough "Loop the song". |
 | Add a melody, beat or texture. Level, pan, mute | M3 | supported | Pan reads L, C or R. Mute changes the button to Muted and the row says mute. Walkthrough "Place the layer" for pan. Adding a layer has no step of its own. |
-| Rename a layer, remove a layer, change its kind | M3 | missing | Kind is chosen when the layer is added. |
-| Tune: snap, speed, slides, vibrato, octave, root, scale, level out | M3 | missing | On `m3.html`. Capture still does not write Tune from the second pass. |
-| Timeline: notes, ribbons, hits, drag, resize, delete, double-click | M3 | partial | The WebGL timeline drags, resizes from the right edge, and double-clicks to add. The pattern grid does pitch, delete and kit slot. Zoom, snap, quantize, loop length and dragging a hit between slots stay on `m3.html`. |
+| Rename a layer, remove a layer, change its kind | M3 | partial | Name and Remove layer. Kind is still chosen when the layer is added. Walkthrough "Rename a layer". The last layer stays. |
+| Tune: snap, speed, slides, vibrato, octave, root, scale, level out | M3 | supported | Tune on the sound panel. A take writes root, scale and the reference onto the layer. Fill from take does it again. Walkthrough "Tune a take". |
+| Timeline: notes, ribbons, hits, drag, resize, delete, double-click | M3 | partial | The WebGL timeline drags, resizes from the right edge, double-clicks to add, and drags a hit onto another kit slot. Zoom, snap and quantize are on the timeline. Walkthrough "Zoom, snap and quantize". Loop length of a clip stays on `m3.html`. The pattern grid still does pitch, delete and kit slot. |
 | Edit-while-playing stress test, reload check, crash check | M3 | test-page only | `m3.html`. Autosave itself runs in the app. |
 | Overdub placed with the round trip taken out | M3 | partial | Align sets the milliseconds. Measuring them stays on `m3.html` and `delay.html`. The capture lesson has a step for Align. |
 | Hold to overdub while the track is already playing | M3 | supported | Capture. The count-in is only when the transport is stopped. |
@@ -80,7 +80,7 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 
 | Capability | Stage | Status | Notes |
 | --- | --- | --- | --- |
-| Metronome: on, level, tick or a kit slot, heard live only | M5 | supported | Walkthrough. The bar stays 4. There is no control for it. |
+| Metronome: on, level, tick or a kit slot, heard live only | M5 | supported | Walkthrough. Bar sets the beats in a bar and the length of the count-in. |
 | One-bar count-in, cancelled if you let go | M5 | supported | Named in the capture step. |
 | Pattern: 16ths, notes, hits, keys 1–4, the playing row | M5 | supported | The playing row has a triangle as well as the wash, so it is not color alone. Walkthrough "Read the pattern". |
 | Voices sounding, per layer | M5 | supported | A number and a bar above the pattern. |
@@ -124,10 +124,6 @@ Walkthrough steps cover the section block, Align and pan.
 
 Left alone because each one is a new editing surface, a measurement rig, or work this task set aside:
 
-- Tune (snap, slides, scale, octave) and filling it from a take.
-- Section feel, tempo ramp, and reordering sections. A loop switch. Metronome bar length.
-- Rename or remove a layer.
-- Timeline zoom, quantize, snap, and dragging a hit to another slot.
 - Round-trip measurement, rather than typing Align.
 - Influence: saved sources, play source, hold to play a note, the provisional meters. Rename a state.
 - Teach my kit, the take stack, and a WAV export of the mix.

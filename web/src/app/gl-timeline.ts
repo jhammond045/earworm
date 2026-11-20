@@ -5,7 +5,7 @@ import { M_PLAYING, M_SECTION, M_SECTION_POS } from '../m1/protocol';
 import { SLOT_COLORS } from '../m2/sounds';
 import type { App } from '../m3/app';
 import {
-  MORPH_H, centsToY, dragCents, dragDt, dragMarkerT, fitPpu, gridLines, hitTestHits, hitTestMarkers, hitTestNotes,
+  MORPH_H, centsToY, dragCents, dragDt, dragMarkerT, draggedHitSlot, fitPpu, gridLines, hitTestHits, hitTestMarkers, hitTestNotes,
   morphAt, pitchRange, resizeDur, ribbonRuns, slotRow, slotY, stateColor, timeToX, warpSlope, xToTime, yToCents,
   type Range,
 } from '../m3/geometry';
@@ -50,6 +50,9 @@ interface Drag {
   dc: number;
   dur: number;
   t: number;
+  /** Hit slot while a beat hit is dragged. Notes leave this at 0. */
+  slot: number;
+  primarySlot: number;
 }
 
 class Mesh {
@@ -198,7 +201,7 @@ export class GlTimeline {
       if (i >= 0 && clip) {
         this.app.ui.selectMarker({ layerId: layer.id, index: i });
         const m = clip.morph[i];
-        this.drag = { kind: 'marker', layerId: layer.id, ids: [], index: i, primaryT: m.t, primaryCents: 0, primaryDur: 0, startX: x, startY: y, dt: 0, dc: 0, dur: 0, t: m.t };
+        this.drag = { kind: 'marker', layerId: layer.id, ids: [], index: i, primaryT: m.t, primaryCents: 0, primaryDur: 0, startX: x, startY: y, dt: 0, dc: 0, dur: 0, t: m.t, slot: 0, primarySlot: 0 };
         try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
       }
       return;
@@ -209,7 +212,7 @@ export class GlTimeline {
       if (!id) { this.app.ui.select(layer.id, []); return; }
       const hit = clip.hits.find((h) => h.id === id);
       this.app.ui.select(layer.id, [id]);
-      this.drag = { kind: 'move', layerId: layer.id, ids: [id], index: -1, primaryT: hit?.t ?? 0, primaryCents: 0, primaryDur: 0, startX: x, startY: y, dt: 0, dc: 0, dur: 0, t: 0 };
+      this.drag = { kind: 'move', layerId: layer.id, ids: [id], index: -1, primaryT: hit?.t ?? 0, primaryCents: 0, primaryDur: 0, startX: x, startY: y, dt: 0, dc: 0, dur: 0, t: 0, slot: hit?.slot ?? 0, primarySlot: hit?.slot ?? 0 };
       try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
       return;
     }
@@ -221,7 +224,7 @@ export class GlTimeline {
     this.drag = {
       kind: hit.part === 'end' ? 'resize' : 'move', layerId: layer.id, ids: [hit.id], index: -1,
       primaryT: note?.t ?? 0, primaryCents: note?.cents ?? 4800, primaryDur: note?.dur ?? 1,
-      startX: x, startY: y, dt: 0, dc: 0, dur: note?.dur ?? 1, t: 0,
+      startX: x, startY: y, dt: 0, dc: 0, dur: note?.dur ?? 1, t: 0, slot: 0, primarySlot: 0,
     };
     try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
   }
@@ -240,6 +243,10 @@ export class GlTimeline {
     else {
       d.dt = dragDt(d.primaryT, rawDt, snap);
       const layer = this.app.doc.layers.find((l) => l.id === d.layerId);
+      if (layer?.kind === 'beat') {
+        const top = RULER + this.app.doc.layers.findIndex((l) => l.id === d.layerId) * STRIDE;
+        d.slot = draggedHitSlot(d.primarySlot, y, d.startY, top, LANE);
+      }
       const top = RULER + this.app.doc.layers.findIndex((l) => l.id === d.layerId) * STRIDE;
       const range = layer ? this.rangeFor(layer, this.shown(layer, clip && clip.kind !== 'beat' ? clip.notes : [])) : { lo: 4800, hi: 7200 };
       const c0 = yToCents(d.startY, range, top, LANE);
@@ -260,10 +267,16 @@ export class GlTimeline {
       if (d.t !== d.primaryT) this.app.run(() => this.app.store.dispatch('moveMorphMarker', { section: sec.id, layer, index: d.index, t: d.t }));
     } else if (d.kind === 'resize') {
       if (d.dur !== d.primaryDur) this.app.run(() => this.app.store.dispatch('resizeNote', { section: sec.id, layer, id: d.ids[0], dur: d.dur }));
-    } else if (d.dt !== 0 || d.dc !== 0) {
+    } else if (d.dt !== 0 || d.dc !== 0 || d.slot !== d.primarySlot) {
       const clip = sec.clips[layer];
-      if (clip?.kind === 'beat') this.app.run(() => this.app.store.dispatch('moveHits', { section: sec.id, layer, ids: d.ids, dt: d.dt }));
-      else if (d.dt !== 0 || d.dc !== 0) this.app.run(() => this.app.store.dispatch('moveNotes', { section: sec.id, layer, ids: d.ids, dt: d.dt, dcents: d.dc }));
+      if (clip?.kind === 'beat') {
+        if (d.dt !== 0 || d.slot !== d.primarySlot) {
+          this.app.run(() => this.app.store.batch('Move hit', (run) => {
+            if (d.dt !== 0) run('moveHits', { section: sec.id, layer, ids: d.ids, dt: d.dt });
+            if (d.slot !== d.primarySlot) run('setHitSlot', { section: sec.id, layer, ids: d.ids, slot: d.slot });
+          }));
+        }
+      } else if (d.dt !== 0 || d.dc !== 0) this.app.run(() => this.app.store.dispatch('moveNotes', { section: sec.id, layer, ids: d.ids, dt: d.dt, dcents: d.dc }));
     }
     this.dirty = true;
     void e;
@@ -353,10 +366,12 @@ export class GlTimeline {
       if (clip?.kind === 'beat') {
         for (let k = 0; k < 4; k++) mesh.quad(X0, slotY(k, top, LANE), cssW - X0, 1, line);
         for (const h of clip.hits) {
-          const t = h.t + (drag?.kind === 'move' && drag.ids.includes(h.id) ? drag.dt : 0);
+          const moving = drag?.kind === 'move' && drag.ids.includes(h.id);
+          const t = h.t + (moving ? drag.dt : 0);
+          const slot = moving ? drag.slot : h.slot;
           const x = timeToX(t, vp);
-          const y = slotY(h.slot, top, LANE);
-          const c = parseHex(SLOT_COLORS[h.slot] ?? '#d5e2ee', sel.has(h.id) ? 1 : 0.85);
+          const y = slotY(slot, top, LANE);
+          const c = parseHex(SLOT_COLORS[slot] ?? '#d5e2ee', sel.has(h.id) ? 1 : 0.85);
           mesh.quad(x - 4, y - 5, 8, 10, c);
         }
       } else if (clip) {

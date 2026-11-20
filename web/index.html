@@ -26,10 +26,12 @@
     <span class="cluster">
       <button type="button" id="play" disabled aria-pressed="false">▶ Play</button>
       <button type="button" id="stop" disabled>■ Stop</button>
+      <button type="button" id="loop" data-tour="loop" aria-pressed="true" title="After the last section, start again at the first.">Loop</button>
     </span>
     <span class="cluster stepper" data-tour="metro">
       <button type="button" id="metro" aria-pressed="false" title="Click on the beat. Heard live only.">Metro</button>
       <label class="dim">Lvl <input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></label>
+      <label class="dim">Bar <input id="metroBar" type="number" min="1" max="32" step="1" value="4" aria-label="Beats in a bar"></label>
       <button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button>
     </span>
     <span class="cluster" data-tour="undo">
@@ -62,6 +64,10 @@
     <aside class="panel" id="panel-layers" data-tour="layers">
       <h2>Layers</h2>
       <div id="layerList" class="layers" role="listbox" aria-label="Layers"></div>
+      <div class="row" data-tour="layer-edit">
+        <label>Name <input id="layerName" type="text" aria-label="Layer name"></label>
+        <button type="button" id="removeLayer">Remove layer</button>
+      </div>
       <div class="row">
         <button type="button" id="addMelody">+ Melody</button>
         <button type="button" id="addBeat">+ Beat</button>
@@ -72,8 +78,17 @@
         <label>Name <input id="secRename" type="text" aria-label="Section name"></label>
         <label id="beatsLabel">Beats <input id="beats" type="number" min="1" max="64" step="1" value="8" aria-label="Section length in beats"></label>
         <label id="secondsLabel" hidden>Seconds <input id="seconds" type="number" min="1" max="120" step="1" value="8" aria-label="Section length in seconds"></label>
+        <label data-tour="feel">Feel
+          <select id="feel" aria-label="Section feel, grid or free">
+            <option value="grid">Grid</option>
+            <option value="free">Free</option>
+          </select>
+        </label>
         <label>Repeats <input id="repeats" type="number" min="1" max="32" step="1" value="1" aria-label="How many times the section plays"></label>
+        <label>Ramp <input id="ramp" type="number" min="0" max="60000" step="10" value="0" aria-label="Tempo ramp from the previous section, milliseconds"> ms</label>
         <div class="row">
+          <button type="button" id="secEarlier" aria-label="Move this section earlier">Earlier</button>
+          <button type="button" id="secLater" aria-label="Move this section later">Later</button>
           <button type="button" id="dupSection">Copy</button>
           <button type="button" id="removeSection">Remove</button>
         </div>
@@ -86,7 +101,20 @@
         <table class="pattern" id="pattern" role="grid" aria-label="Pattern"></table>
       </div>
       <div class="tl-wrap" data-tour="timeline">
-        <div class="tl-head"><span class="dim">Timeline</span><span id="tlNote" class="hint">Drag a note, a hit or a morph marker. Double-click empty space to add one. The ribbon is the take’s pitch and loudness.</span></div>
+        <div class="tl-head">
+          <span class="dim">Timeline</span>
+          <label>Zoom
+            <select id="zoom" aria-label="Timeline zoom">
+              <option value="0.5">½</option>
+              <option value="1" selected>Fit</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+            </select>
+          </label>
+          <label data-tour="quantize">Snap <select id="snap" aria-label="Timeline snap"></select></label>
+          <button type="button" id="quantize">Quantize</button>
+          <span id="tlNote" class="hint">Drag a note, a hit or a morph marker. Drag a hit up or down to another kit slot. Double-click empty space to add one.</span>
+        </div>
         <div class="tl-body">
           <div id="tlNames" class="tl-names"></div>
           <div class="tl-scroll" id="tlScroll">
@@ -117,6 +145,24 @@
             <label data-tour="pan">Pan <input id="pan" type="range" min="-100" max="100" step="1" value="0" aria-label="Layer pan, left to right"> <output id="panRead">C</output></label>
             <button type="button" id="mute" aria-pressed="false">Mute</button>
           </div>
+        </fieldset>
+        <fieldset data-tour="tune" id="tuneBox">
+          <legend>Tune</legend>
+          <div class="sliders" id="tuneRanges"></div>
+          <div class="row">
+            <label>Slides
+              <select id="tuneSlides" aria-label="How a sung slide moves">
+                <option value="0">Glide</option>
+                <option value="1">Gliss</option>
+                <option value="2">Jump</option>
+              </select>
+            </label>
+            <label>Root <select id="tuneRoot" aria-label="Scale root"></select></label>
+            <label>Scale <select id="tuneScale" aria-label="Scale"></select></label>
+            <label>Octave <input id="tuneOctave" type="number" min="-4" max="4" step="1" value="0" aria-label="Octave shift"></label>
+            <button type="button" id="fillTune">Fill from take</button>
+          </div>
+          <p class="hint">Snap, slides, scale and octave shape the recorded pitch. A new take fills the root, the scale and the reference from the second pass.</p>
         </fieldset>
         <fieldset data-tour="states">
           <legend>States</legend>

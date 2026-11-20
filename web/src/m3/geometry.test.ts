@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CURVE_STRIDE } from '../m1/track';
 import {
   TUNED, LOUD, centsToY, dragCents, dragDt, fitPpu, gridLines, hitGlyph, hitTestHits, hitTestNotes, newItemDur, noteRect,
-  pitchRange, readFrame, resizeDur, ribbonRuns, slotRow, slotY, snapChoices, snapTo, timeToX, warpToTake, warpSlope, xToTime, yToCents,
+  draggedHitSlot, pitchRange, readFrame, resizeDur, ribbonRuns, slotRow, slotY, snapChoices, snapTo, timeToX, warpToTake, warpSlope, xToTime, yToCents,
   MORPH_H, dragMarkerT, hitTestMarkers, mixColor, morphAt, shapeProgress, stateColor,
   type MorphShapeName, type Viewport,
 } from './geometry';
@@ -152,6 +152,8 @@ describe('hit testing', () => {
     expect(slotRow(-50, 0, 120)).toBe(0);
     expect(slotRow(500, 0, 120)).toBe(3);
     expect(slotY(2, 0, 120)).toBe(75);
+    expect(draggedHitSlot(1, 40, 39, 0, 120)).toBe(1);
+    expect(draggedHitSlot(1, 70, 30, 0, 120)).toBe(2);
   });
   it('hit glyph: size from strength, tail from hold', () => {
     const mk = (strength: number, hold: number) => ({ id: 'x', t: 100, slot: 1, strength, shape: { hold } });

@@ -182,7 +182,7 @@ output { font-family: var(--font); min-width: 3.2em; color: var(--hot); }
 #play, #stop { min-width: 4.6em; font-weight: 700; }
 #play[aria-pressed="true"] { box-shadow: inset 3px 0 0 var(--accent); }
 .bank button, .tabs button, .strip button { min-height: 36px; }
-#bpm, #beats, #seconds, #repeats, #roundTrip, #morphLen { width: 4.6em; }
+#bpm, #beats, #seconds, #repeats, #roundTrip, #morphLen, #ramp, #metroBar, #tuneOctave { width: 4.6em; }
 .scopes {
   display: flex;
   gap: var(--s-2);
@@ -276,7 +276,8 @@ output { font-family: var(--font); min-width: 3.2em; color: var(--hot); }
   border-top: 1px solid var(--line);
 }
 .section-edit label { justify-content: space-between; }
-.section-edit input[type="text"] { width: 8em; }
+.section-edit input[type="text"], #layerName { width: 8em; }
+#tuneBox .row select { max-width: 11em; }
 .gridwrap {
   overflow: auto;
   max-height: min(52vh, calc(100vh - 280px));

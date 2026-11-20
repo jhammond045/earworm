@@ -8,7 +8,10 @@ import {
   LAYER_DEPTH_BREATH, LAYER_DEPTH_HARD, LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_DEPTH_OPEN, LAYER_FOLLOW,
   LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, LAYER_PAN, M_LAYER_VOICES, M_METRO_BEAT,
   M_PLAYING, M_SECTION, M_SECTION_POS, SET_INFLUENCE,
+  TUNE_OCTAVE, TUNE_REF_CENTS, TUNE_ROOT, TUNE_SCALE, TUNE_SLIDES, TUNE_SNAP, TUNE_SPEED, TUNE_VIBRATO,
 } from '../m1/protocol';
+import { SCALES } from '../host/protocol';
+import { snapChoices } from '../m3/geometry';
 import { Analysis } from '../m2/analysis';
 import { BEAT_KITS, MELODY_SOUNDS, SLOT_NAMES } from '../m2/sounds';
 import { $, App } from '../m3/app';
@@ -22,7 +25,7 @@ import { exportProject, importProject } from '../project/archive';
 import { applyOps } from '../project/patch';
 import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
 import { MACRO_NAMES, N_MACROS } from '../gen/params';
-import { MAX_STATES, PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
+import { MAX_STATES, PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project, type Tune as TuneFields } from '../project/types';
 import { GlTimeline } from './gl-timeline';
 import { startLogo } from './logo';
 import { AppCapture } from './capture';
@@ -30,7 +33,9 @@ import { DEMOS, demoById } from './demos';
 import { cellView, playRow, positionLabel, rowCount, rowStart, STEPS_PER_BEAT } from './pattern';
 import { TutorialRunner } from './tutorial';
 import { LESSONS, type Advance } from './tutorials';
+import { tuneFromTake } from './tune';
 
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SHAPE: HitShape = { attack: 0.004, burst: 0.4, cents: null, bend: 0, hold: 0.05, vowel: 0.4, tone: 0.6, endStop: 0, endClick: 0 };
 const ASPECTS: { label: string; bit: number }[] = [
   { label: 'Tone', bit: 1 }, { label: 'Shape', bit: 2 }, { label: 'Motion', bit: 4 }, { label: 'Grit', bit: 8 }, { label: 'Space', bit: 16 },
@@ -86,8 +91,8 @@ async function main(): Promise<void> {
     $('tourBody').textContent = step.body;
     btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
     document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
-    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'pan';
-    const panel = step.target === 'layers' || step.target === 'section-edit' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' ? 'pattern' : '';
+    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'pan' || step.target === 'tune';
+    const panel = step.target === 'layers' || step.target === 'section-edit' || step.target === 'feel' || step.target === 'layer-edit' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' || step.target === 'quantize' ? 'pattern' : '';
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
 
@@ -256,6 +261,25 @@ async function main(): Promise<void> {
     num('useSound').checked = !!infl?.useSound;
     num('useSound').disabled = !infl;
     $('kitBox').hidden = l.kind !== 'beat';
+    $('tuneBox').hidden = l.kind === 'beat';
+    if (document.activeElement !== num('layerName')) num('layerName').value = l.name;
+    btn('removeLayer').disabled = app.doc.layers.length < 2;
+    const tune = l.tune;
+    const tuneSnap = document.getElementById('tuneSnap');
+    const tuneSpeed = document.getElementById('tuneSpeed');
+    const tuneVibrato = document.getElementById('tuneVibrato');
+    const tuneLevel = document.getElementById('tuneLevel');
+    if (tuneSnap instanceof HTMLInputElement && document.activeElement !== tuneSnap) tuneSnap.value = String(Math.round(tune.snap * 100));
+    if (tuneSpeed instanceof HTMLInputElement && document.activeElement !== tuneSpeed) tuneSpeed.value = String(Math.round(tune.speedMs));
+    if (tuneVibrato instanceof HTMLInputElement && document.activeElement !== tuneVibrato) tuneVibrato.value = String(Math.round(tune.vibrato * 100));
+    if (tuneLevel instanceof HTMLInputElement && document.activeElement !== tuneLevel) tuneLevel.value = String(Math.round(tune.levelOut * 100));
+    const slides = $<HTMLSelectElement>('tuneSlides');
+    const root = $<HTMLSelectElement>('tuneRoot');
+    const scale = $<HTMLSelectElement>('tuneScale');
+    if (document.activeElement !== slides) slides.value = String(tune.slides);
+    if (document.activeElement !== root) root.value = String(tune.root);
+    if (document.activeElement !== scale) scale.value = String(Math.min(scale.options.length - 1, tune.scale));
+    if (document.activeElement !== num('tuneOctave')) num('tuneOctave').value = String(tune.octave);
     for (let k = 0; k < N_MACROS; k++) {
       const el = document.getElementById(`macro-${k}`);
       if (el instanceof HTMLInputElement && document.activeElement !== el) el.value = String(Math.round((st.macros[k] ?? 0.5) * 100));
@@ -287,12 +311,25 @@ async function main(): Promise<void> {
     if (sec && document.activeElement !== num('beats')) num('beats').value = String(sec.beats);
     if (sec && document.activeElement !== num('seconds')) num('seconds').value = String(sec.seconds);
     if (sec && document.activeElement !== num('repeats')) num('repeats').value = String(sec.repeats);
+    const feel = $<HTMLSelectElement>('feel');
+    if (sec && document.activeElement !== feel) feel.value = sec.feel;
+    if (sec && document.activeElement !== num('ramp')) num('ramp').value = String(sec.rampMs);
+    const si = sec ? doc.sections.findIndex((s) => s.id === sec.id) : -1;
+    btn('secEarlier').disabled = si <= 0;
+    btn('secLater').disabled = si < 0 || si >= doc.sections.length - 1;
     btn('removeSection').disabled = doc.sections.length < 2;
+    btn('loop').setAttribute('aria-pressed', String(doc.loop));
+    btn('loop').classList.toggle('down', doc.loop);
+    btn('loop').textContent = doc.loop ? 'Loop on' : 'Loop';
+    const zoom = $<HTMLSelectElement>('zoom');
+    if (document.activeElement !== zoom) zoom.value = String(app.ui.zoom);
+    fillSnap();
     const m = doc.metro ?? defaultMetro();
     btn('metro').setAttribute('aria-pressed', String(m.on));
     btn('metro').classList.toggle('down', m.on);
     btn('metro').textContent = m.on ? 'Metro on' : 'Metro';
     if (document.activeElement !== num('metroLevel')) num('metroLevel').value = String(Math.round(m.level * 100));
+    if (document.activeElement !== num('metroBar')) num('metroBar').value = String(m.bar);
     btn('metroVoice').textContent = m.voice === 'kit' ? 'Kit' : 'Tick';
     btn('undo').disabled = !app.store.history.canUndo;
     btn('redo').disabled = !app.store.history.canRedo;
@@ -334,6 +371,35 @@ async function main(): Promise<void> {
       d.append(name, voices, bar);
       box.append(d);
     }
+  }
+
+  function fillSnap(): void {
+    const sec = section();
+    const sel = $<HTMLSelectElement>('snap');
+    const choices = snapChoices(sec?.feel ?? 'grid');
+    const clip = sec?.clips[layer()?.id ?? ''];
+    const cur = clip ? clip.timeSnap : Number(sel.value || 0);
+    if (sel.dataset.feel !== (sec?.feel ?? 'grid')) {
+      sel.dataset.feel = sec?.feel ?? 'grid';
+      sel.replaceChildren(...choices.map((c) => new Option(c.label, String(c.value))));
+    }
+    const match = choices.find((c) => c.value === cur) ?? choices.find((c) => c.value === 0) ?? choices[0];
+    if (document.activeElement !== sel && match) sel.value = String(match.value);
+  }
+
+  function pushTune(l: Layer, patch: Partial<TuneFields>): void {
+    const host = app.host;
+    const i = app.doc.layers.findIndex((x) => x.id === l.id);
+    if (!host || i < 0) return;
+    const t = { ...l.tune, ...patch };
+    host.setTune(i, TUNE_SNAP, t.snap);
+    host.setTune(i, TUNE_SPEED, t.speedMs);
+    host.setTune(i, TUNE_SLIDES, t.slides);
+    host.setTune(i, TUNE_VIBRATO, t.vibrato);
+    host.setTune(i, TUNE_ROOT, t.root);
+    host.setTune(i, TUNE_SCALE, t.scale);
+    host.setTune(i, TUNE_REF_CENTS, t.refCents);
+    host.setTune(i, TUNE_OCTAVE, t.octave);
   }
 
   app.refreshAll = () => {
@@ -499,6 +565,75 @@ async function main(): Promise<void> {
     if (!sec || !Number.isInteger(repeats) || repeats < 1) { if (sec) num('repeats').value = String(sec.repeats); return; }
     app.run(() => app.store.dispatch('setSection', { id: sec.id, repeats }));
   });
+  $<HTMLSelectElement>('feel').addEventListener('change', () => {
+    const sec = section();
+    const feel = $<HTMLSelectElement>('feel').value;
+    if (!sec || (feel !== 'grid' && feel !== 'free')) return;
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, feel }));
+    acted('feel');
+  });
+  num('ramp').addEventListener('change', () => {
+    const sec = section();
+    const rampMs = Number(num('ramp').value);
+    if (!sec || !(rampMs >= 0)) { if (sec) num('ramp').value = String(sec.rampMs); return; }
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, rampMs }));
+  });
+  btn('secEarlier').addEventListener('click', () => {
+    const sec = section();
+    const i = app.doc.sections.findIndex((s) => s.id === sec?.id);
+    if (sec && i > 0) app.run(() => app.store.dispatch('moveSection', { id: sec.id, to: i - 1 }));
+  });
+  btn('secLater').addEventListener('click', () => {
+    const sec = section();
+    const i = app.doc.sections.findIndex((s) => s.id === sec?.id);
+    if (sec && i >= 0 && i < app.doc.sections.length - 1) app.run(() => app.store.dispatch('moveSection', { id: sec.id, to: i + 1 }));
+  });
+  btn('loop').addEventListener('click', () => {
+    app.run(() => app.store.dispatch('setLoop', { loop: !app.doc.loop }));
+    acted('loop');
+  });
+  num('metroBar').addEventListener('change', () => {
+    const bar = Number(num('metroBar').value);
+    if (!Number.isInteger(bar) || bar < 1 || bar > 32) {
+      num('metroBar').value = String(app.doc.metro?.bar ?? 4);
+      return;
+    }
+    app.run(() => app.store.dispatch('setMetro', { bar }));
+  });
+  num('layerName').addEventListener('change', () => {
+    const l = layer();
+    const name = num('layerName').value.trim();
+    if (!l || !name) { if (l) num('layerName').value = l.name; return; }
+    if (app.run(() => app.store.dispatch('setLayer', { id: l.id, name }))) acted('layer');
+  });
+  btn('removeLayer').addEventListener('click', () => {
+    const l = layer();
+    if (!l || app.doc.layers.length < 2) return;
+    app.run(() => app.store.dispatch('removeLayer', { id: l.id }));
+  });
+  $<HTMLSelectElement>('zoom').addEventListener('change', () => {
+    const z = Number($<HTMLSelectElement>('zoom').value);
+    app.ui.zoom = Number.isFinite(z) && z > 0 ? z : 1;
+    timeline.invalidate();
+    acted('quantize');
+  });
+  $<HTMLSelectElement>('snap').addEventListener('change', () => {
+    const sec = section();
+    const l = layer();
+    if (!sec || !l) return;
+    const timeSnap = Number($<HTMLSelectElement>('snap').value);
+    if (!sec.clips[l.id]) return;
+    app.run(() => app.store.dispatch('setClipFields', { section: sec.id, layer: l.id, timeSnap }));
+  });
+  btn('quantize').addEventListener('click', () => {
+    const sec = section();
+    const l = layer();
+    if (!sec || !l) return;
+    const clip = sec.clips[l.id];
+    if (!clip) { app.fail('That lane has nothing to quantize yet.'); return; }
+    const grid = clip.timeSnap > 0 ? clip.timeSnap : sec.feel === 'grid' ? PPQ / 4 : 0.25;
+    if (app.run(() => app.store.dispatch('quantize', { section: sec.id, layer: l.id, grid }))) acted('quantize');
+  });
   btn('dupSection').addEventListener('click', () => {
     const sec = section();
     if (!sec) return;
@@ -566,6 +701,69 @@ async function main(): Promise<void> {
   });
 
   // ---- sound, states, influence, morph
+
+  const tuneRoot = $<HTMLSelectElement>('tuneRoot');
+  const tuneScale = $<HTMLSelectElement>('tuneScale');
+  NOTE_NAMES.forEach((n, i) => tuneRoot.append(new Option(n, String(i))));
+  SCALES.forEach((n, i) => tuneScale.append(new Option(n, String(i))));
+  const tuneRanges: { id: string; label: string; key: keyof TuneFields; min: number; max: number; scale: number }[] = [
+    { id: 'tuneSnap', label: 'Snap', key: 'snap', min: 0, max: 100, scale: 100 },
+    { id: 'tuneSpeed', label: 'Speed', key: 'speedMs', min: 0, max: 250, scale: 1 },
+    { id: 'tuneVibrato', label: 'Vibrato', key: 'vibrato', min: 0, max: 200, scale: 100 },
+    { id: 'tuneLevel', label: 'Level', key: 'levelOut', min: 0, max: 100, scale: 100 },
+  ];
+  for (const spec of tuneRanges) {
+    const label = document.createElement('label');
+    const title = document.createElement('span');
+    title.textContent = spec.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(spec.min);
+    input.max = String(spec.max);
+    input.id = spec.id;
+    input.setAttribute('aria-label', `${spec.label} of the recorded pitch`);
+    const commit = (live: boolean) => {
+      const l = layer();
+      if (!l) return;
+      const value = Number(input.value) / spec.scale;
+      const tune = { [spec.key]: value } as Partial<TuneFields>;
+      pushTune(l, tune);
+      if (!live && app.run(() => app.store.dispatch('setLayer', { id: l.id, tune }))) acted('tune');
+    };
+    input.addEventListener('input', () => commit(true));
+    input.addEventListener('change', () => commit(false));
+    label.append(title, input);
+    $('tuneRanges').append(label);
+  }
+  function commitTune(tune: Partial<TuneFields>): void {
+    const l = layer();
+    if (!l) return;
+    pushTune(l, tune);
+    if (app.run(() => app.store.dispatch('setLayer', { id: l.id, tune }))) acted('tune');
+  }
+  $<HTMLSelectElement>('tuneSlides').addEventListener('change', () => {
+    const v = Number($<HTMLSelectElement>('tuneSlides').value);
+    if (v === 0 || v === 1 || v === 2) commitTune({ slides: v });
+  });
+  tuneRoot.addEventListener('change', () => commitTune({ root: Number(tuneRoot.value) }));
+  tuneScale.addEventListener('change', () => commitTune({ scale: Number(tuneScale.value) }));
+  num('tuneOctave').addEventListener('change', () => {
+    const octave = Number(num('tuneOctave').value);
+    if (!Number.isInteger(octave) || octave < -4 || octave > 4) {
+      const l = layer();
+      if (l) num('tuneOctave').value = String(l.tune.octave);
+      return;
+    }
+    commitTune({ octave });
+  });
+  btn('fillTune').addEventListener('click', () => {
+    const l = layer();
+    const sec = section();
+    const id = sec && l ? sec.clips[l.id]?.take : '';
+    const take = id ? app.doc.takes[id] : undefined;
+    if (!l || !take) { app.fail('This layer has no take to fill Tune from.'); return; }
+    commitTune(tuneFromTake(take));
+  });
 
   $<HTMLSelectElement>('preset').addEventListener('change', () => {
     const l = layer();

@@ -16,7 +16,12 @@ export type Advance =
   | 'timeline'
   | 'macro'
   | 'gesture'
-  | 'kit';
+  | 'kit'
+  | 'tune'
+  | 'feel'
+  | 'loop'
+  | 'layer'
+  | 'quantize';
 
 export interface LessonStep {
   id: string;
@@ -49,7 +54,7 @@ export const LESSONS: Lesson[] = [
       { id: 'play', title: 'Play the section', target: 'transport', advance: 'play', action: 'Press Play',
         body: 'One transport runs the whole track. Play starts at the selected section. Stop ends it. The highlighted pattern row is the beat you are hearing.' },
       { id: 'metro', title: 'Turn on the click', target: 'metro', advance: 'metro', action: 'Turn the metronome on',
-        body: 'The click sits on the beat, louder on the downbeat. It is heard live only: a recording from the mic and an export do not contain it. Level sets how loud. Kit uses the selected beat layer’s slot instead of the plain tick.' },
+        body: 'The click sits on the beat, louder on the downbeat. It is heard live only: a recording from the mic and an export do not contain it. Level sets how loud. Bar is how many beats are in a bar, and how long the count-in lasts. Kit uses the selected beat layer’s slot instead of the plain tick.' },
       { id: 'grid', title: 'Read the pattern', target: 'pattern', advance: 'next', action: 'Next',
         body: 'Each column is a layer. Each row is a 16th note of the section. A letter is a note, a short word is a drum. The row that is playing is highlighted. Arrow keys move the cursor.' },
       { id: 'layers', title: 'Layers and sections', target: 'layers', advance: 'next', action: 'Next',
@@ -115,6 +120,24 @@ export const LESSONS: Lesson[] = [
     steps: [
       { id: 'slot', title: 'Match one hit', target: 'kit', advance: 'kit', action: 'Record or choose a hit',
         body: 'On a beat layer, pick a slot. Hold Record one hit and make a single sound, or choose a file with one hit. The match treats it as a decaying sound and replaces that slot. Hear slot plays it. The mic must already be on for recording.' },
+    ],
+  },
+  {
+    id: 'edit',
+    title: 'Edit the arrangement',
+    blurb: 'Tune, feel, layers and the timeline.',
+    demo: 'melody',
+    steps: [
+      { id: 'tune', title: 'Tune a take', target: 'tune', advance: 'tune', action: 'Move a Tune control',
+        body: 'Tune shapes the pitch that was sung: snap pulls it to the scale, slides choose glide, gliss or jump, and octave shifts the whole line. Fill from take copies the root, the scale and the reference the second pass found. A new take does that on its own.' },
+      { id: 'feel', title: 'Grid or free time', target: 'feel', advance: 'feel', action: 'Change the feel',
+        body: 'Grid counts beats at the tempo. Free counts seconds. Ramp is how long the tempo takes to arrive from the previous section. Earlier and Later move this section in the song.' },
+      { id: 'loop', title: 'Loop the song', target: 'loop', advance: 'loop', action: 'Switch the loop',
+        body: 'Loop on returns to the first section after the last. Loop off plays the song once. The click’s Bar is how many beats are in a bar, and how long the count-in lasts.' },
+      { id: 'layer', title: 'Rename a layer', target: 'layer-edit', advance: 'layer', action: 'Rename the layer',
+        body: 'The name is the column you see on the pattern. Remove layer drops it, and its notes, when another layer remains.' },
+      { id: 'quantize', title: 'Zoom, snap and quantize', target: 'quantize', advance: 'quantize', action: 'Zoom or quantize',
+        body: 'Zoom changes how much of the timeline you see. Snap is the grid a drag lands on. Quantize moves the notes or hits on this lane onto that grid. Drag a hit up or down to put it on another kit slot.' },
     ],
   },
   {

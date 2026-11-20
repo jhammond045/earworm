@@ -317,6 +317,12 @@ export const commands = {
     return a.name === doc.name ? [] : [{ op: 'set', path: ['name'], value: a.name }];
   },
 
+  /** Whether playback returns to the first section after the last. */
+  setLoop(doc: Project, a: { loop: boolean }): Op[] {
+    if (typeof a.loop !== 'boolean') fail('loop must be true or false');
+    return a.loop === doc.loop ? [] : [{ op: 'set', path: ['loop'], value: a.loop }];
+  },
+
   /** Metronome click. Omitted fields keep their current value. */
   setMetro(doc: Project, a: Partial<Metro>): Op[] {
     const beat = doc.layers.find((l) => l.kind === 'beat');

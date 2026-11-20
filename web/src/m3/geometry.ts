@@ -202,6 +202,12 @@ export function slotRow(py: number, top: number, h: number): number {
   return Math.max(0, Math.min(KIT_SLOTS - 1, Math.floor((py - top) / slotRowH(h))));
 }
 
+/** Slot a dragged hit should land in. A nudge under a few pixels keeps the slot it started on. */
+export function draggedHitSlot(startSlot: number, y: number, startY: number, laneTop: number, laneH: number): number {
+  if (Math.abs(y - startY) < 3) return startSlot;
+  return slotRow(y, laneTop, laneH);
+}
+
 export interface HitGlyph { cx: number; cy: number; r: number; tailW: number }
 
 /** A hit is a disc (radius from strength) with a tail to the right (length from hold, in seconds). */
