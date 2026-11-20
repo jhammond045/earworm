@@ -171,6 +171,32 @@ table.pattern {
   margin-top: 8px;
   flex-wrap: wrap;
 }
+.tl-wrap { margin-top: 8px; }
+.tl-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.tl-body {
+  display: flex;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: #0a0e14;
+}
+.tl-scroll { flex: 1; min-width: 0; }
+.tl-names { position: sticky; left: 0; flex: none; width: 88px; background: var(--panel); z-index: 1; }
+.tl-name {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  padding: 4px;
+}
+.tl-name.on { color: var(--hot); }
+.sliders { display: flex; flex-direction: column; gap: 4px; }
+.sliders label { display: flex; gap: 8px; }
+.sliders label span { width: 4.5em; color: var(--dim); font-family: var(--font); font-size: 11px; }
+.sliders input { flex: 1; }
 .sound { display: flex; flex-direction: column; gap: 8px; }
 fieldset {
   border: 1px solid var(--line);

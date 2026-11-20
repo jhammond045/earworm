@@ -12,7 +12,11 @@ export type Advance =
   | 'influence'
   | 'state'
   | 'marker'
-  | 'save';
+  | 'save'
+  | 'timeline'
+  | 'macro'
+  | 'gesture'
+  | 'kit';
 
 export interface LessonStep {
   id: string;
@@ -89,6 +93,22 @@ export const LESSONS: Lesson[] = [
         body: 'A layer can hold several states. The sound controls edit the state selected here. Add a second one and change its preset or macros.' },
       { id: 'marker', title: 'Place a morph marker', target: 'morph', advance: 'marker', action: 'Add a marker',
         body: 'A marker on the morph lane moves the layer from the previous state to this one. Pick the shape and the length. While the track plays, the sound follows the lane.' },
+      { id: 'timeline', title: 'Read the timeline', target: 'timeline', advance: 'timeline', action: 'Click the timeline',
+        body: 'Under the pattern, each lane is a layer drawn in time. A bar is a written note. A ribbon is the pitch and loudness of a take. Drag a bar to move it, drag its right edge to change its length, and double-click empty space to add. The strip under a lane is the morph.' },
+      { id: 'macros', title: 'Move a macro', target: 'macros', advance: 'macro', action: 'Move a macro',
+        body: 'Macros are eight named moves on the state you are editing: bright, body, wobble, grit, space, punch, air and length. They sit on top of the preset. The sound updates while you drag, and letting go writes one undo.' },
+      { id: 'gestures', title: 'Set a gesture depth', target: 'gestures', advance: 'gesture', action: 'Move a gesture',
+        body: 'Gesture depth is how far a sung loudness, openness, hardness, breath or mouth shape pushes this layer. It is the live performance path, separate from the written notes.' },
+    ],
+  },
+  {
+    id: 'kit',
+    title: 'Use your sound for a kit slot',
+    blurb: 'One hit becomes a drum.',
+    demo: 'beat',
+    steps: [
+      { id: 'slot', title: 'Match one hit', target: 'kit', advance: 'kit', action: 'Record or choose a hit',
+        body: 'On a beat layer, pick a slot. Hold Record one hit and make a single sound, or choose a file with one hit. The match treats it as a decaying sound and replaces that slot. Hear slot plays it. The mic must already be on for recording.' },
     ],
   },
   {

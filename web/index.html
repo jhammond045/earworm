@@ -68,6 +68,15 @@
       <div class="gridwrap" data-tour="pattern">
         <table class="pattern" id="pattern" role="grid" aria-label="Pattern"></table>
       </div>
+      <div class="tl-wrap" data-tour="timeline">
+        <div class="tl-head"><span class="dim">Timeline</span><span id="tlNote" class="hint">Drag a note, a hit or a morph marker. Double-click empty space to add one. The ribbon is the take’s pitch and loudness.</span></div>
+        <div class="tl-body">
+          <div id="tlNames" class="tl-names"></div>
+          <div class="tl-scroll" id="tlScroll">
+            <canvas id="timeline" tabindex="0" aria-label="Section timeline"></canvas>
+          </div>
+        </div>
+      </div>
       <div class="morph" data-tour="morph">
         <span class="dim">Morph</span>
         <button type="button" id="addMarker">Add marker at row</button>
@@ -98,6 +107,26 @@
             <button type="button" id="addState">Add state</button>
           </div>
           <p class="hint">The preset edits this state. Markers on the morph lane move from one state to the next.</p>
+        </fieldset>
+        <fieldset data-tour="macros">
+          <legend>Macros</legend>
+          <div id="macros" class="sliders"></div>
+          <p class="hint">Eight moves for the state you are editing. They sit on top of the preset.</p>
+        </fieldset>
+        <fieldset data-tour="gestures">
+          <legend>Gestures</legend>
+          <div id="gestures" class="sliders"></div>
+          <p class="hint">How far a sung gesture pushes this layer: loud, open, hard, breath and mouth.</p>
+        </fieldset>
+        <fieldset data-tour="kit" id="kitBox">
+          <legend>Kit slot</legend>
+          <div class="row">
+            <label>Slot <select id="kitSlot" aria-label="Kit slot"></select></label>
+            <label>File <input id="kitFile" type="file" accept="audio/*" aria-label="One hit to match into the slot"></label>
+            <button type="button" id="kitRecord">Record one hit</button>
+            <button type="button" id="kitHear">Hear slot</button>
+          </div>
+          <p id="kitStatus" class="hint" role="status">A beat layer only. One hit, from the mic or a file, becomes that slot.</p>
         </fieldset>
         <fieldset data-tour="influence">
           <legend>Influence</legend>

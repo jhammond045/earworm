@@ -5,7 +5,7 @@ import { LESSONS, lessonById } from './tutorials';
 describe('tutorials', () => {
   it('covers a control for every feature area and only advances on the matching action', () => {
     const targets = new Set(LESSONS.flatMap((l) => l.steps.map((s) => s.target)));
-    for (const name of ['start', 'transport', 'metro', 'pattern', 'layers', 'capture', 'influence', 'states', 'morph', 'file', 'undo', 'help']) {
+    for (const name of ['start', 'transport', 'metro', 'pattern', 'layers', 'capture', 'influence', 'states', 'morph', 'file', 'undo', 'help', 'timeline', 'macros', 'gestures', 'kit']) {
       expect(targets.has(name), name).toBe(true);
     }
     const runner = new TutorialRunner();

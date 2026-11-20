@@ -1,15 +1,16 @@
 // The Earworm app: one transport, one undo history, and one page from capture to the morph lane.
 // Milestone and gate pages stay linked from Tests. This file is the shell; the document still changes only through commands.
 
-import { decodeFile, MAX_SOURCE_S } from '../influence/audio';
+import { decodeBytes, decodeFile, MAX_SOURCE_S, trimAndCap } from '../influence/audio';
 import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { soundToSet } from '../m1/layer';
 import {
+  LAYER_DEPTH_BREATH, LAYER_DEPTH_HARD, LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_DEPTH_OPEN, LAYER_FOLLOW,
   LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, M_LAYER_VOICES, M_METRO_BEAT,
   M_PLAYING, M_SECTION, M_SECTION_POS, SET_INFLUENCE,
 } from '../m1/protocol';
 import { Analysis } from '../m2/analysis';
-import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
+import { BEAT_KITS, MELODY_SOUNDS, SLOT_NAMES } from '../m2/sounds';
 import { $, App } from '../m3/app';
 import { holdButton, MicClip, typingIn } from '../m3/hold';
 import { grainFor as grainRegion, layerUsesStates } from '../m3/influence';
@@ -20,7 +21,9 @@ import { cleanupPlan, unusedRefs } from '../project/cleanup';
 import { exportProject, importProject } from '../project/archive';
 import { applyOps } from '../project/patch';
 import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
-import { PPQ, defaultMetro, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
+import { MACRO_NAMES, N_MACROS } from '../gen/params';
+import { PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
+import { GlTimeline } from './gl-timeline';
 import { AppCapture } from './capture';
 import { DEMOS, demoById } from './demos';
 import { cellView, playRow, positionLabel, rowCount, rowStart, STEPS_PER_BEAT } from './pattern';
@@ -46,6 +49,7 @@ async function main(): Promise<void> {
   if (storageNote) app.fail(storageNote);
   const tutorial = new TutorialRunner();
   const capture = new AppCapture(app, (s) => { $('capStatus').textContent = s; }, () => tutorial.event('capture') && paintTour());
+  const timeline = new GlTimeline(app, () => acted('timeline'));
   let cursor = { row: 0, col: 0 };
   let listening: { layerId: string; clip: MicClip; live: LiveMatch } | null = null;
 
@@ -74,7 +78,8 @@ async function main(): Promise<void> {
     $('tourBody').textContent = step.body;
     btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
     document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
-    const panel = step.target === 'layers' ? 'layers' : step.target === 'influence' || step.target === 'states' ? 'sound' : step.target === 'pattern' || step.target === 'morph' ? 'pattern' : '';
+    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit';
+    const panel = step.target === 'layers' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' ? 'pattern' : '';
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
 
@@ -231,6 +236,21 @@ async function main(): Promise<void> {
     }
     num('useSound').checked = !!infl?.useSound;
     num('useSound').disabled = !infl;
+    $('kitBox').hidden = l.kind !== 'beat';
+    for (let k = 0; k < N_MACROS; k++) {
+      const el = document.getElementById(`macro-${k}`);
+      if (el instanceof HTMLInputElement && document.activeElement !== el) el.value = String(Math.round((st.macros[k] ?? 0.5) * 100));
+    }
+    const depths: (keyof GestureDepth)[] = ['loud', 'open', 'hard', 'breath', 'mouth'];
+    for (const key of depths) {
+      const el = document.getElementById(`gesture-${key}`);
+      if (el instanceof HTMLInputElement && document.activeElement !== el) el.value = String(Math.round(l.depth[key] * 100));
+    }
+    const follow = document.getElementById('gesture-follow');
+    if (follow instanceof HTMLInputElement) {
+      follow.parentElement!.hidden = l.kind !== 'beat';
+      if (document.activeElement !== follow) follow.value = String(Math.round(l.follow * 100));
+    }
   }
 
   function renderChrome(): void {
@@ -286,6 +306,7 @@ async function main(): Promise<void> {
     renderSound();
     renderChrome();
     renderScopes();
+    timeline.invalidate();
   };
   app.ui.subscribe(() => app.refreshAll());
 
@@ -311,6 +332,7 @@ async function main(): Promise<void> {
   app.sync.onPass = (r) => {
     if (r.errors.length) app.fail(`Engine: ${r.errors.join('; ')}`);
     else if (!r.skipped) $('engineStatus').textContent = `Engine in sync. ${r.uploads.length} blobs, ${r.loadMs.toFixed(0)} ms.`;
+    timeline.invalidate();
   };
 
   // ---- pattern editing
@@ -489,6 +511,155 @@ async function main(): Promise<void> {
   btn('mute').addEventListener('click', () => {
     const l = layer();
     if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, mute: !l.mute }));
+  });
+
+  function macroValues(l: Layer, k: number, v: number): number[] {
+    const out = app.ui.editState(l).macros.slice();
+    while (out.length < N_MACROS) out.push(0.5);
+    out[k] = v;
+    return out;
+  }
+  const macroBox = $('macros');
+  MACRO_NAMES.forEach((name, k) => {
+    const label = document.createElement('label');
+    const title = document.createElement('span');
+    title.textContent = name;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '100';
+    input.step = '1';
+    input.id = `macro-${k}`;
+    input.setAttribute('aria-label', `${name} macro`);
+    input.addEventListener('input', () => {
+      const l = layer();
+      if (!l) return;
+      const macros = macroValues(l, k, Number(input.value) / 100);
+      app.previewDoc((d) => applyOps(d, commands.setState(d, { layer: l.id, id: app.ui.editState(l).id, macros })).doc);
+    });
+    input.addEventListener('change', () => {
+      const l = layer();
+      if (!l) return;
+      const macros = macroValues(l, k, Number(input.value) / 100);
+      if (app.run(() => app.store.dispatch('setState', { layer: l.id, id: app.ui.editState(l).id, macros }))) acted('macro');
+    });
+    label.append(title, input);
+    macroBox.append(label);
+  });
+
+  const gestureBox = $('gestures');
+  const gestures: { key: keyof GestureDepth; label: string; field: number }[] = [
+    { key: 'loud', label: 'Loud', field: LAYER_DEPTH_LOUD },
+    { key: 'open', label: 'Open', field: LAYER_DEPTH_OPEN },
+    { key: 'hard', label: 'Hard', field: LAYER_DEPTH_HARD },
+    { key: 'breath', label: 'Breath', field: LAYER_DEPTH_BREATH },
+    { key: 'mouth', label: 'Mouth', field: LAYER_DEPTH_MOUTH },
+  ];
+  for (const g of gestures) {
+    const label = document.createElement('label');
+    const title = document.createElement('span');
+    title.textContent = g.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '100';
+    input.step = '1';
+    input.id = `gesture-${g.key}`;
+    input.setAttribute('aria-label', `${g.label} gesture depth`);
+    input.addEventListener('input', () => {
+      const l = layer();
+      const i = app.doc.layers.findIndex((x) => x.id === l?.id);
+      if (i >= 0) app.host?.setLayer(i, g.field, Number(input.value) / 100);
+    });
+    input.addEventListener('change', () => {
+      const l = layer();
+      if (!l) return;
+      if (app.run(() => app.store.dispatch('setLayer', { id: l.id, depth: { [g.key]: Number(input.value) / 100 } }))) acted('gesture');
+    });
+    label.append(title, input);
+    gestureBox.append(label);
+  }
+  {
+    const label = document.createElement('label');
+    const title = document.createElement('span');
+    title.textContent = 'Follow';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '100';
+    input.step = '1';
+    input.id = 'gesture-follow';
+    input.setAttribute('aria-label', 'How far a hit follows the sung shape');
+    input.addEventListener('input', () => {
+      const l = layer();
+      const i = app.doc.layers.findIndex((x) => x.id === l?.id);
+      if (i >= 0) app.host?.setLayer(i, LAYER_FOLLOW, Number(input.value) / 100);
+    });
+    input.addEventListener('change', () => {
+      const l = layer();
+      if (l && app.run(() => app.store.dispatch('setLayer', { id: l.id, follow: Number(input.value) / 100 }))) acted('gesture');
+    });
+    label.append(title, input);
+    gestureBox.append(label);
+  }
+
+  const kitSlot = $<HTMLSelectElement>('kitSlot');
+  SLOT_NAMES.forEach((name, i) => kitSlot.append(new Option(`${i + 1} ${name}`, String(i))));
+  async function useKitHit(signal: Float32Array, rate: number, name: string): Promise<void> {
+    const l = layer();
+    if (!l || l.kind !== 'beat') { app.fail('Pick a beat layer first.'); return; }
+    const slot = Number(kitSlot.value);
+    $('kitStatus').textContent = `Matching ${name}…`;
+    const m = await (await app.matcher()).match(signal, rate, { decaying: true });
+    const cents = m.pitched ? Math.max(0, Math.min(12000, Math.round(m.pitchCents))) : l.kit[slot]?.cents ?? 4800;
+    if (app.run(() => app.store.dispatch('setKitSlot', { layer: l.id, slot, params: Array.from(m.target), cents }))) {
+      $('kitStatus').textContent = `Slot ${slot + 1} (${SLOT_NAMES[slot]}) set from ${name}.`;
+      acted('kit');
+    }
+  }
+  $<HTMLInputElement>('kitFile').addEventListener('change', async () => {
+    const file = $<HTMLInputElement>('kitFile').files?.[0];
+    if (!file) return;
+    try {
+      const ctx = app.ctx ?? new AudioContext();
+      const signal = await decodeBytes(ctx, await file.arrayBuffer());
+      const rate = ctx.sampleRate;
+      if (!app.ctx) void ctx.close();
+      await useKitHit(signal, rate, file.name);
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    } finally {
+      $<HTMLInputElement>('kitFile').value = '';
+    }
+  });
+  let kitClip: MicClip | null = null;
+  holdButton(btn('kitRecord'), () => {
+    const host = app.host;
+    if (!host || !app.stream) { app.fail('Start, then enable the mic, to record a hit.'); return; }
+    kitClip = new MicClip(host, host.sampleRate, MAX_SOURCE_S);
+    $('kitStatus').textContent = 'Recording one hit…';
+  }, () => {
+    const c = kitClip;
+    kitClip = null;
+    if (!c) return;
+    const sig = trimAndCap(c.read(), c.rate);
+    if (sig.length < 0.05 * c.rate) { $('kitStatus').textContent = 'Too short. Hold while you make the hit.'; return; }
+    void useKitHit(sig, c.rate, 'a hit').catch((e) => app.fail(e instanceof Error ? e.message : String(e)));
+  });
+  let kitHeld: { i: number; cents: number } | null = null;
+  holdButton(btn('kitHear'), () => {
+    const l = layer();
+    const host = app.host;
+    if (!l || !host || l.kind !== 'beat') { app.fail('Pick a beat layer and press Start.'); return; }
+    const i = app.doc.layers.findIndex((x) => x.id === l.id);
+    const slot = Number(kitSlot.value);
+    const cents = l.kit[slot]?.cents ?? 4800;
+    void host.ctx.resume();
+    host.noteOn(i, cents, slot);
+    kitHeld = { i, cents };
+  }, () => {
+    if (kitHeld) app.host?.noteOff(kitHeld.i, kitHeld.cents);
+    kitHeld = null;
   });
   $<HTMLSelectElement>('state').addEventListener('change', () => {
     const l = layer();
@@ -864,6 +1035,7 @@ async function main(): Promise<void> {
   const tick = () => {
     requestAnimationFrame(tick);
     capture.poll();
+    timeline.frame();
     const m = app.readMeters();
     const secNow = section();
     if (m && secNow) {
