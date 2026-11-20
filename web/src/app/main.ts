@@ -1,0 +1,896 @@
+// The Earworm app: one transport, one undo history, and one page from capture to the morph lane.
+// Milestone and gate pages stay linked from Tests. This file is the shell; the document still changes only through commands.
+
+import { decodeFile, MAX_SOURCE_S } from '../influence/audio';
+import { KlontHost, wantsFallback } from '../m1/klont-host';
+import { soundToSet } from '../m1/layer';
+import {
+  LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, M_LAYER_VOICES, M_METRO_BEAT,
+  M_PLAYING, M_SECTION, M_SECTION_POS, SET_INFLUENCE,
+} from '../m1/protocol';
+import { Analysis } from '../m2/analysis';
+import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
+import { $, App } from '../m3/app';
+import { holdButton, MicClip, typingIn } from '../m3/hold';
+import { grainFor as grainRegion, layerUsesStates } from '../m3/influence';
+import { Session } from '../m3/session';
+import { liveMatch, type LiveMatch, type Match } from '../m4/match';
+import { commands, newId } from '../project/commands';
+import { cleanupPlan, unusedRefs } from '../project/cleanup';
+import { exportProject, importProject } from '../project/archive';
+import { applyOps } from '../project/patch';
+import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
+import { PPQ, defaultMetro, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
+import { AppCapture } from './capture';
+import { DEMOS, demoById } from './demos';
+import { cellView, playRow, positionLabel, rowCount, rowStart, STEPS_PER_BEAT } from './pattern';
+import { TutorialRunner } from './tutorial';
+import { LESSONS, type Advance } from './tutorials';
+
+const SHAPE: HitShape = { attack: 0.004, burst: 0.4, cents: null, bend: 0, hold: 0.05, vowel: 0.4, tone: 0.6, endStop: 0, endClick: 0 };
+const ASPECTS: { label: string; bit: number }[] = [
+  { label: 'Tone', bit: 1 }, { label: 'Shape', bit: 2 }, { label: 'Motion', bit: 4 }, { label: 'Grit', bit: 8 }, { label: 'Space', bit: 16 },
+];
+
+const btn = (id: string) => $<HTMLButtonElement>(id);
+const num = (id: string) => $<HTMLInputElement>(id);
+
+async function main(): Promise<void> {
+  let kv: Kv;
+  let storageNote = '';
+  try { kv = await idbKv(); } catch { kv = memoryKv(); storageNote = 'This browser will not keep the project after the tab closes.'; }
+  const db = new ProjectDb(kv);
+  const session = new Session(kv, db);
+  const app = new App(session);
+  app.stopFlushOnHide = flushOnHide(db);
+  if (storageNote) app.fail(storageNote);
+  const tutorial = new TutorialRunner();
+  const capture = new AppCapture(app, (s) => { $('capStatus').textContent = s; }, () => tutorial.event('capture') && paintTour());
+  let cursor = { row: 0, col: 0 };
+  let listening: { layerId: string; clip: MicClip; live: LiveMatch } | null = null;
+
+  const section = () => app.doc.sections.find((s) => s.id === app.ui.sectionId) ?? app.doc.sections[0];
+  const layer = () => app.doc.layers.find((l) => l.id === app.ui.layerId) ?? app.doc.layers[0];
+
+  function pushMetro(doc: Project): void {
+    const host = app.host;
+    if (!host) return;
+    const m = doc.metro ?? defaultMetro(doc.layers.find((l) => l.kind === 'beat')?.id ?? '');
+    const i = Math.max(0, doc.layers.findIndex((l) => l.id === m.layerId));
+    host.setMetro(m.on, m.level, m.voice, i, m.slot, m.bar);
+  }
+
+  function acted(kind: Advance): void {
+    if (tutorial.event(kind)) paintTour();
+  }
+
+  function paintTour(): void {
+    document.querySelectorAll('[data-tour].tour-on').forEach((e) => e.classList.remove('tour-on'));
+    const step = tutorial.step;
+    const box = $('tour');
+    if (!step) { box.hidden = true; return; }
+    box.hidden = false;
+    $('tourTitle').textContent = step.title;
+    $('tourBody').textContent = step.body;
+    btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
+    document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
+    const panel = step.target === 'layers' ? 'layers' : step.target === 'influence' || step.target === 'states' ? 'sound' : step.target === 'pattern' || step.target === 'morph' ? 'pattern' : '';
+    if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
+  }
+
+  function showPanel(name: string): void {
+    for (const id of ['layers', 'pattern', 'sound']) {
+      const on = id === name;
+      $(`panel-${id}`).classList.toggle('on', on);
+      $(`tab-${id}`).setAttribute('aria-selected', String(on));
+    }
+  }
+
+  // ---- panels
+
+  function renderLayers(): void {
+    const list = $('layerList');
+    list.replaceChildren();
+    app.doc.layers.forEach((l, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'layer' + (l.id === app.ui.layerId ? ' on' : '');
+      b.setAttribute('role', 'option');
+      b.setAttribute('aria-selected', String(l.id === app.ui.layerId));
+      const sw = document.createElement('span');
+      sw.className = 'sw';
+      sw.style.background = '#' + l.color.toString(16).padStart(6, '0');
+      const name = document.createElement('span');
+      name.textContent = `${i + 1}  ${l.name}`;
+      name.className = 'mono';
+      b.append(sw, name);
+      if (l.mute) {
+        const tag = document.createElement('span');
+        tag.className = 'dim';
+        tag.textContent = 'mute';
+        b.append(tag);
+      }
+      b.addEventListener('click', () => {
+        cursor.col = i;
+        app.ui.layerId = l.id;
+        app.ui.changed();
+      });
+      list.append(b);
+    });
+  }
+
+  function renderPattern(): void {
+    const sec = section();
+    const table = $('pattern');
+    const keepFocus = document.activeElement instanceof HTMLElement && table.contains(document.activeElement);
+    if (!sec) { table.replaceChildren(); return; }
+    const rows = rowCount(sec);
+    if (cursor.row >= rows) cursor.row = rows - 1;
+    if (cursor.col >= app.doc.layers.length) cursor.col = Math.max(0, app.doc.layers.length - 1);
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    const corner = document.createElement('th');
+    corner.textContent = sec.feel === 'grid' ? 'bt' : 's';
+    hr.append(corner);
+    for (const l of app.doc.layers) {
+      const th = document.createElement('th');
+      th.textContent = l.name;
+      th.scope = 'col';
+      hr.append(th);
+    }
+    thead.append(hr);
+    const tb = document.createElement('tbody');
+    for (let r = 0; r < rows; r++) {
+      const tr = document.createElement('tr');
+      tr.dataset.row = String(r);
+      if (sec.feel === 'grid' && r % STEPS_PER_BEAT === 0) tr.classList.add('beat');
+      const num = document.createElement('td');
+      num.className = 'num';
+      num.textContent = sec.feel === 'grid' ? `${Math.floor(r / STEPS_PER_BEAT) + 1}.${(r % STEPS_PER_BEAT) + 1}` : (r / STEPS_PER_BEAT).toFixed(2);
+      tr.append(num);
+      app.doc.layers.forEach((l, c) => {
+        const td = document.createElement('td');
+        const view = cellView(sec, l, r);
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'cell' + (cursor.row === r && cursor.col === c ? ' cursor' : '');
+        cell.textContent = view.label;
+        cell.title = view.title;
+        cell.setAttribute('role', 'gridcell');
+        cell.setAttribute('aria-label', `${l.name}, row ${r + 1}, ${view.label}`);
+        cell.addEventListener('click', () => {
+          cursor = { row: r, col: c };
+          app.ui.layerId = l.id;
+          if (view.eventId) app.ui.select(l.id, [view.eventId]);
+          else app.ui.changed();
+        });
+        cell.addEventListener('dblclick', () => { cursor = { row: r, col: c }; addAtCursor(); });
+        td.append(cell);
+        tr.append(td);
+      });
+      tb.append(tr);
+    }
+    table.replaceChildren(thead, tb);
+    table.tabIndex = 0;
+    if (keepFocus) {
+      const cell = table.querySelector(`tr[data-row="${cursor.row}"] td:nth-child(${cursor.col + 2}) button`);
+      if (cell instanceof HTMLElement) cell.focus();
+    }
+    const morph = sec.clips[app.ui.layerId]?.morph ?? [];
+    const box = $('morphList');
+    box.replaceChildren();
+    morph.forEach((m, i) => {
+      const name = layer()?.states.find((s) => s.id === m.state)?.name ?? m.state;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = `${positionLabel(sec, m.t)} ${name} ×`;
+      b.title = 'Remove this marker';
+      b.addEventListener('click', () => app.run(() => app.store.dispatch('removeMorphMarker', { section: sec.id, layer: app.ui.layerId, index: i })));
+      box.append(b);
+    });
+  }
+
+  function renderSound(): void {
+    const l = layer();
+    const preset = $<HTMLSelectElement>('preset');
+    const state = $<HTMLSelectElement>('state');
+    if (!l) return;
+    const sounds = l.kind === 'beat' ? BEAT_KITS : MELODY_SOUNDS;
+    if (preset.options.length !== sounds.length) {
+      preset.replaceChildren();
+      sounds.forEach((s, i) => {
+        const o = document.createElement('option');
+        o.value = String(i);
+        o.textContent = s.name;
+        preset.append(o);
+      });
+    }
+    if (state.options.length !== l.states.length || [...state.options].some((o, i) => o.value !== l.states[i].id)) {
+      const cur = app.ui.editState(l).id;
+      state.replaceChildren();
+      for (const s of l.states) {
+        const o = document.createElement('option');
+        o.value = s.id;
+        o.textContent = s.name;
+        state.append(o);
+      }
+      state.value = cur;
+    }
+    num('level').value = String(l.level);
+    btn('mute').setAttribute('aria-pressed', String(l.mute));
+    btn('mute').classList.toggle('down', l.mute);
+    const st = app.ui.editState(l);
+    if (document.activeElement !== num('amount')) num('amount').value = String(Math.round(st.influenceAmount * 100));
+    const infl = l.influence;
+    $('infStatus').textContent = infl
+      ? `${infl.sourceName}. ${Math.round(st.influenceAmount * 100)}% toward it.`
+      : 'No Influence yet. A file or Listen sets a target the state blends toward.';
+    for (const a of ASPECTS) {
+      const box = document.getElementById(`aspect-${a.bit}`) as HTMLInputElement | null;
+      if (box) box.checked = !infl || (infl.mask & a.bit) !== 0;
+    }
+    num('useSound').checked = !!infl?.useSound;
+    num('useSound').disabled = !infl;
+  }
+
+  function renderChrome(): void {
+    const doc = app.doc;
+    const sec = section();
+    $('projectName').textContent = doc.name || 'Untitled';
+    $('secName').textContent = sec ? `${sec.name} ${sec.feel === 'grid' ? `${sec.beats} beats` : `${sec.seconds}s`}` : '—';
+    if (document.activeElement !== num('bpm') && sec?.feel === 'grid') num('bpm').value = String(sec.bpm);
+    num('bpm').disabled = !sec || sec.feel !== 'grid';
+    const m = doc.metro ?? defaultMetro();
+    btn('metro').setAttribute('aria-pressed', String(m.on));
+    btn('metro').classList.toggle('down', m.on);
+    if (document.activeElement !== num('metroLevel')) num('metroLevel').value = String(Math.round(m.level * 100));
+    btn('metroVoice').textContent = m.voice === 'kit' ? 'Kit' : 'Tick';
+    btn('undo').disabled = !app.store.history.canUndo;
+    btn('redo').disabled = !app.store.history.canRedo;
+    btn('capture').disabled = !app.host || !app.stream;
+    btn('play').disabled = !app.host;
+    btn('stop').disabled = !app.host;
+    num('projNameInput').value = doc.name;
+  }
+
+  function renderScopes(): void {
+    const box = $('scopes');
+    if (box.childElementCount === app.doc.layers.length) {
+      [...box.children].forEach((el, i) => {
+        const name = el.querySelector('.name');
+        if (name) name.textContent = app.doc.layers[i].name;
+      });
+      return;
+    }
+    box.replaceChildren();
+    for (const l of app.doc.layers) {
+      const d = document.createElement('div');
+      d.className = 'scope';
+      d.title = 'Voices sounding on this layer';
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = l.name;
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      const span = document.createElement('span');
+      bar.append(span);
+      d.append(name, bar);
+      box.append(d);
+    }
+  }
+
+  app.refreshAll = () => {
+    app.ui.fit(app.doc);
+    renderLayers();
+    renderPattern();
+    renderSound();
+    renderChrome();
+    renderScopes();
+  };
+  app.ui.subscribe(() => app.refreshAll());
+
+  session.onChange((doc, kind) => {
+    if (kind === 'swap') {
+      app.ui.selection = { layerId: '', ids: [] };
+      app.ui.marker = null;
+      app.ui.sectionId = '';
+      app.ui.layerId = '';
+      cursor = { row: 0, col: 0 };
+      if (app.host) {
+        app.host.stop();
+        void app.sync.request(doc).then(() => { pushMetro(doc); app.host?.seek(0, 0); });
+      }
+    } else {
+      app.lastRequest = app.sync.request(doc);
+      pushMetro(doc);
+    }
+    app.refreshAll();
+  });
+  app.sync.framesFor = (take) => session.framesFor(take);
+  app.sync.grainFor = (l) => session.grainFor(l);
+  app.sync.onPass = (r) => {
+    if (r.errors.length) app.fail(`Engine: ${r.errors.join('; ')}`);
+    else if (!r.skipped) $('engineStatus').textContent = `Engine in sync. ${r.uploads.length} blobs, ${r.loadMs.toFixed(0)} ms.`;
+  };
+
+  // ---- pattern editing
+
+  function addAtCursor(): void {
+    const sec = section();
+    const l = app.doc.layers[cursor.col];
+    if (!sec || !l) return;
+    app.ui.layerId = l.id;
+    const view = cellView(sec, l, cursor.row);
+    if (view.eventId) { app.ui.select(l.id, [view.eventId]); return; }
+    const t = rowStart(sec, cursor.row);
+    const step = sec.feel === 'grid' ? PPQ / STEPS_PER_BEAT : 0.25;
+    if (l.kind === 'beat') {
+      const id = newId('h');
+      if (app.run(() => app.store.dispatch('addHit', { section: sec.id, layer: l.id, hit: { id, t, dur: 200, slot: 0, strength: 0.8, shape: SHAPE } }))) {
+        app.ui.select(l.id, [id]);
+        acted('hit');
+      }
+    } else {
+      const id = newId('n');
+      if (app.run(() => app.store.dispatch('addNote', { section: sec.id, layer: l.id, note: { id, t, dur: step, cents: 4800, hard: 0.35 } }))) {
+        app.ui.select(l.id, [id]);
+        acted('note');
+      }
+    }
+  }
+
+  function deleteAtCursor(): void {
+    const sec = section();
+    const l = app.doc.layers[cursor.col];
+    if (!sec || !l) return;
+    const ids = app.ui.selection.layerId === l.id && app.ui.selection.ids.length ? app.ui.selection.ids : [];
+    const view = cellView(sec, l, cursor.row);
+    const use = ids.length ? ids : view.eventId ? [view.eventId] : [];
+    if (!use.length) return;
+    if (l.kind === 'beat') app.run(() => app.store.dispatch('deleteHits', { section: sec.id, layer: l.id, ids: use }));
+    else app.run(() => app.store.dispatch('deleteNotes', { section: sec.id, layer: l.id, ids: use }));
+  }
+
+  $('pattern').addEventListener('keydown', (e) => {
+    if (typingIn(e.target) && e.target !== $('pattern')) return;
+    const rows = rowCount(section() ?? app.doc.sections[0]);
+    const cols = app.doc.layers.length;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        const sec = section();
+        const l = app.doc.layers[cursor.col];
+        const ids = app.ui.selection.ids;
+        if (sec && l && l.kind !== 'beat' && ids.length) {
+          e.preventDefault();
+          app.run(() => app.store.dispatch('moveNotes', { section: sec.id, layer: l.id, ids, dt: 0, dcents: e.key === 'ArrowUp' ? 100 : -100 }));
+        }
+        return;
+      }
+      e.preventDefault();
+      if (e.key === 'ArrowUp') cursor.row = (cursor.row + rows - 1) % rows;
+      if (e.key === 'ArrowDown') cursor.row = (cursor.row + 1) % rows;
+      if (e.key === 'ArrowLeft') cursor.col = (cursor.col + cols - 1) % cols;
+      if (e.key === 'ArrowRight') cursor.col = (cursor.col + 1) % cols;
+      app.ui.layerId = app.doc.layers[cursor.col]?.id ?? app.ui.layerId;
+      app.ui.changed();
+      return;
+    }
+    if (e.key === 'Enter') { e.preventDefault(); addAtCursor(); }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteAtCursor(); }
+    if (e.key >= '1' && e.key <= '4') {
+      const sec = section();
+      const l = app.doc.layers[cursor.col];
+      const ids = app.ui.selection.layerId === l?.id ? app.ui.selection.ids : [];
+      if (sec && l?.kind === 'beat' && ids.length) {
+        app.run(() => app.store.dispatch('setHitSlot', { section: sec.id, layer: l.id, ids, slot: Number(e.key) - 1 }));
+      }
+    }
+  });
+
+  // ---- transport and metronome
+
+  btn('play').addEventListener('click', async () => {
+    if (!app.host) return;
+    await app.host.ctx.resume();
+    const i = Math.max(0, app.doc.sections.findIndex((s) => s.id === app.ui.sectionId));
+    app.host.seek(i, 0);
+    app.host.play();
+    acted('play');
+  });
+  btn('stop').addEventListener('click', () => app.host?.stop());
+  btn('secPrev').addEventListener('click', () => stepSection(-1));
+  btn('secNext').addEventListener('click', () => stepSection(1));
+  function stepSection(d: number): void {
+    const n = app.doc.sections.length;
+    const i = app.doc.sections.findIndex((s) => s.id === app.ui.sectionId);
+    const next = app.doc.sections[(i + d + n) % n];
+    if (!next) return;
+    app.ui.sectionId = next.id;
+    cursor.row = 0;
+    app.ui.changed();
+    if (app.host) app.host.seek(app.doc.sections.findIndex((s) => s.id === next.id), 0);
+  }
+  num('bpm').addEventListener('change', () => {
+    const sec = section();
+    if (!sec) return;
+    const bpm = Number(num('bpm').value);
+    app.run(() => app.store.dispatch('setSection', { id: sec.id, bpm }));
+  });
+  btn('metro').addEventListener('click', () => {
+    const on = !(app.doc.metro?.on);
+    app.run(() => app.store.dispatch('setMetro', { on }));
+    if (on) acted('metro');
+  });
+  num('metroLevel').addEventListener('input', () => {
+    const m = app.doc.metro ?? defaultMetro();
+    const level = Number(num('metroLevel').value) / 100;
+    const i = Math.max(0, app.doc.layers.findIndex((l) => l.id === m.layerId));
+    app.host?.setMetro(m.on, level, m.voice, i, m.slot, m.bar);
+  });
+  num('metroLevel').addEventListener('change', () => {
+    app.run(() => app.store.dispatch('setMetro', { level: Number(num('metroLevel').value) / 100 }));
+  });
+  btn('metroVoice').addEventListener('click', () => {
+    const m: Metro = app.doc.metro ?? defaultMetro();
+    const voice = m.voice === 'tick' ? 'kit' : 'tick';
+    const beat = app.doc.layers.find((l) => l.kind === 'beat' && l.id === app.ui.layerId) ?? app.doc.layers.find((l) => l.kind === 'beat');
+    app.run(() => app.store.dispatch('setMetro', { voice, layerId: beat?.id ?? m.layerId, slot: m.slot }));
+  });
+  btn('undo').addEventListener('click', () => app.run(() => app.store.undo()));
+  btn('redo').addEventListener('click', () => app.run(() => app.store.redo()));
+
+  const addLayer = (kind: 'melody' | 'beat' | 'texture') => {
+    const at = app.doc.layers.length;
+    if (!app.run(() => app.store.dispatch('addLayer', { kind }))) return;
+    const added = app.doc.layers[at];
+    if (!added) return;
+    app.ui.layerId = added.id;
+    cursor.col = at;
+    app.ui.changed();
+  };
+  btn('addMelody').addEventListener('click', () => addLayer('melody'));
+  btn('addBeat').addEventListener('click', () => addLayer('beat'));
+  btn('addTexture').addEventListener('click', () => addLayer('texture'));
+  btn('addSection').addEventListener('click', () => {
+    const sec = section();
+    if (app.run(() => app.store.dispatch('addSection', { after: sec?.id, feel: 'grid', beats: sec?.beats ?? 8, bpm: sec?.bpm ?? 100 }))) {
+      const i = sec ? app.doc.sections.findIndex((s) => s.id === sec.id) + 1 : app.doc.sections.length - 1;
+      const next = app.doc.sections[i];
+      if (next) { app.ui.sectionId = next.id; app.ui.changed(); }
+    }
+  });
+
+  // ---- sound, states, influence, morph
+
+  $<HTMLSelectElement>('preset').addEventListener('change', () => {
+    const l = layer();
+    if (!l) return;
+    const index = Number($<HTMLSelectElement>('preset').value);
+    const sound = l.kind === 'beat' ? BEAT_KITS[index].base : MELODY_SOUNDS[index].sound;
+    const base = Array.from(soundToSet(sound));
+    const st = app.ui.editState(l);
+    app.run(() => app.store.batch('Set sound', (run) => {
+      run('setState', { layer: l.id, id: st.id, base });
+      if (l.kind === 'beat') {
+        const kit = BEAT_KITS[index].kit.map((s, i) => ({ params: Array.from(soundToSet(s)), cents: BEAT_KITS[index].kitCents[i] }));
+        run('setLayerSound', { id: l.id, kit });
+      }
+    }));
+  });
+  num('level').addEventListener('input', () => {
+    const l = layer();
+    const i = app.doc.layers.findIndex((x) => x.id === l?.id);
+    if (i >= 0) app.host?.setLayer(i, LAYER_LEVEL, Number(num('level').value));
+  });
+  num('level').addEventListener('change', () => {
+    const l = layer();
+    if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, level: Number(num('level').value) }));
+  });
+  btn('mute').addEventListener('click', () => {
+    const l = layer();
+    if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, mute: !l.mute }));
+  });
+  $<HTMLSelectElement>('state').addEventListener('change', () => {
+    const l = layer();
+    if (l) app.ui.setEditState(l, $<HTMLSelectElement>('state').value);
+  });
+  btn('addState').addEventListener('click', () => {
+    const l = layer();
+    if (!l) return;
+    if (app.run(() => app.store.dispatch('addState', { layer: l.id }))) {
+      const added = app.doc.layers.find((x) => x.id === l.id)?.states.at(-1);
+      if (added) app.ui.setEditState(l, added.id);
+      acted('state');
+    }
+  });
+  btn('addMarker').addEventListener('click', () => {
+    const sec = section();
+    const l = layer();
+    if (!sec || !l) return;
+    const shape = $<HTMLSelectElement>('morphShape').value as MorphShape;
+    const lenMs = Number(num('morphLen').value);
+    const t = rowStart(sec, cursor.row);
+    if (app.run(() => app.store.dispatch('addMorphMarker', { section: sec.id, layer: l.id, marker: { t, state: app.ui.editState(l).id, lenMs, shape } }))) acted('marker');
+  });
+
+  const aspectBox = $('aspects');
+  for (const a of ASPECTS) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = `aspect-${a.bit}`;
+    input.checked = true;
+    input.addEventListener('change', () => {
+      const l = layer();
+      if (!l?.influence) return;
+      let mask = 0;
+      for (const x of ASPECTS) if ((document.getElementById(`aspect-${x.bit}`) as HTMLInputElement).checked) mask |= x.bit;
+      app.run(() => app.store.dispatch('setInfluenceMask', { layer: l.id, mask }));
+    });
+    label.append(input, document.createTextNode(` ${a.label}`));
+    aspectBox.append(label);
+  }
+  num('amount').addEventListener('input', () => {
+    const l = layer();
+    const i = app.doc.layers.findIndex((x) => x.id === l?.id);
+    if (i >= 0) app.host?.setLayer(i, LAYER_INFLUENCE_AMOUNT, Number(num('amount').value) / 100);
+  });
+  num('amount').addEventListener('change', () => {
+    const l = layer();
+    if (!l) return;
+    app.run(() => app.store.dispatch('setInfluenceAmount', { layer: l.id, state: app.ui.editState(l).id, amount: Number(num('amount').value) / 100 }));
+  });
+  btn('commit').addEventListener('click', () => {
+    const l = layer();
+    if (l?.influence) app.run(() => app.store.dispatch('commitInfluence', { layer: l.id, state: app.ui.editState(l).id }));
+  });
+  btn('clearInf').addEventListener('click', () => {
+    const l = layer();
+    if (l) app.run(() => app.store.dispatch('setInfluence', { layer: l.id, influence: null }));
+  });
+
+  async function commitMatch(layerId: string, signal: Float32Array, rate: number, name: string, m: Match): Promise<void> {
+    const ref = `grain-${newId('s').slice(2)}`;
+    try { await session.putGrain(ref, signal); } catch (e) { app.fail(e instanceof Error ? e.message : String(e)); }
+    const l = app.doc.layers.find((x) => x.id === layerId);
+    if (!l) return;
+    const st = app.ui.editState(l);
+    const influence: Influence = {
+      target: Array.from(m.target), mask: 0x1f, source: ref, sourceName: name, sourceRate: rate,
+      grain: grainRegion(m, signal.length), useSound: m.useSound,
+    };
+    app.runRestoring(() => app.store.batch('Set Influence', (run) => {
+      run('setInfluence', { layer: layerId, influence });
+      if (st.influenceAmount === 0) run('setInfluenceAmount', { layer: layerId, state: st.id, amount: 1 });
+    }));
+    acted('influence');
+  }
+
+  function previewTarget(l: Layer, target: ArrayLike<number>, amount: number, mask: number): void {
+    const host = app.host;
+    const i = app.doc.layers.findIndex((x) => x.id === l.id);
+    if (!host || i < 0) return;
+    for (let k = 0; k < 96; k++) host.setParam(i, k, target[k], SET_INFLUENCE);
+    host.setLayer(i, LAYER_INFLUENCE_AMOUNT, amount);
+    host.setLayer(i, LAYER_INFLUENCE_MASK, mask);
+    if (layerUsesStates(app.doc, l)) {
+      app.previewDoc((d) => {
+        const infl: Influence = { target: Array.from(target), mask, source: 'grain-live', sourceName: 'Listening', sourceRate: host.sampleRate, grain: null, useSound: false };
+        const step = applyOps(d, commands.setInfluence(d, { layer: l.id, influence: infl }));
+        return applyOps(step.doc, commands.setInfluenceAmount(step.doc, { layer: l.id, state: app.ui.editState(l).id, amount })).doc;
+      });
+    }
+  }
+
+  $<HTMLInputElement>('infFile').addEventListener('change', async () => {
+    const file = $<HTMLInputElement>('infFile').files?.[0];
+    const l = layer();
+    if (!file || !l) return;
+    try {
+      const ctx = app.ctx ?? new AudioContext();
+      const signal = await decodeFile(ctx, file);
+      const rate = ctx.sampleRate;
+      if (!app.ctx) void ctx.close();
+      $('infStatus').textContent = 'Matching…';
+      const m = await (await app.matcher()).match(signal, rate);
+      await commitMatch(l.id, signal, rate, file.name, m);
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  holdButton(btn('listen'), () => {
+    const host = app.host;
+    const l = layer();
+    if (!host || !l || !app.stream) { app.fail('Start, then enable the mic, to listen.'); return; }
+    const clip = new MicClip(host, host.sampleRate, MAX_SOURCE_S);
+    const amount = app.ui.editState(l).influenceAmount || 1;
+    const live = liveMatch(() => clip.read(), { match: (sig, rate, opts) => app.matcher().then((mm) => mm.match(sig, rate, opts)) }, (m) => {
+      const cur = app.doc.layers.find((x) => x.id === l.id);
+      if (cur) previewTarget(cur, m.target, amount, 0x1f);
+      $('infStatus').textContent = 'Listening…';
+    }, { sampleRate: host.sampleRate, onError: (e) => app.fail(e.message) });
+    listening = { layerId: l.id, clip, live };
+  }, () => {
+    const cur = listening;
+    listening = null;
+    if (!cur) return;
+    void cur.live.finish().then((m) => commitMatch(cur.layerId, cur.clip.read(), cur.clip.rate, 'Listening', m)).catch((e) => app.fail(e instanceof Error ? e.message : String(e)));
+  });
+
+  num('useSound').addEventListener('change', async () => {
+    const l = layer();
+    const infl = l?.influence;
+    if (!l || !infl) return;
+    const data = session.grains.get(infl.source);
+    if (!data) { app.fail('The source audio is not loaded yet.'); return; }
+    try {
+      const want = num('useSound').checked;
+      const m = await (await app.matcher()).match(data, infl.sourceRate, { useSound: want });
+      const next: Influence = { ...infl, target: Array.from(m.target), useSound: want, grain: want ? grainRegion(m, data.length) : infl.grain };
+      app.run(() => app.store.dispatch('setInfluence', { layer: l.id, influence: next }));
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  // ---- capture and keys
+
+  holdButton(btn('capture'), () => { capture.start(); acted('capture'); }, () => { void capture.end(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { app.host?.stop(); return; }
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      app.run(() => e.shiftKey ? app.store.redo() : app.store.undo());
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); app.run(() => app.store.redo()); return; }
+    if (e.key !== ' ' || e.repeat || typingIn(e.target) || e.target === btn('capture') || e.target === btn('listen')) return;
+    e.preventDefault();
+    if (app.stream) capture.start();
+    else if (app.host) {
+      const playing = app.readMeters()?.[M_PLAYING] === 1;
+      if (playing) app.host.stop();
+      else {
+        const i = Math.max(0, app.doc.sections.findIndex((s) => s.id === app.ui.sectionId));
+        void app.host.ctx.resume();
+        app.host.seek(i, 0);
+        app.host.play();
+        acted('play');
+      }
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.key === ' ' && capture.holding) void capture.end();
+  });
+
+  // ---- file
+
+  async function copyBlobs(): Promise<Map<string, Float32Array>> {
+    const out = new Map<string, Float32Array>();
+    for (const ref of await session.blobs.list()) {
+      const d = await session.blobs.get(ref);
+      if (d) out.set(ref, d.slice());
+    }
+    return out;
+  }
+  async function writeBlobs(blobs: Map<string, Float32Array>, doc: Project): Promise<void> {
+    for (const [ref, data] of blobs) {
+      if (ref.startsWith('grain-')) await session.putGrain(ref, data);
+      else await session.blobs.put(ref, data);
+    }
+    await Promise.all(Object.keys(doc.takes).map((id) => session.loadTake(id)));
+    await app.sync.request(app.doc);
+  }
+  async function refreshOpenList(): Promise<void> {
+    const sel = $<HTMLSelectElement>('openList');
+    const rows = await db.list();
+    sel.replaceChildren();
+    for (const r of rows) {
+      const o = document.createElement('option');
+      o.value = r.id;
+      o.textContent = r.name || 'Untitled';
+      if (r.id === app.doc.id) o.selected = true;
+      sel.append(o);
+    }
+  }
+
+  btn('fileBtn').addEventListener('click', () => { void refreshOpenList().then(() => $<HTMLDialogElement>('fileDialog').showModal()); });
+  btn('newBtn').addEventListener('click', () => { void session.create('Untitled'); });
+  btn('saveBtn').addEventListener('click', async () => { await db.flush(); $('capStatus').textContent = 'Saved.'; acted('save'); });
+  btn('saveAsBtn').addEventListener('click', async () => {
+    const name = num('projNameInput').value.trim() || `${app.doc.name} copy`;
+    const blobs = await copyBlobs();
+    const copy = structuredClone(app.doc);
+    copy.id = newId('proj');
+    copy.name = name;
+    await session.adopt(copy);
+    await writeBlobs(blobs, copy);
+    $('capStatus').textContent = `Saved as ${name}.`;
+  });
+  btn('renameBtn').addEventListener('click', () => {
+    const name = num('projNameInput').value.trim();
+    if (name) app.run(() => app.store.dispatch('renameProject', { name }));
+  });
+  btn('deleteBtn').addEventListener('click', async () => {
+    const id = app.doc.id;
+    if (!confirm(`Delete “${app.doc.name}”? This removes it from this browser.`)) return;
+    await session.remove(id);
+    await session.init();
+  });
+  btn('openBtn').addEventListener('click', async () => {
+    const id = $<HTMLSelectElement>('openList').value;
+    if (id) await session.open(id);
+  });
+  btn('exportBtn').addEventListener('click', async () => {
+    const { bytes, missing } = await exportProject(app.doc, (ref) => session.blobs.get(ref));
+    if (missing.length) app.fail(`Exported without ${missing.length} missing file${missing.length === 1 ? '' : 's'}.`);
+    const copy = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(copy).set(bytes);
+    const blob = new Blob([copy]);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(app.doc.name || 'earworm').replace(/[^\w.-]+/g, '_')}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  $<HTMLInputElement>('importFile').addEventListener('change', async () => {
+    const file = $<HTMLInputElement>('importFile').files?.[0];
+    if (!file) return;
+    try {
+      const got = await importProject(new Uint8Array(await file.arrayBuffer()));
+      got.doc.id = newId('proj');
+      if (!got.doc.name) got.doc.name = file.name.replace(/\.zip$/i, '');
+      await session.adopt(got.doc);
+      await writeBlobs(got.blobs, got.doc);
+      $('capStatus').textContent = `Imported ${got.doc.name}.`;
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    }
+  });
+  btn('cleanBtn').addEventListener('click', async () => {
+    const plan = cleanupPlan(app.doc, app.store.history.toJSON());
+    const drop = unusedRefs(await session.blobs.list(), plan);
+    for (const ref of drop) await session.blobs.del(ref);
+    if (plan.takeIds.length) app.run(() => app.store.dispatch('forgetTakes', { ids: plan.takeIds }));
+    $('capStatus').textContent = drop.length || plan.takeIds.length
+      ? `Removed ${plan.takeIds.length} unused take${plan.takeIds.length === 1 ? '' : 's'} and ${drop.length} file${drop.length === 1 ? '' : 's'}. Undo can restore a take’s place in the song, not audio that was deleted.`
+      : 'Nothing unused. Takes still named by Undo stay.';
+  });
+
+  // ---- learn and demos
+
+  async function openDemo(id: string): Promise<void> {
+    const demo = demoById(id);
+    if (!demo) return;
+    const doc = structuredClone(demo.doc);
+    doc.id = newId('proj');
+    await session.adopt(doc);
+    const blobs = new Map<string, Float32Array>();
+    for (const [ref, data] of Object.entries(demo.blobs)) blobs.set(ref, data.slice());
+    await writeBlobs(blobs, doc);
+    app.ui.sectionId = doc.sections[0]?.id ?? '';
+    app.ui.layerId = doc.layers[0]?.id ?? '';
+    app.ui.changed();
+  }
+
+  const lessonList = $('lessonList');
+  for (const lesson of LESSONS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = lesson.title;
+    b.title = lesson.blurb;
+    b.addEventListener('click', () => {
+      $<HTMLDialogElement>('helpDialog').close();
+      void (async () => {
+        if (lesson.demo) await openDemo(lesson.demo);
+        tutorial.start(lesson);
+        paintTour();
+      })();
+    });
+    lessonList.append(b);
+  }
+  const demoList = $('demoList');
+  for (const demo of DEMOS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = demo.name;
+    b.title = demo.blurb;
+    b.addEventListener('click', () => { $<HTMLDialogElement>('helpDialog').close(); void openDemo(demo.id); });
+    demoList.append(b);
+  }
+  btn('helpBtn').addEventListener('click', () => $<HTMLDialogElement>('helpDialog').showModal());
+  btn('testsBtn').addEventListener('click', () => $<HTMLDialogElement>('testsDialog').showModal());
+  btn('tourNext').addEventListener('click', () => {
+    if (!tutorial.step) return;
+    if (tutorial.step.advance === 'next') tutorial.event('next');
+    else { tutorial.index += 1; if (tutorial.lesson && tutorial.index >= tutorial.lesson.steps.length) tutorial.stop(); }
+    paintTour();
+  });
+  btn('tourClose').addEventListener('click', () => { tutorial.stop(); paintTour(); });
+  for (const id of ['layers', 'pattern', 'sound']) {
+    btn(`tab-${id}`).addEventListener('click', () => showPanel(id));
+  }
+
+  // ---- start
+
+  let starting = false;
+  async function start(withMic: boolean): Promise<void> {
+    if (starting || app.host) return;
+    starting = true;
+    btn('start').disabled = true;
+    btn('startMic').disabled = true;
+    let ctx: AudioContext | null = null;
+    try {
+      ctx = new AudioContext({ latencyHint: 'interactive' });
+      app.ctx = ctx;
+      $('engineStatus').textContent = 'Loading the engine…';
+      const host = await KlontHost.create(ctx, { input: true, forceFallback: wantsFallback() });
+      app.analysis = await Analysis.create();
+      host.setBudget(0);
+      app.host = host;
+      app.sync.host = host;
+      app.sync.analysis = app.analysis;
+      app.sync.reset();
+      await app.sync.request(app.doc);
+      pushMetro(app.doc);
+      if (withMic) await capture.enableMic();
+      else { btn('enableMic').hidden = false; $('capStatus').textContent = 'No mic. Enable mic to capture.'; }
+      const iso = typeof crossOriginIsolated === 'boolean' && crossOriginIsolated ? '' : ' This page is not cross-origin isolated.';
+      $('engineStatus').textContent = `${host.mode === 'shared' ? 'Shared' : 'Fallback'} audio, ${ctx.sampleRate} Hz.${iso}`;
+      acted('start');
+      app.refreshAll();
+    } catch (e) {
+      const err = e as DOMException;
+      const mic = err?.name === 'NotAllowedError' || err?.name === 'NotFoundError';
+      app.fail(mic ? `No microphone: ${err.message || err.name}. Start without the mic for playback.` : e instanceof Error ? e.message : String(e));
+      if (!app.host) { void ctx?.close(); app.ctx = null; app.stream?.getTracks().forEach((t) => t.stop()); app.stream = null; }
+      $('engineStatus').textContent = 'Not started.';
+      btn('start').disabled = false;
+      btn('startMic').disabled = false;
+    } finally {
+      starting = false;
+    }
+  }
+  btn('start').addEventListener('click', () => { void start(false); });
+  btn('startMic').addEventListener('click', () => { void start(true); });
+  btn('enableMic').addEventListener('click', async () => {
+    try { await capture.enableMic(); btn('enableMic').hidden = true; app.clearError(); app.refreshAll(); }
+    catch (e) { app.fail(e instanceof Error ? e.message : String(e)); }
+  });
+
+  let lastMeters = 0;
+  const tick = () => {
+    requestAnimationFrame(tick);
+    capture.poll();
+    const m = app.readMeters();
+    const secNow = section();
+    if (m && secNow) {
+      const playing = m[M_PLAYING] === 1;
+      const pos = m[M_SECTION_POS];
+      $('posRead').textContent = playing ? positionLabel(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : positionLabel(secNow, 0);
+      const row = playing ? playRow(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : -1;
+      const beat = m[M_METRO_BEAT];
+      $('posRead').title = beat >= 0 ? `Beat ${Math.round(beat) + 1} of the bar` : '';
+      document.querySelectorAll('#pattern tbody tr').forEach((tr) => {
+        tr.classList.toggle('play', tr instanceof HTMLElement && Number(tr.dataset.row) === row);
+      });
+      if (performance.now() - lastMeters > 200) {
+        lastMeters = performance.now();
+        document.querySelectorAll('#scopes .bar > span').forEach((el, i) => {
+          const voices = m[M_LAYER_VOICES + i] ?? 0;
+          if (el instanceof HTMLElement) el.style.width = `${Math.min(100, voices * 25)}%`;
+        });
+      }
+    }
+  };
+
+  await session.init();
+  app.refreshAll();
+  showPanel('pattern');
+  requestAnimationFrame(tick);
+  void storageEstimate().then((s) => {
+    if (s.quota > 0) $('storageStatus').textContent = `${(s.usage / 1e6).toFixed(1)} / ${(s.quota / 1e6).toFixed(0)} MB`;
+  });
+}

@@ -4,61 +4,185 @@
   <meta charset="utf-8">
   <link rel="icon" href="data:,">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Earworm M0</title>
-  <link rel="stylesheet" href="/src/common/style.css">
+  <title>Earworm</title>
+  <link rel="stylesheet" href="/src/app/style.css">
 </head>
 <body>
-  <main>
-    <h1>Earworm M0</h1>
+  <p id="error" class="err" role="alert" hidden></p>
+  <header class="strip" data-tour="transport" role="toolbar" aria-label="Transport">
+    <span class="brand">EARWORM</span>
+    <span id="projectName" class="readout" aria-live="polite">—</span>
+    <span class="stepper" data-tour="section">
+      <button type="button" id="secPrev" aria-label="Previous section">−</button>
+      <span id="secName" class="readout" aria-live="polite">A</span>
+      <button type="button" id="secNext" aria-label="Next section">+</button>
+    </span>
+    <label>BPM <input id="bpm" type="number" min="20" max="400" step="1" value="100" aria-label="Tempo in beats per minute" style="width:4.5em"></label>
+    <span id="posRead" class="readout" aria-live="polite">1.1</span>
+    <button type="button" id="play" disabled>Play</button>
+    <button type="button" id="stop" disabled>Stop</button>
+    <span class="stepper" data-tour="metro">
+      <button type="button" id="metro" aria-pressed="false" title="Click on the beat. Heard live only.">Metro</button>
+      <label class="dim">Lvl <input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></label>
+      <button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button>
+    </span>
+    <span data-tour="undo">
+      <button type="button" id="undo">Undo</button>
+      <button type="button" id="redo">Redo</button>
+    </span>
+  </header>
+  <nav class="bank" aria-label="Commands">
+    <span data-tour="file">
+      <button type="button" id="fileBtn">File</button>
+    </span>
+    <button type="button" id="start" data-tour="start">Start</button>
+    <button type="button" id="startMic">Start with mic</button>
+    <button type="button" id="enableMic" hidden>Enable mic</button>
+    <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">Capture</button>
+    <span data-tour="help">
+      <button type="button" id="helpBtn">Learn</button>
+      <button type="button" id="testsBtn">Tests</button>
+    </span>
+    <span id="capStatus" class="dim" role="status"></span>
+  </nav>
+  <div id="scopes" class="scopes" aria-hidden="true"></div>
+  <div class="tabs" role="tablist" aria-label="Panels">
+    <button type="button" role="tab" id="tab-pattern" aria-selected="true">Pattern</button>
+    <button type="button" role="tab" id="tab-layers" aria-selected="false">Layers</button>
+    <button type="button" role="tab" id="tab-sound" aria-selected="false">Sound</button>
+  </div>
+  <div class="workspace">
+    <aside class="panel" id="panel-layers" data-tour="layers">
+      <h2>Layers</h2>
+      <div id="layerList" class="layers" role="listbox" aria-label="Layers"></div>
+      <div class="row">
+        <button type="button" id="addMelody">+ Melody</button>
+        <button type="button" id="addBeat">+ Beat</button>
+        <button type="button" id="addTexture">+ Texture</button>
+        <button type="button" id="addSection">+ Section</button>
+      </div>
+      <p class="hint">Up to 8 layers. The selected layer is the one Capture, Sound and the pattern cursor edit.</p>
+    </aside>
+    <main class="panel on" id="panel-pattern">
+      <h2>Pattern</h2>
+      <div class="gridwrap" data-tour="pattern">
+        <table class="pattern" id="pattern" role="grid" aria-label="Pattern"></table>
+      </div>
+      <div class="morph" data-tour="morph">
+        <span class="dim">Morph</span>
+        <button type="button" id="addMarker">Add marker at row</button>
+        <label>Shape
+          <select id="morphShape" aria-label="Morph shape">
+            <option>line</option><option>ease</option><option>late</option><option>step</option><option>wobble</option>
+          </select>
+        </label>
+        <label>Length <input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds" style="width:5em"> ms</label>
+        <span id="morphList" class="dim"></span>
+      </div>
+    </main>
+    <aside class="panel" id="panel-sound">
+      <h2>Sound</h2>
+      <div class="sound">
+        <fieldset>
+          <legend>Layer</legend>
+          <div class="row">
+            <label>Preset <select id="preset" aria-label="Sound preset"></select></label>
+            <label>Level <input id="level" type="range" min="-60" max="12" step="1" value="0" aria-label="Layer level"></label>
+            <button type="button" id="mute" aria-pressed="false">Mute</button>
+          </div>
+        </fieldset>
+        <fieldset data-tour="states">
+          <legend>States</legend>
+          <div class="row">
+            <label>Editing <select id="state" aria-label="Sound state"></select></label>
+            <button type="button" id="addState">Add state</button>
+          </div>
+          <p class="hint">The preset edits this state. Markers on the morph lane move from one state to the next.</p>
+        </fieldset>
+        <fieldset data-tour="influence">
+          <legend>Influence</legend>
+          <div class="row">
+            <label>File <input id="infFile" type="file" accept="audio/*" aria-label="Audio file to match"></label>
+            <button type="button" id="listen">Listen</button>
+          </div>
+          <div class="row" id="aspects"></div>
+          <div class="row">
+            <label>Amount <input id="amount" type="range" min="0" max="100" value="0" aria-label="Influence amount"></label>
+            <label><input id="useSound" type="checkbox"> Use the sound itself</label>
+          </div>
+          <div class="row">
+            <button type="button" id="commit">Commit</button>
+            <button type="button" id="clearInf">Clear</button>
+          </div>
+          <p id="infStatus" class="hint" role="status">No Influence yet. A file or Listen sets a target the state blends toward.</p>
+        </fieldset>
+      </div>
+    </aside>
+  </div>
+  <footer class="statusline">
+    <span id="engineStatus">Press Start to play.</span>
+    <span id="storageStatus"></span>
+  </footer>
+  <div id="tour" class="tour" hidden>
+    <div>
+      <strong id="tourTitle"></strong>
+      <p id="tourBody"></p>
+    </div>
+    <button type="button" id="tourNext">Next</button>
+    <button type="button" id="tourClose">Close</button>
+  </div>
+
+  <dialog id="fileDialog" aria-labelledby="fileTitle">
+    <h2 id="fileTitle">Project</h2>
+    <div class="row">
+      <label>Name <input id="projNameInput" type="text" aria-label="Project name"></label>
+      <button type="button" id="renameBtn">Rename</button>
+    </div>
+    <div class="row">
+      <button type="button" id="newBtn">New</button>
+      <button type="button" id="saveBtn">Save</button>
+      <button type="button" id="saveAsBtn">Save as</button>
+      <button type="button" id="deleteBtn">Delete</button>
+    </div>
+    <div class="row">
+      <label>Open <select id="openList" aria-label="Saved projects"></select></label>
+      <button type="button" id="openBtn">Open</button>
+    </div>
+    <div class="row">
+      <button type="button" id="exportBtn">Export zip</button>
+      <label>Import <input id="importFile" type="file" accept=".zip,application/zip" aria-label="Import a project zip"></label>
+      <button type="button" id="cleanBtn" title="Removes takes and sources nothing in the song or in Undo still uses">Clean up</button>
+    </div>
+    <p class="hint">Save writes the journal now. The song is also saved as you edit. Export is one zip you can import later, including a project from an older Earworm.</p>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </dialog>
+
+  <dialog id="helpDialog" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Learn</h2>
+    <div id="lessonList"></div>
+    <h3>Demos</h3>
+    <div id="demoList"></div>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </dialog>
+
+  <dialog id="testsDialog" aria-labelledby="testsTitle">
+    <h2 id="testsTitle">Tests</h2>
+    <p class="hint">Milestone and gate pages. They stay as they were; this app is the place to make music.</p>
     <ul>
-      <li><a href="live.html">Live</a>: hum into the mic and the synth follows.</li>
-      <li><a href="live-test.html">Live test</a>: listening checklist for Live follow, rated by ear.</li>
-      <li><a href="live-session.html">Live test session</a>: the checklist and Live follow side by side on one page.</li>
-      <li><a href="influence.html">Influence</a>: match a sound to synth settings.</li>
-      <li><a href="influence-test.html">Influence test</a>: blind four-way match test on your saved sources.</li>
-      <li><a href="delay.html">Delay</a>: measure round trip and engine delay.</li>
+      <li><a href="live.html">Live</a> — hum and the synth follows.</li>
+      <li><a href="live-test.html">Live test</a></li>
+      <li><a href="live-session.html">Live test session</a></li>
+      <li><a href="influence.html">Influence</a></li>
+      <li><a href="influence-test.html">Influence test</a></li>
+      <li><a href="delay.html">Delay</a></li>
+      <li><a href="m1.html">M1 player</a></li>
+      <li><a href="bench.html">Benchmark</a></li>
+      <li><a href="m2.html">M2 capture</a></li>
+      <li><a href="m3.html">M3 / M4 track</a></li>
+      <li><a href="m4-test.html">M4 blind match</a></li>
     </ul>
-    <h2>M1</h2>
-    <ul>
-      <li><a href="m1.html">Player</a>: the 8-layer demo song on the new engine, with meters and Export WAV.</li>
-      <li><a href="bench.html">Benchmark</a>: offline speed, block timing and a live run, for the M1 gate.</li>
-    </ul>
-    <h2>M2</h2>
-    <ul>
-      <li><a href="m2.html">Capture</a>: sing or beatbox with Live follow, hold to capture, loop the take as notes or hits. The M2 gate (50 ms follow, hums kept) is judged here.</li>
-    </ul>
-    <h2>M3</h2>
-    <ul>
-      <li><a href="m3.html">Track</a>: sections, layers and tempo on a timeline, edited while it plays. Overdub, autosave and the edit-while-playing gate checks.</li>
-    </ul>
-    <h2>M4</h2>
-    <ul>
-      <li><a href="m4-test.html">Blind match test</a>: the M4 gate. Match your saved sources, render them on the Klont, and pick the source each match was made from.</li>
-      <li>The track page (<a href="m3.html">m3.html</a>) now has Influence, sound states, the morph lane and kit slots from a sound.</li>
-    </ul>
-    <p id="coi"></p>
-    <p id="fb"></p>
-  </main>
-  <script>
-    const iso = window.crossOriginIsolated === true;
-    const forced = new URLSearchParams(location.search).get('fallback') === '1';
-    document.getElementById('coi').textContent = iso
-      ? 'crossOriginIsolated: yes. Audio data travels over SharedArrayBuffer.'
-      : 'crossOriginIsolated: no. The MessagePort fallback is used.';
-    const fb = document.getElementById('fb');
-    if (forced) {
-      fb.textContent = 'Fallback forced by ?fallback=1. ';
-      const a = document.createElement('a');
-      a.href = location.pathname;
-      a.textContent = 'Remove it';
-      fb.append(a, '.');
-    } else {
-      fb.append('To force the fallback, add ?fallback=1 to any page URL, for example ');
-      const a = document.createElement('a');
-      a.href = '?fallback=1';
-      a.textContent = 'this page with ?fallback=1';
-      fb.append(a, '.');
-    }
-  </script>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </dialog>
+  <script type="module" src="/src/app/main.ts"></script>
 </body>
 </html>
