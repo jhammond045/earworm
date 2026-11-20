@@ -63,6 +63,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 html { background: var(--bg); }
 body {
@@ -73,8 +74,9 @@ body {
   font: var(--fs-1)/1.4 var(--sans);
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 button, input, select, output { font: inherit; color: inherit; }
 button {
@@ -105,6 +107,8 @@ input[type="number"], input[type="text"], select {
   min-height: 32px;
 }
 input[type="number"] { font-family: var(--font); font-size: var(--fs-1); }
+input[type="file"] { width: 14em; max-width: 100%; min-width: 0; }
+.sound .row, .sound label, fieldset { max-width: 100%; min-width: 0; }
 input[type="range"] {
   accent-color: var(--accent);
   height: 28px;
@@ -217,7 +221,7 @@ output { font-family: var(--font); min-width: 3.2em; color: var(--hot); }
   color: var(--hot);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
-.workspace { flex: 1; min-height: 0; display: block; min-width: 0; }
+.workspace { flex: 1; min-height: 0; min-width: 0; display: block; overflow: auto; }
 .panel { display: none; padding: var(--s-3); min-width: 0; }
 .panel.on { display: block; }
 .panel h2 {
@@ -446,6 +450,7 @@ dialog li { margin: 4px 0; }
     display: grid;
     grid-template-columns: 232px minmax(0, 1fr) 320px;
     min-height: 0;
+    overflow: hidden;
   }
   .workspace > .panel,
   .workspace > .panel.on {
@@ -467,7 +472,7 @@ dialog li { margin: 4px 0; }
   .cluster { border-right: 0; padding-right: 0; }
   .cell { min-height: 40px; min-width: 52px; font-size: 13px; }
   .strip button, .bank button, .tabs button { min-height: 44px; }
-  .gridwrap { max-height: 46vh; }
+  .gridwrap { max-height: 32vh; }
   .tl-body { max-height: 220px; }
   .tl-names { width: 76px; }
   .brand { font-size: 16px; }
