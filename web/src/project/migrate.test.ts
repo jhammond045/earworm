@@ -23,7 +23,8 @@ describe('migrate', () => {
     const frozen = JSON.stringify(doc);
     const out = migrate(doc);
     expect(JSON.stringify(doc)).toBe(frozen); // input untouched
-    expect(out.schema).toBe(2);
+    expect(out.schema).toBe(SCHEMA);
+    expect(out.metro?.voice).toBe('tick');
     for (const c of Object.values(out.sections[0].clips)) expect(c.morph).toEqual([]);
     expect(out.layers).toBe((doc as { layers: unknown }).layers); // untouched parts are shared
   });

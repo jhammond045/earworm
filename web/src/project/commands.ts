@@ -8,8 +8,8 @@ import { soundToSet } from '../m1/layer';
 import type { Sound } from '../m1/layer';
 import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
 import type { Op, Path } from './patch';
-import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA } from './types';
-import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, MorphMarker,
+import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro } from './types';
+import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MorphShape, Note, Project, Section, State, Take, Tune } from './types';
 
 const PARAMS = 96;
@@ -42,6 +42,11 @@ function fin(v: unknown, what: string): number {
 function inRange(v: unknown, what: string, lo: number, hi: number): number {
   const n = fin(v, what);
   if (n < lo || n > hi) fail(`${what} must be between ${lo} and ${hi}`);
+  return n;
+}
+function whole(v: unknown, what: string, lo: number, hi: number): number {
+  const n = inRange(v, what, lo, hi);
+  if (!Number.isInteger(n)) fail(`${what} must be a whole number`);
   return n;
 }
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -78,11 +83,14 @@ function makeSection(name: string, feel: Feel, beats: number, seconds: number, b
 
 /** A new project: one grid section "A" of 8 beats at 100 bpm, a melody layer and a beat layer. */
 export function newProject(name: string): Project {
+  const melody = makeLayer('melody', 'Melody', 0, 0);
+  const beat = makeLayer('beat', 'Beat', 0, 1);
   return {
     schema: SCHEMA, id: newId('proj'), name,
     sections: [makeSection('A', 'grid', 8, 8, 100)],
-    layers: [makeLayer('melody', 'Melody', 0, 0), makeLayer('beat', 'Beat', 0, 1)],
+    layers: [melody, beat],
     takes: {}, loop: true,
+    metro: defaultMetro(beat.id),
   };
 }
 
@@ -307,6 +315,44 @@ export const commands = {
   renameProject(doc: Project, a: { name: string }): Op[] {
     str(a.name, 'project name');
     return a.name === doc.name ? [] : [{ op: 'set', path: ['name'], value: a.name }];
+  },
+
+  /** Metronome click. Omitted fields keep their current value. */
+  setMetro(doc: Project, a: Partial<Metro>): Op[] {
+    const beat = doc.layers.find((l) => l.kind === 'beat');
+    const cur = doc.metro ?? defaultMetro(beat?.id ?? doc.layers[0]?.id ?? '');
+    const next: Metro = {
+      on: a.on !== undefined ? a.on === true : cur.on,
+      level: a.level !== undefined ? inRange(a.level, 'metronome level', 0, 1) : cur.level,
+      voice: a.voice !== undefined ? (a.voice === 'kit' ? 'kit' : a.voice === 'tick' ? 'tick' : fail('metronome voice must be tick or kit')) : cur.voice,
+      layerId: a.layerId !== undefined ? str(a.layerId, 'metronome layer') : cur.layerId,
+      slot: a.slot !== undefined ? whole(a.slot, 'metronome slot', 0, KIT_SLOTS - 1) : cur.slot,
+      bar: a.bar !== undefined ? whole(a.bar, 'metronome bar', 1, 32) : cur.bar,
+    };
+    if (next.layerId && !doc.layers.some((l) => l.id === next.layerId)) fail('metronome layer is not in this project');
+    if (next.voice === cur.voice && next.on === cur.on && next.level === cur.level && next.layerId === cur.layerId && next.slot === cur.slot && next.bar === cur.bar && doc.metro) return [];
+    const ops: Op[] = [{ op: 'set', path: ['metro'], value: next }];
+    if (doc.schema < SCHEMA) ops.push({ op: 'set', path: ['schema'], value: SCHEMA });
+    return ops;
+  },
+
+  /** Drop take records nothing in the document still uses. The caller deletes the blobs. */
+  forgetTakes(doc: Project, a: { ids: string[] }): Op[] {
+    if (!Array.isArray(a.ids) || a.ids.length === 0) return [];
+    const used = new Set<string>();
+    for (const s of doc.sections) {
+      for (const c of Object.values(s.clips)) {
+        if (c.take) used.add(c.take);
+        for (const id of c.takes) used.add(id);
+      }
+    }
+    const ops: Op[] = [];
+    for (const id of a.ids) {
+      if (typeof id !== 'string' || !doc.takes[id]) continue;
+      if (used.has(id)) fail(`take ${id} is still used by a clip`);
+      ops.push({ op: 'set', path: ['takes', id], value: undefined });
+    }
+    return ops;
   },
 
   addSection(doc: Project, a: { after?: string; feel: Feel; beats?: number; seconds?: number; bpm?: number }): Op[] {

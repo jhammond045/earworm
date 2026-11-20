@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { memoryBlobs, memoryKv, ProjectDb, type Kv } from './persist';
 import { Store } from './store';
 import { newProject } from './commands';
-import type { Project } from './types';
+import { SCHEMA, type Project } from './types';
 
 // Wires a Store to a ProjectDb the way the app does: every change is appended.
 function session(db: ProjectDb, doc: Project, history?: ConstructorParameters<typeof Store>[1]) {
@@ -261,7 +261,7 @@ describe('schema migration on open', () => {
     expect(stored).not.toContain('morph');
 
     const opened = await new ProjectDb(kv).open(start.id);
-    expect(opened!.doc.schema).toBe(2);
+    expect(opened!.doc.schema).toBe(SCHEMA);
     expect(opened!.doc).toEqual(expectedDoc);
 
     // Undo history built from old entries restores clips that carry a morph lane too.
@@ -287,14 +287,14 @@ describe('schema migration on open', () => {
     const db2 = new ProjectDb(kv, { flushMs: 10_000 });
     const opened = await db2.open(start.id);
     expect(await journalKeys(kv, start.id)).toEqual([]);
-    expect(((await kv.get('projects', `snap/${start.id}`)) as { doc: Project; seq: number }).doc.schema).toBe(2);
+    expect(((await kv.get('projects', `snap/${start.id}`)) as { doc: Project; seq: number }).doc.schema).toBe(SCHEMA);
     const s2 = session(db2, opened!.doc, opened!.history);
     level(s2, -8);
     await db2.flush();
     expect(await journalKeys(kv, start.id)).toHaveLength(1);
     const reopened = await new ProjectDb(kv).open(start.id);
     expect(reopened!.doc.layers[0]!.level).toBe(-8);
-    expect(reopened!.doc.schema).toBe(2);
+    expect(reopened!.doc.schema).toBe(SCHEMA);
   });
 
   it('refuses a project saved by a newer app', async () => {

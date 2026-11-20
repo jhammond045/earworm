@@ -9,8 +9,8 @@
 
 import type { Group, HistoryState, JournalEntry } from './history';
 import type { Op } from './patch';
-import { SCHEMA } from './types';
-import type { Project } from './types';
+import { SCHEMA, defaultMetro } from './types';
+import type { Metro, Project } from './types';
 
 interface Step {
   /** The schema this step upgrades from; it produces from + 1. */
@@ -57,7 +57,32 @@ const v1to2: Step = {
   },
 };
 
-const STEPS: Step[] = [v1to2];
+function metroOf(v: unknown): Metro {
+  if (!isObj(v)) return defaultMetro();
+  const voice = v.voice === 'kit' ? 'kit' : 'tick';
+  const level = typeof v.level === 'number' && Number.isFinite(v.level) ? Math.min(1, Math.max(0, v.level)) : 0.7;
+  const bar = typeof v.bar === 'number' && Number.isFinite(v.bar) ? Math.min(32, Math.max(1, Math.round(v.bar))) : 4;
+  const slot = typeof v.slot === 'number' && Number.isInteger(v.slot) ? Math.min(3, Math.max(0, v.slot)) : 0;
+  const layerId = typeof v.layerId === 'string' ? v.layerId : '';
+  return { on: v.on === true, level, voice, layerId, slot, bar };
+}
+
+/** 2 -> 3: the document carries metronome settings. A project-shaped value inside an old op gets them too. */
+const v2to3: Step = {
+  from: 2,
+  doc(doc) {
+    const metro = isObj(doc.metro) ? doc.metro : metroOf(doc.metro);
+    return { ...doc, schema: 3, metro };
+  },
+  value(v) {
+    return mapObjects(v, (o) => {
+      const projectLike = Array.isArray(o.sections) && Array.isArray(o.layers) && typeof o.schema === 'number';
+      return projectLike && !isObj(o.metro) ? { ...o, metro: defaultMetro() } : o;
+    });
+  },
+};
+
+const STEPS: Step[] = [v1to2, v2to3];
 
 function stepsFrom(schema: unknown): Step[] {
   if (typeof schema !== 'number' || !Number.isInteger(schema) || schema < 1) {

@@ -10,8 +10,26 @@
 //   seconds to clip time.
 // - Parameter sets are 96 normalized values (gen/params.ts order).
 
-/** 2: clips carry a morph lane (M4). Older documents are upgraded by migrate.ts. */
-export const SCHEMA = 2;
+/** 3: the project carries metronome settings (M5). Older documents are upgraded by migrate.ts. */
+export const SCHEMA = 3;
+
+/** Click track. The engine plays it live only; exports and the mic never contain it. */
+export interface Metro {
+  on: boolean;
+  /** 0..1. */
+  level: number;
+  /** `tick` is a plain click. `kit` uses `slot` of the layer `layerId`. */
+  voice: 'tick' | 'kit';
+  layerId: string;
+  /** Kit slot 0..3. */
+  slot: number;
+  /** Beats per bar. The downbeat is accented, and a count-in is this long. */
+  bar: number;
+}
+
+export function defaultMetro(layerId = ''): Metro {
+  return { on: false, level: 0.7, voice: 'tick', layerId, slot: 0, bar: 4 };
+}
 export const PPQ = 960;
 export const MAX_LAYERS = 8;
 export const KIT_SLOTS = 4;
@@ -38,6 +56,8 @@ export interface Project {
   takes: Record<string, Take>;
   /** Whether the track loops back to the first section after the last. */
   loop: boolean;
+  /** Click settings. Missing on a document that has not been migrated yet. */
+  metro?: Metro;
 }
 
 export interface Section {

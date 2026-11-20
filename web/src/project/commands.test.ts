@@ -554,8 +554,39 @@ describe('setKitSlot', () => {
 describe('newProject (M4)', () => {
   it('has one state per layer, empty morph lanes and the current schema', () => {
     const p = newProject('x');
-    expect(p.schema).toBe(2);
+    expect(p.schema).toBe(3);
+    expect(p.metro?.bar).toBe(4);
+    expect(p.metro?.layerId).toBe(p.layers[1].id);
     for (const l of p.layers) expect(l.states).toHaveLength(1);
     expect(commands.addNote(p, { section: p.sections[0].id, layer: p.layers[0].id, note: note('a', 0) })[0]).toMatchObject({ value: { morph: [] } });
+  });
+});
+
+describe('metronome and unused takes', () => {
+  it('sets the click and undoes it', () => {
+    const store = new Store(newProject('x'));
+    expect(store.dispatch('setMetro', { on: true, level: 0.4, voice: 'kit', bar: 3, slot: 1 })).toBe(true);
+    expect(store.doc.metro).toMatchObject({ on: true, level: 0.4, voice: 'kit', bar: 3, slot: 1 });
+    store.undo();
+    expect(store.doc.metro?.on).toBe(false);
+    expect(() => store.dispatch('setMetro', { bar: 0 })).toThrow(RangeError);
+    expect(() => store.dispatch('setMetro', { voice: 'bell' as 'tick' })).toThrow(RangeError);
+  });
+
+  it('forgets a take nothing points at, and refuses one a clip uses', () => {
+    const store = new Store(newProject('x'));
+    const sec = store.doc.sections[0].id;
+    const mel = store.doc.layers[0].id;
+    const take = { id: 'take_a', audio: 'audio-take_a', frames: 'frames-take_a', rate: 48000, latencyMs: 0, frameCount: 1, kind: 'melody' as const, refCents: 0, root: 0, scale: 0, bpm: null };
+    store.dispatch('addTake', { take });
+    const clip: MelodyClip = { kind: 'melody', take: 'take_a', takes: ['take_a'], loopLen: 7680, timeSnap: 0, morph: [], notes: [], warp: [] };
+    store.dispatch('setClip', { section: sec, layer: mel, clip });
+    expect(() => store.dispatch('forgetTakes', { ids: ['take_a'] })).toThrow(/still used/);
+    store.dispatch('setClip', { section: sec, layer: mel, clip: null });
+    expect(store.doc.takes.take_a).toBeTruthy();
+    expect(store.dispatch('forgetTakes', { ids: ['take_a'] })).toBe(true);
+    expect(store.doc.takes.take_a).toBeUndefined();
+    store.undo();
+    expect(store.doc.takes.take_a?.id).toBe('take_a');
   });
 });
