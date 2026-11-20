@@ -73,6 +73,16 @@ label { display: inline-flex; align-items: center; gap: 6px; }
   color: var(--accent);
   margin-right: 6px;
 }
+.logo { letter-spacing: 0; display: inline-flex; }
+.logo span {
+  display: inline-block;
+  width: 0.78em;
+  text-align: center;
+  transition: transform 700ms ease, opacity 700ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo span { transition: none; }
+}
 .readout {
   font-family: var(--font);
   background: #070b10;

@@ -24,6 +24,7 @@ import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } fro
 import { MACRO_NAMES, N_MACROS } from '../gen/params';
 import { PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project } from '../project/types';
 import { GlTimeline } from './gl-timeline';
+import { startLogo } from './logo';
 import { AppCapture } from './capture';
 import { DEMOS, demoById } from './demos';
 import { cellView, playRow, positionLabel, rowCount, rowStart, STEPS_PER_BEAT } from './pattern';
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
   const tutorial = new TutorialRunner();
   const capture = new AppCapture(app, (s) => { $('capStatus').textContent = s; }, () => tutorial.event('capture') && paintTour());
   const timeline = new GlTimeline(app, () => acted('timeline'));
+  startLogo($('logo'), () => capture.holding);
   let cursor = { row: 0, col: 0 };
   let listening: { layerId: string; clip: MicClip; live: LiveMatch } | null = null;
 
