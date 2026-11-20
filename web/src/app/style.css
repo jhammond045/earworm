@@ -183,6 +183,28 @@ output { font-family: var(--font); min-width: 3.2em; color: var(--hot); }
 #play[aria-pressed="true"] { box-shadow: inset 3px 0 0 var(--accent); }
 .bank button, .tabs button, .strip button { min-height: 36px; }
 #bpm, #beats, #seconds, #repeats, #roundTrip, #morphLen, #ramp, #metroBar, #tuneOctave { width: 4.6em; }
+.device-note { margin: 0; padding: 6px 12px; background: var(--amber-dim); color: var(--hot); }
+.stage {
+  display: flex;
+  gap: var(--s-2);
+  align-items: stretch;
+  padding: var(--s-2) var(--s-3);
+  background: #121820;
+  border-bottom: 1px solid var(--line);
+}
+#klont, #ribbon {
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+}
+#klont { width: 96px; height: 96px; flex: none; }
+#ribbon { flex: 1; height: 96px; min-width: 0; }
+.meters { display: flex; flex-direction: column; gap: 3px; margin: 4px 0; }
+.meter { display: grid; grid-template-columns: 4.2em 1fr 4.2em; gap: 6px; align-items: center; }
+.meter .name { font-size: var(--fs-0); color: var(--dim); }
+.meter .track { height: 8px; background: #1a2430; position: relative; }
+.meter .fill { position: absolute; top: 0; height: 100%; background: var(--accent); }
+.meter .num { font-family: var(--font); font-size: var(--fs-0); color: var(--hot); text-align: right; }
 .scopes {
   display: flex;
   gap: var(--s-2);
@@ -474,6 +496,8 @@ dialog li { margin: 4px 0; }
   .cell { min-height: 40px; min-width: 52px; font-size: 13px; }
   .strip button, .bank button, .tabs button { min-height: 44px; }
   .gridwrap { max-height: 32vh; }
+  #klont { width: 72px; height: 72px; }
+  #ribbon { height: 72px; }
   .tl-body { max-height: 220px; }
   .tl-names { width: 76px; }
   .brand { font-size: 16px; }

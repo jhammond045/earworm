@@ -1,30 +1,36 @@
 // The Earworm app: one transport, one undo history, and one page from capture to the morph lane.
 // Milestone and gate pages stay linked from Tests. This file is the shell; the document still changes only through commands.
 
-import { decodeBytes, decodeFile, MAX_SOURCE_S, trimAndCap } from '../influence/audio';
+import { decodeBytes, decodeFile, loadSources, MAX_SOURCE_S, trimAndCap, type SavedSource } from '../influence/audio';
+import { download, encodeWav } from '../common/wav';
 import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { soundToSet } from '../m1/layer';
+import { OfflineRenderer } from '../m1/offline';
 import {
   LAYER_DEPTH_BREATH, LAYER_DEPTH_HARD, LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_DEPTH_OPEN, LAYER_FOLLOW,
-  LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, LAYER_PAN, M_LAYER_VOICES, M_METRO_BEAT,
-  M_PLAYING, M_SECTION, M_SECTION_POS, SET_INFLUENCE,
+  LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, LAYER_LEVEL, LAYER_PAN, LIVE_KIT_BRIGHT, LIVE_KIT_LOW, LIVE_KIT_NOISE, LIVE_KIT_TAUGHT,
+  M_LAYER_VOICES, M_MACRO_LIVE, M_METRO_BEAT, M_PLAYING, M_SECTION, M_SECTION_POS, SET_INFLUENCE,
   TUNE_OCTAVE, TUNE_REF_CENTS, TUNE_ROOT, TUNE_SCALE, TUNE_SLIDES, TUNE_SNAP, TUNE_SPEED, TUNE_VIBRATO,
 } from '../m1/protocol';
 import { SCALES } from '../host/protocol';
 import { snapChoices } from '../m3/geometry';
-import { Analysis } from '../m2/analysis';
+import { Analysis, teach, type Hit as AnalysisHit } from '../m2/analysis';
 import { BEAT_KITS, MELODY_SOUNDS, SLOT_NAMES } from '../m2/sounds';
+import { meanLive } from '../m2/take';
 import { $, App } from '../m3/app';
 import { holdButton, MicClip, typingIn } from '../m3/hold';
 import { grainFor as grainRegion, layerUsesStates } from '../m3/influence';
+import { readoutOf } from '../m3/readout';
+import { measureRoundTrip } from '../m3/roundtrip';
 import { Session } from '../m3/session';
 import { liveMatch, type LiveMatch, type Match } from '../m4/match';
 import { commands, newId } from '../project/commands';
+import { Compiler } from '../project/compile';
 import { cleanupPlan, unusedRefs } from '../project/cleanup';
 import { exportProject, importProject } from '../project/archive';
 import { applyOps } from '../project/patch';
 import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
-import { MACRO_NAMES, N_MACROS } from '../gen/params';
+import { MACRO_NAMES, N_MACROS, P } from '../gen/params';
 import { MAX_STATES, PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project, type Tune as TuneFields } from '../project/types';
 import { GlTimeline } from './gl-timeline';
 import { startLogo } from './logo';
@@ -33,7 +39,11 @@ import { DEMOS, demoById } from './demos';
 import { cellView, playRow, positionLabel, rowCount, rowStart, STEPS_PER_BEAT } from './pattern';
 import { TutorialRunner } from './tutorial';
 import { LESSONS, type Advance } from './tutorials';
+import { KlontGlyph } from './klont-glyph';
+import { recordFromFrame } from './live-ribbon';
+import { songSeconds, uploadsToSong } from './mix';
 import { tuneFromTake } from './tune';
+import { Ribbon } from '../live/ribbon';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SHAPE: HitShape = { attack: 0.004, burst: 0.4, cents: null, bend: 0, hold: 0.05, vowel: 0.4, tone: 0.6, endStop: 0, endClick: 0 };
@@ -62,6 +72,19 @@ async function main(): Promise<void> {
   const tutorial = new TutorialRunner();
   const capture = new AppCapture(app, (s) => { $('capStatus').textContent = s; }, () => tutorial.event('capture') && paintTour());
   const timeline = new GlTimeline(app, () => acted('timeline'));
+  const glyphCanvas = document.getElementById('klont');
+  const ribbonCanvas = document.getElementById('ribbon');
+  const glyph = glyphCanvas instanceof HTMLCanvasElement ? new KlontGlyph(glyphCanvas) : null;
+  const ribbon = ribbonCanvas instanceof HTMLCanvasElement ? new Ribbon(ribbonCanvas, 8, 36) : null;
+  const ribbonFrames: Float32Array[] = [];
+  const ribbonColors = { fg: '#e7eef6', muted: '#b4c4d4', line: '#3d5166', accent: '#f0b429' };
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let bands: 16 | 24 = 16;
+  let liveTarget: ArrayLike<number> | null = null;
+  let liveProvisional = false;
+  let savedList: SavedSource[] = [];
+  let sourceNode: AudioBufferSourceNode | null = null;
+  const taughtHits: AnalysisHit[][] = [[], [], [], []];
   startLogo($('logo'), () => capture.holding);
   let cursor = { row: 0, col: 0 };
   let listening: { layerId: string; clip: MicClip; live: LiveMatch } | null = null;
@@ -91,8 +114,8 @@ async function main(): Promise<void> {
     $('tourBody').textContent = step.body;
     btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
     document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
-    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'pan' || step.target === 'tune';
-    const panel = step.target === 'layers' || step.target === 'section-edit' || step.target === 'feel' || step.target === 'layer-edit' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' || step.target === 'quantize' ? 'pattern' : '';
+    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'state-name' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'teach' || step.target === 'pan' || step.target === 'tune' || step.target === 'source' || step.target === 'hold-note';
+    const panel = step.target === 'layers' || step.target === 'section-edit' || step.target === 'feel' || step.target === 'layer-edit' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' || step.target === 'quantize' || step.target === 'takes' ? 'pattern' : '';
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
 
@@ -280,6 +303,9 @@ async function main(): Promise<void> {
     if (document.activeElement !== root) root.value = String(tune.root);
     if (document.activeElement !== scale) scale.value = String(Math.min(scale.options.length - 1, tune.scale));
     if (document.activeElement !== num('tuneOctave')) num('tuneOctave').value = String(tune.octave);
+    if (document.activeElement !== num('stateName')) num('stateName').value = st.name;
+    paintMeters(liveTarget ?? infl?.target ?? null, st.base, liveTarget ? liveProvisional : false);
+    fillTakes();
     for (let k = 0; k < N_MACROS; k++) {
       const el = document.getElementById(`macro-${k}`);
       if (el instanceof HTMLInputElement && document.activeElement !== el) el.value = String(Math.round((st.macros[k] ?? 0.5) * 100));
@@ -371,6 +397,61 @@ async function main(): Promise<void> {
       d.append(name, voices, bar);
       box.append(d);
     }
+  }
+
+  function paintMeters(target: ArrayLike<number> | null, base: ArrayLike<number>, provisional: boolean): void {
+    const box = $('infMeters');
+    const note = $('provisional');
+    if (!target) { box.replaceChildren(); note.hidden = true; return; }
+    const view = readoutOf(target, base);
+    note.hidden = !provisional;
+    if (box.childElementCount !== view.groups.length) {
+      box.replaceChildren();
+      for (const g of view.groups) {
+        const row = document.createElement('div');
+        row.className = 'meter';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = g.label;
+        const track = document.createElement('span');
+        track.className = 'track';
+        const fill = document.createElement('span');
+        fill.className = 'fill';
+        track.append(fill);
+        const numEl = document.createElement('span');
+        numEl.className = 'num';
+        row.append(name, track, numEl);
+        box.append(row);
+      }
+    }
+    view.groups.forEach((g, i) => {
+      const row = box.children[i];
+      const fill = row.querySelector('.fill');
+      const numEl = row.querySelector('.num');
+      if (numEl) numEl.textContent = `${g.delta >= 0 ? '+' : ''}${g.delta.toFixed(2)}`;
+      if (fill instanceof HTMLElement) {
+        const w = Math.min(50, Math.abs(g.delta) * 50);
+        fill.style.width = `${w}%`;
+        fill.style.left = g.delta >= 0 ? '50%' : `${50 - w}%`;
+      }
+    });
+  }
+
+  function fillTakes(): void {
+    const sec = section();
+    const l = layer();
+    const clip = sec && l ? sec.clips[l.id] : undefined;
+    const sel = $<HTMLSelectElement>('takeStack');
+    const takes = clip?.takes ?? [];
+    const sig = takes.join(',');
+    if (sel.dataset.takes !== sig) {
+      sel.dataset.takes = sig;
+      sel.replaceChildren(...(takes.length
+        ? takes.map((id, i) => new Option(`${i + 1}`, id))
+        : [new Option('None', '')]));
+    }
+    sel.disabled = takes.length === 0;
+    if (clip?.take && [...sel.options].some((o) => o.value === clip.take) && document.activeElement !== sel) sel.value = clip.take;
   }
 
   function fillSnap(): void {
@@ -957,6 +1038,14 @@ async function main(): Promise<void> {
     const l = layer();
     if (l) app.ui.setEditState(l, $<HTMLSelectElement>('state').value);
   });
+  num('stateName').addEventListener('change', () => {
+    const l = layer();
+    const name = num('stateName').value.trim();
+    if (!l) return;
+    const id = app.ui.editState(l).id;
+    if (!name) { num('stateName').value = app.ui.editState(l).name; return; }
+    if (app.run(() => app.store.dispatch('setState', { layer: l.id, id, name }))) acted('source');
+  });
   btn('addState').addEventListener('click', () => {
     const l = layer();
     if (!l) return;
@@ -1086,13 +1175,19 @@ async function main(): Promise<void> {
     const amount = app.ui.editState(l).influenceAmount || 1;
     const live = liveMatch(() => clip.read(), { match: (sig, rate, opts) => app.matcher().then((mm) => mm.match(sig, rate, opts)) }, (m) => {
       const cur = app.doc.layers.find((x) => x.id === l.id);
-      if (cur) previewTarget(cur, m.target, amount, 0x1f);
-      $('infStatus').textContent = 'Listening…';
+      liveTarget = m.target;
+      liveProvisional = m.provisional;
+      if (cur) {
+        previewTarget(cur, m.target, amount, cur.influence?.mask ?? 0x1f);
+        paintMeters(m.target, app.ui.editState(cur).base, m.provisional);
+      }
+      $('infStatus').textContent = m.provisional ? 'Listening… motion is provisional.' : 'Listening…';
     }, { sampleRate: host.sampleRate, onError: (e) => app.fail(e.message) });
     listening = { layerId: l.id, clip, live };
   }, () => {
     const cur = listening;
     listening = null;
+    liveTarget = null;
     if (!cur) return;
     void cur.live.finish().then((m) => commitMatch(cur.layerId, cur.clip.read(), cur.clip.rate, 'Listening', m)).catch((e) => app.fail(e instanceof Error ? e.message : String(e)));
   });
@@ -1111,6 +1206,154 @@ async function main(): Promise<void> {
     } catch (e) {
       app.fail(e instanceof Error ? e.message : String(e));
     }
+  });
+
+  async function fillSaved(): Promise<void> {
+    try { savedList = await loadSources(); } catch { savedList = []; }
+    const sel = $<HTMLSelectElement>('savedSource');
+    sel.replaceChildren(...(savedList.length
+      ? savedList.map((s, i) => new Option(`${s.name} (${(s.signal.length / s.sampleRate).toFixed(1)} s)`, String(i)))
+      : [new Option('None saved', '')]));
+    btn('useSaved').disabled = savedList.length === 0;
+  }
+  $<HTMLSelectElement>('savedSource').addEventListener('focus', () => { void fillSaved(); });
+  btn('useSaved').addEventListener('click', async () => {
+    const s = savedList[Number($<HTMLSelectElement>('savedSource').value)];
+    const l = layer();
+    if (!s || !l) { app.fail('No saved source. The Influence page keeps them.'); return; }
+    try {
+      $('infStatus').textContent = 'Matching…';
+      const signal = trimAndCap(s.signal, s.sampleRate);
+      const m = await (await app.matcher()).match(signal, s.sampleRate);
+      await commitMatch(l.id, signal, s.sampleRate, s.name, m);
+      acted('source');
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    }
+  });
+  void fillSaved();
+
+  function stopSource(): void {
+    const n = sourceNode;
+    sourceNode = null;
+    if (n) { n.onended = null; try { n.stop(); } catch { /* already stopped */ } n.disconnect(); }
+    btn('playSource').textContent = 'Play source';
+  }
+  btn('playSource').addEventListener('click', async () => {
+    if (sourceNode) { stopSource(); return; }
+    const l = layer();
+    const infl = l?.influence;
+    const ctx = app.ctx;
+    if (!infl || !ctx) { app.fail(ctx ? 'This layer has no source.' : 'Press Start first.'); return; }
+    await session.loadGrain(infl.source);
+    const data = session.grains.get(infl.source);
+    if (!data) { app.fail('The source audio is not loaded yet.'); return; }
+    await ctx.resume();
+    const buf = ctx.createBuffer(1, data.length, infl.sourceRate);
+    buf.copyToChannel(data as Float32Array<ArrayBuffer>, 0);
+    const node = ctx.createBufferSource();
+    node.buffer = buf;
+    node.connect(ctx.destination);
+    node.onended = () => { if (sourceNode === node) stopSource(); };
+    node.start();
+    sourceNode = node;
+    btn('playSource').textContent = 'Stop source';
+    acted('source');
+  });
+  let noteHeld: { i: number; cents: number } | null = null;
+  holdButton(btn('holdNote'), () => {
+    const l = layer();
+    const host = app.host;
+    if (!l || !host) { app.fail('Press Start first.'); return; }
+    const i = app.doc.layers.findIndex((x) => x.id === l.id);
+    const cents = l.influence?.grain?.refCents ?? 4800;
+    void host.ctx.resume();
+    host.noteOn(i, cents, l.kind === 'beat' ? Number($<HTMLSelectElement>('kitSlot').value) : 0);
+    noteHeld = { i, cents };
+    acted('source');
+  }, () => {
+    if (noteHeld) app.host?.noteOff(noteHeld.i, noteHeld.cents);
+    noteHeld = null;
+  });
+
+  $<HTMLSelectElement>('takeStack').addEventListener('change', () => {
+    const sec = section();
+    const l = layer();
+    const take = $<HTMLSelectElement>('takeStack').value;
+    if (!sec || !l || !take) return;
+    if (app.run(() => app.store.dispatch('selectTake', { section: sec.id, layer: l.id, take }))) acted('take');
+  });
+
+  let teachClip: { clip: MicClip; f0: number } | null = null;
+  holdButton(btn('teachSlot'), () => {
+    const host = app.host;
+    const l = layer();
+    if (!host || !app.stream || !l || l.kind !== 'beat') { app.fail('Start, enable the mic, and pick a beat layer.'); return; }
+    teachClip = { clip: new MicClip(host, host.sampleRate, MAX_SOURCE_S), f0: host.framesTotal() };
+    $('kitStatus').textContent = 'Teaching… repeat one sound.';
+  }, () => {
+    const held = teachClip;
+    teachClip = null;
+    const host = app.host;
+    const l = layer();
+    if (!held || !host || !l || !app.analysis) return;
+    const c = held.clip;
+    const signal = c.read();
+    if (signal.length < 0.3 * c.rate) { $('kitStatus').textContent = 'Too short to teach. Hold a little longer.'; return; }
+    const slot = Number($<HTMLSelectElement>('kitSlot').value);
+    const nFrames = Math.max(1, Math.round(c.seconds * 100));
+    const frames = host.readFrames(held.f0, nFrames);
+    void app.analysis.secondPass(signal.slice(), c.rate, frames, { kind: 'beat' }).then((sp) => {
+      taughtHits[slot] = sp.hits.map((h) => ({ ...h, slot }));
+      const taught = teach(taughtHits);
+      capture.taught = taught;
+      const i = app.doc.layers.findIndex((x) => x.id === l.id);
+      const m = meanLive(taughtHits[slot]);
+      host.setLiveKit(i, slot, LIVE_KIT_TAUGHT, m && taught[slot] ? 1 : 0);
+      if (m) {
+        host.setLiveKit(i, slot, LIVE_KIT_BRIGHT, m[0]);
+        host.setLiveKit(i, slot, LIVE_KIT_LOW, m[1]);
+        host.setLiveKit(i, slot, LIVE_KIT_NOISE, m[2]);
+      }
+      $('kitStatus').textContent = `Slot ${slot + 1} taught from ${sp.hits.length} hits. The next beat take uses it.`;
+      acted('teach');
+    }).catch((e) => app.fail(e instanceof Error ? e.message : String(e)));
+  });
+
+  btn('measure').addEventListener('click', async () => {
+    const host = app.host;
+    if (!host || !app.stream) { app.fail('Start with the mic, then measure. Use headphones.'); return; }
+    const button = btn('measure');
+    button.disabled = true;
+    $('capStatus').textContent = 'Measuring the round trip…';
+    try {
+      const r = await measureRoundTrip(host.ctx, app.stream);
+      if (r.medianMs == null) { app.fail(r.error ?? 'No chirp came back.'); return; }
+      const ms = Math.max(0, Math.min(400, Math.round(r.medianMs)));
+      capture.roundTripMs = ms;
+      num('roundTrip').value = String(ms);
+      $('capStatus').textContent = `Round trip ${ms} ms from ${r.found} chirps.`;
+      $('deviceNote').hidden = true;
+      acted('measure');
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $<HTMLSelectElement>('bands').addEventListener('change', () => {
+    const n = Number($<HTMLSelectElement>('bands').value);
+    bands = n === 24 ? 24 : 16;
+    $('capStatus').textContent = bands === 16
+      ? '16 bands. That is the song engine’s vowel bank.'
+      : 'The song engine’s vowel bank is 16 bands. 24 is the Live page’s front end; takes here stay 16 so the frame stays one width.';
+    acted('bands');
+  });
+  navigator.mediaDevices?.addEventListener('devicechange', () => {
+    if (capture.holding) capture.cancel();
+    const note = $('deviceNote');
+    note.hidden = false;
+    note.textContent = 'The audio device changed. Capture is paused. Measure the round trip again before the next take.';
   });
 
   // ---- capture and keys
@@ -1213,6 +1456,32 @@ async function main(): Promise<void> {
     a.download = `${(app.doc.name || 'earworm').replace(/[^\w.-]+/g, '_')}.zip`;
     a.click();
     URL.revokeObjectURL(a.href);
+  });
+  btn('exportWav').addEventListener('click', async () => {
+    const button = btn('exportWav');
+    button.disabled = true;
+    const renderer = new OfflineRenderer();
+    try {
+      const compiler = new Compiler();
+      const uploads = compiler.compile(app.doc, (take, lay) => app.sync.cachedCurve(take, lay) ?? session.framesFor(take), {
+        grainFor: (lay) => session.grainFor(lay),
+      });
+      const song = uploadsToSong(uploads);
+      const seconds = songSeconds(app.doc);
+      $('engineStatus').textContent = 'Rendering the mix…';
+      const job = renderer.render(song, { once: true, maxSeconds: Math.min(180, Math.max(2, seconds + 12)) }, (p) => {
+        $('engineStatus').textContent = `Rendering ${p.seconds.toFixed(1)} s…`;
+      });
+      const res = await job.promise;
+      download(encodeWav([res.left, res.right], res.sampleRate), `${(app.doc.name || 'earworm').replace(/[^\w.-]+/g, '_')}.wav`);
+      $('engineStatus').textContent = `Mix saved. ${res.realtime.toFixed(1)}× realtime, peak ${res.peak.toFixed(2)}.`;
+      acted('wav');
+    } catch (e) {
+      app.fail(e instanceof Error ? e.message : String(e));
+    } finally {
+      renderer.terminate();
+      button.disabled = false;
+    }
   });
   $<HTMLInputElement>('importFile').addEventListener('change', async () => {
     const file = $<HTMLInputElement>('importFile').files?.[0];
@@ -1344,6 +1613,24 @@ async function main(): Promise<void> {
     requestAnimationFrame(tick);
     capture.poll();
     timeline.frame();
+    const singing = layer();
+    const stateNow = singing ? app.ui.editState(singing) : null;
+    const metersNow = app.readMeters();
+    const macroNow = (i: number) => metersNow ? metersNow[M_MACRO_LIVE + i] : (stateNow?.macros[i] ?? 0.5);
+    glyph?.draw({
+      bright: macroNow(0), grit: macroNow(3), motion: macroNow(2), space: macroNow(4),
+      noise: stateNow?.base[P['src.noise_mix']] ?? 0.1,
+    }, reduceMotion);
+    const origin = capture.originFrame();
+    if (ribbon && origin != null && app.host) {
+      const total = app.host.framesTotal();
+      const n = Math.min(800, Math.max(0, total - origin));
+      const raw = app.host.readFrames(total - n, n);
+      ribbonFrames.length = 0;
+      for (let i = 0; i < n; i++) ribbonFrames.push(recordFromFrame(raw.subarray(i * 25, i * 25 + 25)));
+      ribbon.draw({ count: ribbonFrames.length, get: (back) => ribbonFrames[ribbonFrames.length - 1 - back] ?? null },
+        singing?.tune.scale ?? 0, singing?.tune.root ?? 0, ribbonColors, true);
+    }
     const m = app.readMeters();
     const secNow = section();
     if (m && secNow) {

@@ -48,13 +48,25 @@
     <button type="button" id="enableMic" hidden>Enable mic</button>
     <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">Capture</button>
     <label class="dim" data-tour="align">Align <input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"> ms</label>
+    <button type="button" id="measure" data-tour="measure" title="Play five chirps and time how long they take to come back.">Measure</button>
+    <label class="dim" data-tour="bands">Bands
+      <select id="bands" aria-label="Vowel bands. The song engine uses 16.">
+        <option value="16" selected>16</option>
+        <option value="24">24</option>
+      </select>
+    </label>
     <span data-tour="help">
       <button type="button" id="helpBtn">Learn</button>
       <button type="button" id="testsBtn">Tests</button>
     </span>
     <span id="capStatus" class="dim" role="status"></span>
   </nav>
+  <p id="deviceNote" class="hint device-note" hidden role="status"></p>
   <div id="scopes" class="scopes" aria-hidden="true"></div>
+  <div class="stage" data-tour="klont">
+    <canvas id="klont" width="144" height="144" aria-label="Klont. Spikes follow bright and grit, wobble follows motion, the halo follows space."></canvas>
+    <canvas id="ribbon" data-tour="ribbon" aria-label="Live pitch ribbon. It grows while Capture is held."></canvas>
+  </div>
   <div class="tabs" role="tablist" aria-label="Panels">
     <button type="button" role="tab" id="tab-pattern" aria-selected="true">Pattern</button>
     <button type="button" role="tab" id="tab-layers" aria-selected="false">Layers</button>
@@ -113,6 +125,7 @@
           </label>
           <label data-tour="quantize">Snap <select id="snap" aria-label="Timeline snap"></select></label>
           <button type="button" id="quantize">Quantize</button>
+          <label data-tour="takes">Take <select id="takeStack" aria-label="Which take the ribbon follows"></select></label>
           <span id="tlNote" class="hint">Drag a note, a hit or a morph marker. Drag a hit up or down to another kit slot. Double-click empty space to add one.</span>
         </div>
         <div class="tl-body">
@@ -168,6 +181,7 @@
           <legend>States</legend>
           <div class="row">
             <label>Editing <select id="state" aria-label="Sound state"></select></label>
+            <label>Name <input id="stateName" type="text" aria-label="State name" data-tour="state-name"></label>
             <button type="button" id="addState">Add state</button>
             <button type="button" id="copyState">Copy state</button>
             <button type="button" id="removeState">Remove state</button>
@@ -191,6 +205,7 @@
             <label>File <input id="kitFile" type="file" accept="audio/*" aria-label="One hit to match into the slot"></label>
             <button type="button" id="kitRecord">Record one hit</button>
             <button type="button" id="kitHear">Hear slot</button>
+            <button type="button" id="teachSlot" data-tour="teach" title="Hold and repeat one sound. The next beat take uses what you taught.">Teach this slot</button>
           </div>
           <p id="kitStatus" class="hint" role="status">A beat layer only. One hit, from the mic or a file, becomes that slot.</p>
         </fieldset>
@@ -199,7 +214,11 @@
           <div class="row">
             <label>File <input id="infFile" type="file" accept="audio/*" aria-label="Audio file to match"></label>
             <button type="button" id="listen">Listen</button>
+            <label>Saved <select id="savedSource" aria-label="Sources saved on the Influence page"></select></label>
+            <button type="button" id="useSaved" disabled>Use saved</button>
           </div>
+          <div id="infMeters" class="meters" aria-label="How far each aspect moved"></div>
+          <p id="provisional" class="hint" hidden>Motion is provisional. A longer sound settles it.</p>
           <div class="row" id="aspects"></div>
           <div class="row">
             <label>Amount <input id="amount" type="range" min="0" max="100" value="0" aria-label="Influence amount"></label>
@@ -208,6 +227,8 @@
           <div class="row">
             <button type="button" id="commit">Commit</button>
             <button type="button" id="clearInf">Clear</button>
+            <button type="button" id="playSource" data-tour="source">Play source</button>
+            <button type="button" id="holdNote" data-tour="hold-note" title="Hold to play this layer at the source pitch.">Hold note</button>
           </div>
           <p id="infStatus" class="hint" role="status">No Influence yet. A file or Listen sets a target the state blends toward.</p>
         </fieldset>
@@ -245,6 +266,7 @@
     </div>
     <div class="row">
       <button type="button" id="exportBtn">Export zip</button>
+      <button type="button" id="exportWav" data-tour="wav" title="Render the song to a stereo file. The click is not in it.">Export mix</button>
       <label>Import <input id="importFile" type="file" accept=".zip,application/zip" aria-label="Import a project zip"></label>
       <button type="button" id="cleanBtn" title="Removes takes and sources nothing in the song or in Undo still uses">Clean up</button>
     </div>

@@ -15,10 +15,10 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 | --- | --- | --- | --- |
 | Live follow: sing and the synth follows, with the ribbon, six presets, Mouth, Snap, Glide, Gliss and Jump | M0 | test-page only | `live.html`, with the checklist on `live-test.html` and `live-session.html`. While Capture is held the app does arm the live voice. It does not offer the ribbon or those tuning controls. |
 | Record a take, play the synth, play the voice, save the last 30 s | M0 | test-page only | `live.html`. The app places a take on the track instead of looping it there. |
-| 16 or 24 bands | M0 | missing | The switch is on the Live and Influence pages. The app has no band control. |
+| 16 or 24 bands | M0 | partial | The app has the switch, and the walkthrough "Bands" says what it does. The song engine’s vowel bank is compiled at 16, so a take stays that wide. 24 remains the Live and Influence pages’ own engine. |
 | Influence audition: file, drop, record 3 s, play source, play match, play A then B, audition pitch | M0 | test-page only | `influence.html`. The app's Influence is the track control from M4. |
 | Blind match, four candidates | M0 | test-page only | `influence-test.html`. The M4 gate page is the one that scores the klont engine. |
-| Delay and round-trip measurement | M0 | test-page only | `delay.html`. The app's Align field stores the number. It does not run the chirps. |
+| Delay and round-trip measurement | M0 | supported | Measure plays the five chirps and writes the median into Align. Walkthrough "Measure the round trip". `delay.html` still has the bench. |
 | MessagePort fallback when the page is not isolated | M0 | supported | Same host as the other pages. The status line says Shared or Fallback, and says so when isolation is missing. Not a walkthrough step. |
 | Index lists every page and whether the page is isolated | M0 | partial | Tests lists the pages. Isolation is reported in the status line when it is off, and as Shared or Fallback after Start. |
 
@@ -28,17 +28,17 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 | --- | --- | --- | --- |
 | Play an 8-layer song, with mute, level and a voice count | M1 | partial | `m1.html` still plays the engine demo. The app has mute, level, pan and a voice count (a number and a bar) on the song you are editing. Learn opens the three small demos. |
 | Peak meter, CPU load, partial budget, steals, overloads | M1 | test-page only | `m1.html`. The engine's layer peak only rises, which is why the app shows voices instead. |
-| Export WAV, faster than real time | M1 | test-page only | `m1.html`. The app exports a project zip, not a mix. |
+| Export WAV, faster than real time | M1 | supported | File, Export mix. One pass of the song, the click left out. Walkthrough "Export the mix". `m1.html` still exports its demo. |
 | Benchmark: worst case, demo song, block timing, live 8 layers | M1 | test-page only | `bench.html`. |
 
 ## M2
 
 | Capability | Stage | Status | Notes |
 | --- | --- | --- | --- |
-| Hold to capture. The second pass turns it into notes or hits | M2 | supported | Capture, with the M5 count-in when the transport is stopped. Walkthrough "Capture onto the track". `m2.html` still loops a take on its own. |
+| Hold to capture. The second pass turns it into notes or hits | M2 | supported | Capture, with the M5 count-in when the transport is stopped. Walkthrough "Capture onto the track". The Take menu picks which stacked take the ribbon follows. `m2.html` still loops a take on its own. |
 | Mouth, Snap and the slide modes while you sing | M2 | supported | Mouth, loud, open, hard and breath are gesture depths. Snap, speed, glide, gliss, jump, vibrato, root, scale and level are Tune, with the walkthrough "Tune a take". The same controls stay on `m2.html`. |
 | Keep / Redo tally, and Save take as files | M2 | test-page only | `m2.html`. |
-| Teach my kit | M2 | test-page only | `m2.html`. M3 left it off the track page on purpose. |
+| Teach my kit | M2 | supported | Hold Teach this slot on a beat layer. The next beat take uses it. Walkthrough "Teach a kit slot". `m2.html` still has its own. |
 | Per-take engine follow readout, and play voice against synth | M2 | test-page only | `m2.html`. |
 | Engine follow test with no mic | M2 | test-page only | `delay.html`. |
 
@@ -67,11 +67,11 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 
 | Capability | Stage | Status | Notes |
 | --- | --- | --- | --- |
-| States: add, copy, remove, and pick the one being edited | M4 | supported | Up to 8. Walkthrough "Add a state". Copy counts as that step too. Rename is not a field. |
+| States: add, copy, remove, and pick the one being edited | M4 | supported | Up to 8. Walkthrough "Add a state". Copy counts as that step too. Name renames the state being edited. |
 | Influence: file or Listen, amount, five aspects, use the sound itself, Commit, Clear | M4 | supported | Listen reruns the match while it is held. Walkthrough "Match a sound". |
-| Pick a source saved on the Influence page | M4 | missing | `m3.html` has the list. The app takes a file or the mic. |
-| Play the source, and hold to play a note | M4 | partial | Hear slot plays the selected kit slot. There is no play-source, and no hold-to-play for a melody note. |
-| Provisional readout while Listen is running | M4 | missing | The status names the source. It does not show the aspect meters. |
+| Pick a source saved on the Influence page | M4 | supported | Saved, then Use saved. The list is the Influence page’s store. Walkthrough "Use a saved sound". |
+| Play the source, and hold to play a note | M4 | supported | Play source and Hold note. Hear slot still plays a kit slot. The same walkthrough. |
+| Provisional readout while Listen is running | M4 | supported | Five meters, with a number beside each bar, and a line when motion is provisional. |
 | Kit slot from one hit, mic or file, then hear it | M4 | supported | Walkthrough "Use your sound for a kit slot". |
 | Morph lane: marker, shape, length, and the sound moves while playing | M4 | partial | Add at the pattern row, shape, length, and remove. The timeline drags a marker. Marker time as a number, M at the playhead, and the bracket keys stay on `m3.html`. Walkthrough "Place a morph marker". |
 | Blind match at 100%, 20 sources | M4 | test-page only | `m4-test.html`. |
@@ -96,14 +96,14 @@ Hosting, the LLM service and Refine are out of scope for the app, and are listed
 
 | Capability | Stage | Status | Notes |
 | --- | --- | --- | --- |
-| The Klont glyph that moves with Bright, Grit, Motion and Space | TDD | missing | Not on any page. |
-| A ribbon that grows under the voice during capture | TDD | missing | Ribbons draw for a take that is already placed. |
-| Macros as pull, squash and shake on the Klont | TDD | missing | Macros are sliders. |
-| Device change pauses capture and asks for a new calibration | TDD | missing | |
+| The Klont glyph that moves with Bright, Grit, Motion and Space | TDD | supported | Above the panels. Spikes, wobble and halo follow the live macros, or the state when the engine is stopped. Walkthrough "Watch the Klont". |
+| A ribbon that grows under the voice during capture | TDD | supported | Beside the Klont, while Capture is held. The timeline still draws a ribbon for a take that is already placed. Walkthrough "Watch the Klont". |
+| Macros as pull, squash and shake on the Klont | TDD | missing | Macros stay sliders. The glyph shows them; it does not edit them. |
+| Device change pauses capture and asks for a new calibration | TDD | supported | Capture stops, and the line under the commands asks for Measure. Named in the measure walkthrough. |
 | Svelte components over one WebGL canvas | TDD | missing | M5 records this as a choice: the app is Vite and TypeScript, with a WebGL timeline under a DOM pattern. |
 | Export one zip of the project and its audio | TDD | supported | File. |
 | Warn at 80% of the storage quota | TDD | supported | Footer. |
-| Render the song to a file from the app | TDD | missing | WAV export is the M1 player. |
+| Render the song to a file from the app | TDD | supported | Export mix. |
 | LLM sound, suggestions and names | TDD | missing | Not built. Out of scope here. |
 | Refine | TDD | missing | Not built. Out of scope here. |
 | Echo canceller | TDD | missing | Still open. The app assumes headphones. |
@@ -122,10 +122,11 @@ Walkthrough steps cover the section block, Align and pan.
 
 ## Follow-ups
 
-Left alone because each one is a new editing surface, a measurement rig, or work this task set aside:
+Still not built, on purpose:
 
-- Round-trip measurement, rather than typing Align.
-- Influence: saved sources, play source, hold to play a note, the provisional meters. Rename a state.
-- Teach my kit, the take stack, and a WAV export of the mix.
-- The Klont visualizer, the live ribbon, and device-change handling.
 - Hosting, the LLM service, and Refine.
+- Pull, squash and shake on the Klont. The glyph shows the macros. The sliders still edit them.
+- A clip’s own loop length. The song’s Loop switch is separate, and the length stays on `m3.html`.
+- Changing a layer’s kind after it is added.
+
+The 16/24 switch is in the app. The song engine stays at 16 bands, so choosing 24 does not widen a take. That limit is in the Bands row.

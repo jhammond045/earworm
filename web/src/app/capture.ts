@@ -4,6 +4,7 @@
 import { micConstraints } from '../m1/klont-host';
 import { M_COUNT_SEQ, M_PLAYING, M_SECTION } from '../m1/protocol';
 import type { App } from '../m3/app';
+import type { TaughtSlot } from '../m2/analysis';
 import { tuneFromTake } from './tune';
 import { newId } from '../project/commands';
 import { clockMark, placeTake, type ClockMark } from '../project/overdub';
@@ -31,10 +32,30 @@ export class AppCapture {
   private busy = false;
   /** Round trip in milliseconds, edited from the project panel. */
   roundTripMs = 30;
+  /** Taught kit, used when the next take is a beat. Null slots are untaught. */
+  taught: (TaughtSlot | null)[] | null = null;
 
   constructor(private readonly app: App, private readonly status: (s: string) => void, private readonly onPlaced: () => void) {}
 
   get holding(): boolean { return !!this.cap; }
+
+  /** First frame of the take that is actually recording, or null during the count-in. */
+  originFrame(): number | null {
+    const a = this.cap;
+    return a && !a.counting ? a.f0 : null;
+  }
+
+  /** Drop a take that is in progress. Used when the audio device changes. */
+  cancel(): void {
+    const a = this.cap;
+    const host = this.app.host;
+    if (!a || !host) return;
+    this.cap = null;
+    window.clearTimeout(a.timer);
+    host.arm(a.layerIdx, false);
+    if (a.counting) host.stop();
+    this.status('Capture paused.');
+  }
 
   private ready(): boolean { return !!this.app.host && !!this.app.stream && !!this.app.analysis; }
 
@@ -133,7 +154,9 @@ export class AppCapture {
     this.status(`Second pass on ${(n / FRAME_RATE).toFixed(1)} s…`);
     const mic = host.readMic(a.f0 * host.frameLen(), n * host.frameLen());
     const frames = host.readFrames(a.f0, n);
-    const sp = await app.analysis!.secondPass(mic.slice(), host.sampleRate, frames.slice(), { kind: layer.kind });
+    const sp = await app.analysis!.secondPass(mic.slice(), host.sampleRate, frames.slice(), {
+      kind: layer.kind, taught: layer.kind === 'beat' ? this.taught ?? undefined : undefined,
+    });
     for (let i = 0; i < Math.min(n, sp.pitch.length); i++) frames[i * FRAME_STRIDE] = sp.pitch[i];
     if (!a.mark) throw new Error('The transport did not report a position, so the take cannot be placed.');
     const mark = a.mark;

@@ -21,7 +21,13 @@ export type Advance =
   | 'feel'
   | 'loop'
   | 'layer'
-  | 'quantize';
+  | 'quantize'
+  | 'measure'
+  | 'source'
+  | 'teach'
+  | 'take'
+  | 'wav'
+  | 'bands';
 
 export interface LessonStep {
   id: string;
@@ -138,6 +144,27 @@ export const LESSONS: Lesson[] = [
         body: 'The name is the column you see on the pattern. Remove layer drops it, and its notes, when another layer remains.' },
       { id: 'quantize', title: 'Zoom, snap and quantize', target: 'quantize', advance: 'quantize', action: 'Zoom or quantize',
         body: 'Zoom changes how much of the timeline you see. Snap is the grid a drag lands on. Quantize moves the notes or hits on this lane onto that grid. Drag a hit up or down to put it on another kit slot.' },
+    ],
+  },
+  {
+    id: 'further',
+    title: 'Measure, match and keep',
+    blurb: 'The round trip, Influence, the kit and the mix.',
+    steps: [
+      { id: 'measure', title: 'Measure the round trip', target: 'measure', advance: 'measure', action: 'Press Measure',
+        body: 'Measure plays five chirps and times how long they take to come back through the mic. That number replaces the Align guess, so a note you sang on the beat lands on the beat. Use headphones. If the audio device changes, Capture pauses and asks you to measure again.' },
+      { id: 'source', title: 'Use a saved sound', target: 'source', advance: 'source', action: 'Play a source or use a saved one',
+        body: 'Saved lists sounds kept by the Influence page. Use saved matches one into this layer. Play source plays the file you matched. Hold note plays this layer at that pitch. The meters show how far each aspect moved, and say when motion is still provisional. The name field renames the state you are editing.' },
+      { id: 'takes', title: 'Pick a take', target: 'takes', advance: 'take', action: 'Choose a take',
+        body: 'Each capture stacks on the last. The menu chooses which take the ribbon follows. The written notes stay as they are.' },
+      { id: 'teach', title: 'Teach a kit slot', target: 'teach', advance: 'teach', action: 'Hold Teach this slot',
+        body: 'On a beat layer, hold Teach this slot and repeat one sound. The next beat take groups hits with what you taught, and a live hit can follow that slot.' },
+      { id: 'wav', title: 'Export the mix', target: 'wav', advance: 'wav', action: 'Press Export mix',
+        body: 'File, then Export mix, renders the song to a stereo WAV. It is one pass, faster than real time. The click is not in the file. Open File to reach the button.' },
+      { id: 'klont', title: 'Watch the Klont', target: 'klont', advance: 'next', action: 'Next',
+        body: 'The glyph’s spikes follow bright and grit, its wobble follows motion, and the halo follows space. The ribbon beside it grows under your voice while Capture is held.' },
+      { id: 'bands', title: 'Bands', target: 'bands', advance: 'bands', action: 'Set the bands',
+        body: '16 is the song engine’s vowel bank, and the width a take is stored at. 24 is the front end on the Live page. Choosing it here does not widen the song engine, so a take and the timeline stay one frame wide.' },
     ],
   },
   {
