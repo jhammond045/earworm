@@ -894,3 +894,8 @@ async function main(): Promise<void> {
     if (s.quota > 0) $('storageStatus').textContent = `${(s.usage / 1e6).toFixed(1)} / ${(s.quota / 1e6).toFixed(0)} MB`;
   });
 }
+
+main().catch((e) => {
+  const el = document.getElementById('error');
+  if (el) { el.hidden = false; el.textContent = `The page could not start: ${e instanceof Error ? e.message : String(e)}`; }
+});
