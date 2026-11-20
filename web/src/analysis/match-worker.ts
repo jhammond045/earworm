@@ -30,7 +30,7 @@ let instance: Promise<Exports> | null = null;
 
 function load(): Promise<Exports> {
   instance ??= (async () => {
-    const res = await fetch('/wasm/analysis.wasm');
+    const res = await fetch(`${import.meta.env.BASE_URL}wasm/analysis.wasm`);
     if (!res.ok) throw new Error(`analysis.wasm: HTTP ${res.status}`);
     const { instance: inst } = await WebAssembly.instantiate(await res.arrayBuffer(), {});
     return inst.exports as unknown as Exports;

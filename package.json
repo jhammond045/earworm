@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "sh scripts/build-wasm.sh --if-available && vite web",
     "dev:nocoi": "EARWORM_NO_COI=1 vite web",
+    "build": "vite build web",
     "build:wasm": "sh scripts/build-wasm.sh",
     "test": "vitest run --root web && cargo test --workspace",
     "typecheck": "tsc -p web --noEmit",

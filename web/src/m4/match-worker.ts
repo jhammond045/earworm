@@ -15,7 +15,7 @@ const scope = self as unknown as {
 };
 
 let core: Promise<MatchCore> | null = null;
-const load = () => (core ??= MatchCore.fromUrl('/wasm/analysis.wasm'));
+const load = () => (core ??= MatchCore.fromUrl(`${import.meta.env.BASE_URL}wasm/analysis.wasm`));
 
 scope.onmessage = async (e) => {
   const req = e.data;

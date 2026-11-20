@@ -1,13 +1,21 @@
 # Earworm
 
-Local-first web app: sing or hum into the page, shape the sound. Design: see docs/TDD.md.
+Earworm is a local-first web app: sing or hum into the page, and shape that sound into a track. It runs in the browser. Nothing is uploaded.
 
-To run it:
+The public build is at <https://jhammond045.github.io/earworm/>.
+
+Use headphones and a microphone. Headphones keep the speakers out of the mic, which Live follow needs.
+
+## Run locally
 
 ```sh
 pnpm install
 pnpm dev
 ```
+
+Open the URL Vite prints (normally <http://localhost:5173>). `pnpm build` writes the static site to `web/dist`. A production build uses the base path `/earworm/` so it can be served from GitHub Pages. Set `EARWORM_BASE` when you build to use another path. The dev server stays at `/`.
+
+Design: see docs/TDD.md.
 
 - Milestone M0 (two throwaway prototypes, Live follow and Influence match): see docs/M0.md for what each prototype tests, how to judge it, and what was measured.
 - Milestone M1 (the engine core: 8 layers of voices, drums, space, sequencer, offline render, benchmark): see docs/M1.md for how to run it and how to judge its gate on the reference laptop.
