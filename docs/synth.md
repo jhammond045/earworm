@@ -1,6 +1,6 @@
 # Synth engine: patches and modulation
 
-Nov 20, 2026. Design approved. Stage S1 is built; [S1.md](S1.md) says how to check it and where the build differs from this page.
+Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page.
 
 Today a layer's sound is one fixed chain, the Klont voice, set by 96 numbers, and the app offers a short list of presets to pick from plus eight macros. This page turns that into an open patch: a small graph of modules the user can add, remove and wire, and one modulation system in which every envelope, LFO, knob and sung feature (pitch, intensity, volume, hardness) can drive any synth or channel-effect parameter. The aim is a tool that works as a real-time DAW and as an instrument for improvising.
 
@@ -44,7 +44,7 @@ The M0 pages (`live.html` and the others) run their own older engine and keep th
 
 - **Module.** One processing unit from the catalog: an oscillator, a filter, a delay. It has typed inputs, one output and a set of parameters.
 - **Cable.** An audio connection from one module's output to another module's input inside the voice section. Several cables into one input are summed.
-- **Channel.** The layer's effect chain: an ordered list of effects on the stereo sum of its voices, then width, level and pan.
+- **Channel.** The layer's effect chain: an ordered list of effects on the sum of its voices, with level and pan between the mono effects and the first stereo one, and width last.
 - **Mod source.** Anything that produces a control value: an envelope, an LFO, the note's velocity, a macro, the sung volume.
 - **Route.** One row of the modulation matrix: a source, a shaper, an amount and a target.
 - **Value.** One stored number, normalized 0 to 1: a module parameter, a route amount, an envelope time.
@@ -58,14 +58,14 @@ A layer plays up to 8 voices. Work that has to happen per note runs per voice. W
  ┌──────────────────────────────────────┐
  │ sources → processors → amp → out ────┼──┐
  └──────────────────────────────────────┘  │
- layer sources (shaped noise, grains) ─────┼──→ sum → channel fx 1 → ... → fx n → width → level, pan → master
+ layer sources (shaped noise, grains) ─────┼──→ sum → mono fx → level, pan → stereo fx → width → master
                                            │
  (each layer source is gated by the voices' envelopes, as today)
 ```
 
 - **Voice section.** A directed graph without cycles. Mono, 32-sample control ticks, audio processed in spans that never cross a tick. Ends at the voice output, which is summed into the layer bus after the voice's choke gain.
 - **Layer sources.** Shaped noise and grains stay per layer because they are expensive per voice (16 band-pass filters, 32 grains). Their level follows the sum of the sounding voices' chosen envelope, exactly as today. They go straight into the layer bus.
-- **Channel section.** An ordered chain, not a free graph: effects in series, each with a bypass and its own mix. Then the fixed strip: width, level, pan.
+- **Channel section.** An ordered chain, not a free graph: effects in series, each with a bypass and its own mix. The mono effects (crush, tape) come first and run on the voice sum; level and pan then spread it to stereo for the stereo effects (delay, reverb); width is last. This is the old engine's order, so a panned layer with delay or reverb sounds as it did.
 
 Audio cannot flow from the channel back into a voice. Modulation can reach channel parameters, but only from layer-scope sources (see "Modulation").
 
@@ -93,7 +93,7 @@ Every module is built from code that exists today, except the four marked new.
 | `delay` | channel | stereo | time (seconds or beats), feedback, shift, mix | `dsp::layer_fx::StereoDelay` |
 | `reverb` | channel | stereo | size, damp, mix, freeze | `dsp::layer_fx::Reverb` |
 
-Width, level and pan are the fixed end of every channel. They are values like any other, so they can be modulated and automated.
+Level and pan sit between the mono and the stereo effects, and width ends every channel. Width is a value like any other, so it can be modulated and automated. Level and pan are still layer fields, not values: making them values belongs with automation (S5).
 
 `sampler` and `grains` read a **sample**: a mono buffer in the layer's sample slots (see "Engine changes"). A sample is an Influence source, a take's audio or an imported file.
 
@@ -144,6 +144,8 @@ interface Patch {
   lfos: ModDef[];                  // layer-scope LFOs
   routes: Route[];                 // layer-scope routes
   macroNames: string[];            // eight
+  descs?: Record<string, string>;  // a key's descriptor where it is not the module table's default
+  defaults?: Record<string, number>; // a key's starting value (real units) where it is not the neutral
 }
 interface VoicePatch {
   modules: { id: string; type: VoiceModuleType; sample?: BlobRef }[];
@@ -158,7 +160,7 @@ interface ModDef     { id: string; type: 'env' | 'lfo'; trigger?: 'note' | 'onse
 interface Route {
   id: string;
   source: string;                  // 'env1', 'lfo2', 'note.velocity', 'voice.volume', 'layer.intensity', 'macro3', 'wheel'
-  target: string;                  // a value key, 'pitch', or a 16-band shape
+  target: string;                  // a value key, 'pitch', 'bands:<key>' (a 16-band shape) or 'oct:<key>' (a log-scaled value moved in octaves)
   mode: 'add' | 'scale' | 'pull';
   inLo: number; inHi: number;      // the part of the source's range that is used
   bend: number;                    // -1..1, 0 is a straight line
@@ -168,6 +170,7 @@ interface Route {
   polarity: 'up' | 'down' | 'both';
   via: string | null;              // a second source that scales the amount
   group: 'loud' | 'open' | 'hard' | 'breath' | 'mouth' | 'follow' | null;
+  unit?: number;                   // target units per unit of amount (default 1; 4800 cents for pitch)
 }
 interface Note     { /* id, t, dur, cents, hard: unchanged */ vel: number }  // 0..1
 interface ClipBase { /* unchanged */ auto: AutoLane[] }
@@ -190,7 +193,9 @@ A **preset file** is one layer's sound without the notes:
 }
 ```
 
-Loading a preset replaces the layer's patch and the edited state's values in one undoable command; the other states get the preset's values too, so the layer stays consistent. Missing keys take the parameter's neutral value; unknown keys are dropped. Factory presets ship as JSON files in `web/src/presets/`. User presets live in the IndexedDB settings store and export and import as single files.
+Loading a preset replaces the layer's patch and the edited state's values in one undoable command; the other states get the preset's values too, so the layer stays consistent. Missing keys take the patch's starting value (`defaults`, else the descriptor's neutral); unknown keys are dropped. Factory presets ship as JSON files in `web/src/presets/`. User presets live in the IndexedDB settings store and export and import as single files.
+
+A patch may give a key another descriptor of the same kind (`descs`) and its own starting value (`defaults`). The classic patch uses both, so the old parameters keep their ranges and old values map over unchanged.
 
 ### The module table
 
@@ -210,9 +215,9 @@ The classic patch is today's chain, written as a patch. Nothing about its sound 
 ```text
 voice:   partials1 → amp1 ─┐
          click1 ───────────┴→ clang1 → fold1 → comb1 → filter1 → out
-         env1 (amp), env2 (noise), env3 (pitch drop), lfo1, lfo2, lfo3 (drift: today's chaos)
+         env1 (amp, ADSR), env2 (noise, decay mode), env3 (pitch drop, one-shot), lfo1, lfo2, lfo3 (drift: today's chaos)
 layer:   shaped_noise1 (driven by env2), grains1 (driven by env1)
-channel: crush1 → tape1 → delay1 → reverb1 → width, level, pan
+channel: crush1 → tape1 → level, pan → delay1 → reverb1 → width
 ```
 
 The ten presets in `web/src/m2/sounds.ts` (Choir pad, Reed, Glass, Buzz, Breath, Bell, Demo bass, Demo lead, and the two kits) are converted once by a script into classic-patch preset files: same structure, their values moved to the new keys, today's gesture, hit-shape, LFO and macro maps as default routes. The Preset menu lists them first, then the user's own.
@@ -238,7 +243,7 @@ Each source gives one value per control tick. Unipolar sources run 0 to 1. Bipol
 
 | Source | What it is |
 | --- | --- |
-| `env1` to `env4` | Attack, hold, decay, sustain, release, with a curve per envelope. Trigger: the note, or each sung onset. `env1` decides when the voice ends. |
+| `env1` to `env4` | A mode, then attack, hold, decay, sustain, release. Modes: ADSR (note-off starts the release); decay (starts at full and falls with decay; while `env1` releases, the release adds to the fall); one-shot (starts at full, falls with decay, ignores note-off). Trigger: the note, or each sung onset. `env1` decides when the voice ends. |
 | `lfo1` to `lfo4` | Rate in Hz, or in beats when synced. Wave is a morph: sine, triangle, saw, square, random steps, drift (today's chaos). Phase restarts on each note unless set to run free. |
 | `note.pitch`, `note.velocity`, `note.hardness` | The note's pitch, velocity or hit strength, and hardness (a stored note's `hard`, or the onset hardness of a live voice). |
 | `note.attack`, `note.burst`, `note.bend`, `note.hold`, `note.vowel`, `note.tone`, `note.endClick` | A beat hit's shape fields, as measured by the second pass. Fixed for the note. |
@@ -279,7 +284,7 @@ Softness and hardness are covered by two features on purpose: `hardness` is the 
 | `riseMs`, `fallMs` | One-pole smoothing, separate for rising and falling values. 5 ms rise and 300 ms fall turns the sung volume into an envelope follower. |
 | `latch` | Take the value once when the note starts and hold it. A hardness route that sets the attack time is latched. |
 | `polarity` | `up` adds 0 to 1, `down` adds -1 to 0, `both` adds -1 to 1. |
-| amount | The value `route.<id>`, -1 to 1. For `add` routes, 1 moves the target across its whole range. For pitch, 1 is 48 semitones. |
+| amount | The value `route.<id>`, -1 to 1, times the route's `unit` (target units per unit of amount, 1 unless set). For `add` routes, 1 moves the target across its whole range. For pitch the unit is 4800 cents, so 1 is 48 semitones. A fixed constant of an old map rides in `unit` with amount 1, which keeps it exact. |
 | `via` | Optional second source that scales the amount: the mod wheel deciding how much vibrato there is. |
 | `group` | Optional: `loud`, `open`, `hard`, `breath`, `mouth` or `follow`. The route's amount is also scaled by that group's depth, which is today's Gestures sliders and Follow. |
 
@@ -290,20 +295,26 @@ u = clamp((x - inLo) / (inHi - inLo), 0, 1)
 y = points ? lerp(points, u) : curve(u, bend)
 y = latch ? y_at_note_start : smooth(y, riseMs, fallMs)
 c = polarity == up ? y : polarity == down ? y - 1 : 2y - 1
-k = amount × depth(group) × via
+k = amount × unit × depth(group) × via
 
 add:    target += k × c          (normalized domain)
 scale:  target ×= 1 + k × c      (real units; scalable values only)
-pull:   target += k × (y - target)  (normalized domain; for a 16-band shape, per band)
+pull:   target += k × (s - target)  (the target's real units; s is the source value: the raw value
+                                     clamped to inLo..inHi, or the curve's y spread across that range;
+                                     for a 16-band shape, per band)
+oct:    target ×= 2^(k × c)      (a log-scaled value, after mapping; may pass the value's own range
+                                     up to what the module allows)
 ```
+
+A latched pull holds what it set at note start. A route whose target is another route's amount adds to that amount in the amount's own units, by the source value itself (the hit's bend deepens the pitch envelope in semitones); such a route comes before the route it moves.
 
 Smoothing and latch state start at the source's value when a voice starts, so a note does not begin with a sweep.
 
 ### Targets
 
-- Any value of any module in the voice patch, including the voice pitch (`pitch`).
+- Any value of any module in the voice patch, including the voice pitch (`pitch`). A log-scaled value can also be moved in octaves after mapping (`oct:<key>`), so an LFO can sweep a filter past 20 kHz up to the filter's own limit, as the old LFO maps did.
 - Any parameter of the envelopes and LFOs (times, rates, curves), from any source except an envelope or an LFO.
-- Any channel value: effect parameters, width, level, pan. Only layer-scope sources may target the channel, because the channel is one per layer and a per-voice value has no single meaning there.
+- Any channel value: effect parameters and width (level and pan are layer fields until S5). Only layer-scope sources may target the channel, because the channel is one per layer and a per-voice value has no single meaning there.
 
 ### Order of evaluation
 
@@ -333,10 +344,10 @@ Every migrated layer and every factory preset carries these routes. Their amount
 | Mouth | `voice.vowel` → `partials1.tone_bands`, pull, group mouth. Today's code also writes the noise bands per voice, but the noise bank reads the layer's bands, so only the meters show it. A `layer.vowel` route to `shaped_noise1.bands` would make it audible; it is not a default, so the sound does not change. |
 | Hardness to click +0.5, attack -0.3 | `note.hardness` → `click1.start` and `env1.attack`, latched, group hard |
 | Velocity and the envelope on amplitude | `note.velocity` and `env1` → `amp1.gain`, scale, polarity down |
-| Pitch envelope | `env3` (attack 0, sustain 0, decay = old pitch time) → `pitch`, amount = old pitch amount |
-| LFO 1 to pitch, filter, level; LFO 2 to pitch, filter, grain; chaos to pitch and filter | eight routes from `lfo1`, `lfo2`, `lfo3` |
-| Hit shape on beat layers | eleven latched routes from the `note.*` hit fields, group follow. Attack and tone move the target toward the hit's value, so they are pull routes; the rest are add routes. |
-| Macro weights (34 non-zero weights over 31 parameters) | one route per weight from `macro1`..`macro8`, polarity both, amount 2W |
+| Pitch envelope | `env3` (one-shot, decay = old pitch time) → `pitch`, amount = old pitch amount, unit 100 cents |
+| LFO 1 to pitch, filter, level; LFO 2 to pitch, filter, grain; chaos to pitch and filter | eight routes from `lfo1`, `lfo2`, `lfo3`; the filter routes move the cutoff in octaves (`oct:filter1.cutoff`) |
+| Hit shape on beat layers | eleven latched routes from the `note.*` hit fields, group follow. Attack and tone move the target toward the hit's value (the attack in seconds), so they are pull routes; the rest are add routes. |
+| Macro weights (34 non-zero weights over 31 parameters) | one route per weight from `macro1`..`macro8`, polarity both, unit W and amount 1 (an add route moves by amount × (2u - 1), so the old weight W is the amount) |
 
 Two of today's rules swap values rather than offset them, so they stay fixed rules of the voice instead of becoming routes:
 
