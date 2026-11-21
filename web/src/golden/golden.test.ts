@@ -1,8 +1,10 @@
-// Golden renders (docs/synth.md, stage S1): every fixture project, compiled by today's compiler
-// and rendered by today's engine, against the same project compiled and rendered by the current
-// code. A render passes when no sample differs by more than -90 dBFS. A case that does not is
+// Golden renders (docs/synth.md, stage S1): every fixture project, compiled by the compiler and
+// rendered by the engine from before the modular synth, against the same project migrated to the
+// current schema, compiled and rendered by the current code. A render passes when no sample differs by more than -90 dBFS. A case that does not is
 // listed in KNOWN with the level it reached and why, for the owner to judge by ear.
 //
+// The fixtures were written by build-fixtures.test.ts in the commit that added them (it built schema 3
+// documents with the app as it was, so it was removed once the app moved on).
 // The reference side does not use the current protocol or renderer: it loads the stored blobs
 // into klont-reference.wasm (a copy of the engine before S1) with its own copy of the old buffer
 // table layout, so it keeps working whatever the current engine becomes.
@@ -12,7 +14,9 @@ import { describe, expect, it } from 'vitest';
 import { uploadsToSong } from '../app/mix';
 import { renderSong } from '../m1/render-core';
 import { instantiateEngine } from '../m1/protocol';
+import { exportProject, importProject } from '../project/archive';
 import { Compiler } from '../project/compile';
+import { historyResets, migrate } from '../project/migrate';
 import type { Layer, Project, Take } from '../project/types';
 
 const SR = 48000;
@@ -26,7 +30,13 @@ const curWasm = readFileSync(resolve(here, '../../public/wasm/klont.wasm'));
 /** Worst difference allowed for a case that is not listed in KNOWN. */
 const LIMIT_DB = -90;
 /** Cases that differ by more than LIMIT_DB, with the level they reached and the reason. */
-const KNOWN: Record<string, { db: number; why: string }> = {};
+const KNOWN: Record<string, { db: number; why: string }> = {
+  // Both come from the bit crusher: its quantizer turns last-bit differences in its input (from
+  // sums now taken in another order) into one step of its output. With the crusher at 16 bits
+  // both renders match within -121 dB.
+  arrangement: { db: -89.8, why: 'one bit-crusher step on the beat layer (grit macro)' },
+  'm1-demo': { db: -69.8, why: 'one 10-bit crusher step on the texture layer' },
+};
 
 // ---- reference engine, old ABI (protocol before S1)
 
@@ -83,15 +93,19 @@ function loadCase(dir: string): { doc: Project; curves: Map<string, Float32Array
   return { doc, curves, blobs };
 }
 
-async function currentRender(dir: string, frames: number): Promise<{ l: Float32Array; r: Float32Array }> {
-  const { doc, curves, blobs } = loadCase(dir);
-  const uploads = new Compiler().compile(doc, (take: Take) => curves.get(take.id) ?? null, {
+function compileCurrent(doc: Project, curves: Map<string, Float32Array>, blobs: Map<string, Float32Array>) {
+  return new Compiler().compile(doc, (take: Take) => curves.get(take.id) ?? null, {
     grainFor: (l: Layer) => {
       const g = l.influence?.grain;
       const src = l.influence ? blobs.get(l.influence.source) : undefined;
       return g && src ? { data: src.subarray(g.start, g.end), rate: l.influence!.sourceRate, refCents: g.refCents } : null;
     },
   });
+}
+
+async function currentRender(dir: string, frames: number): Promise<{ l: Float32Array; r: Float32Array }> {
+  const { doc, curves, blobs } = loadCase(dir);
+  const uploads = compileCurrent(migrate(doc), curves, blobs);
   const { ex } = instantiateEngine(curWasm, SR, CHUNK);
   const res = await renderSong(ex, uploadsToSong(uploads), { maxSeconds: frames / SR });
   return { l: res.left, r: res.right };
@@ -139,5 +153,20 @@ describe('golden renders', () => {
     const { ex } = instantiateEngine(curWasm, SR, CHUNK);
     const res = await renderSong(ex, song, { maxSeconds: MAX_S });
     verdict('m1-demo', worst(ref, { l: res.left, r: res.right }, frames));
+  }, 60_000);
+
+  it('a schema 3 project zip imports, plays and says its undo history starts fresh', async () => {
+    const dir = resolve(fixtures, 'sung-melody');
+    const { doc, curves, blobs } = loadCase(dir);
+    expect(doc.schema).toBe(3);
+    const zip = await exportProject(doc, async (ref) => blobs.get(ref) ?? (ref.startsWith('audio-') ? new Float32Array(480) : null));
+    expect(zip.missing).toEqual([]);
+    const got = await importProject(zip.bytes);
+    expect(got.savedSchema).toBe(3);
+    expect(historyResets(got.savedSchema)).toBe(true);
+    expect(got.doc.schema).toBe(4);
+    const { ex } = instantiateEngine(curWasm, SR, CHUNK);
+    const res = await renderSong(ex, uploadsToSong(compileCurrent(got.doc, curves, got.blobs)), { maxSeconds: 6 });
+    expect(res.peak).toBeGreaterThan(0.1);
   }, 60_000);
 });

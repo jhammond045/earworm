@@ -1,11 +1,14 @@
-// Encoder for the layer blob (crates/klont/src/protocol.rs "Layer blob").
-// Sounds are given in real units (Hz, seconds, dB...) and converted here.
+// Encoder for classic layers (crates/klont/src/protocol.rs "Layer blob v2", the classic patch in
+// synth/classic.ts). Sounds are given in real units (Hz, seconds, dB...) of the old parameters and
+// converted here.
 
-import { COUNT, DESCS, neutralSet, toNorm } from '../gen/params';
+import { DESCS, neutralSet, toNorm } from '../gen/params';
 import { GROUP_GRIT, GROUP_MOTION, GROUP_SHAPE, GROUP_SPACE, GROUP_TONE, KIND_BEAT, KIND_MELODY, KIND_TEXTURE,
   KIT_SLOTS, LAYER_DEPTH_LOUD, LAYER_FIELDS, LAYER_FOLLOW, LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK,
-  LAYER_KIND, LAYER_KIT_CENTS, LAYER_LEVEL, LAYER_MAGIC, LAYER_MUTE, LAYER_OFF_BASE, LAYER_OFF_FIELDS,
-  LAYER_OFF_INFLUENCE, LAYER_OFF_KIT, LAYER_OFF_MACROS, LAYER_PAN, LAYER_WORDS, N_MACROS } from './protocol';
+  LAYER_KIND, LAYER_KIT_CENTS, LAYER_LEVEL, LAYER_MUTE, LAYER_PAN, N_MACROS } from './protocol';
+import { encodeLayerBlob } from './blobs';
+import { classicPatch, classicVectors, valuesFromVocab } from '../synth/classic';
+import { patchBlob } from '../synth/patch';
 
 /** Parameter id ("env.decay", "tone_bands.3") -> value in real units. */
 export type Sound = Record<string, number>;
@@ -55,11 +58,9 @@ export function soundToSet(sound: Sound | undefined): Float32Array {
   return s;
 }
 
-export function encodeLayer(def: LayerDef): ArrayBuffer {
-  const buf = new ArrayBuffer(LAYER_WORDS * 4);
-  const u = new Uint32Array(buf);
-  const f = new Float32Array(buf);
-  u[0] = LAYER_MAGIC;
+/** A classic layer from a definition: the LOAD_PATCH and LOAD_LAYER blobs. Layer `slot`'s grains
+ *  read sample `slot`. */
+export function encodeLayer(def: LayerDef, slot = 0): { patch: ArrayBuffer; layer: ArrayBuffer } {
   const fields = new Float32Array(LAYER_FIELDS);
   const d = def.depths ?? {};
   fields[LAYER_LEVEL] = def.level ?? 0;
@@ -73,12 +74,13 @@ export function encodeLayer(def: LayerDef): ArrayBuffer {
   fields[LAYER_INFLUENCE_MASK] = groups ? groups.reduce((m, g) => m | GROUP_BIT[g], 0) : 0x1f;
   const cents = def.kitCents ?? [2400, 4800, 6000, 7200];
   for (let k = 0; k < KIT_SLOTS; k++) fields[LAYER_KIT_CENTS + k] = cents[k] ?? [2400, 4800, 6000, 7200][k];
-  f.set(fields, LAYER_OFF_FIELDS);
-  f.set(soundToSet(def.base), LAYER_OFF_BASE);
-  const macros = def.macros ?? [];
-  for (let k = 0; k < N_MACROS; k++) f[LAYER_OFF_MACROS + k] = macros[k] ?? 0.5;
-  f.set(soundToSet(def.influence?.sound), LAYER_OFF_INFLUENCE);
   if ((def.kit?.length ?? 0) > KIT_SLOTS) throw new RangeError('layer: more than 4 kit sounds');
-  for (let k = 0; k < KIT_SLOTS; k++) f.set(soundToSet(def.kit?.[k]), LAYER_OFF_KIT + k * COUNT);
-  return buf;
+  const kit = Array.from({ length: KIT_SLOTS }, (_, k) => soundToSet(def.kit?.[k]));
+  const values = valuesFromVocab(def.kind, soundToSet(def.base), kit);
+  const macros = Array.from({ length: N_MACROS }, (_, k) => def.macros?.[k] ?? 0.5);
+  const v = classicVectors(def.kind, values, soundToSet(def.influence?.sound));
+  return {
+    patch: patchBlob(classicPatch(def.kind), slot),
+    layer: encodeLayerBlob({ fields, values: v.values, macros, target: v.target, groups: v.groups }),
+  };
 }

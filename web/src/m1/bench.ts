@@ -6,7 +6,7 @@ import { download } from '../common/wav';
 import { encodeDemo } from './demo';
 import { KlontHost } from './klont-host';
 import { OfflineRenderer, type BlockTimingResult, type RenderResult, type WorstResult } from './offline';
-import { LOAD_LAYER, LOAD_OK, LOAD_TRACK, METER_LEN, M_ACTIVE_PARTIALS, M_BUDGET, M_LOAD, M_OVERLOADS, M_STEALS, MAX_LAYERS } from './protocol';
+import { LOAD_LAYER, LOAD_OK, LOAD_PATCH, LOAD_TRACK, METER_LEN, M_ACTIVE_PARTIALS, M_BUDGET, M_LOAD, M_OVERLOADS, M_STEALS, MAX_LAYERS } from './protocol';
 
 const BUDGETS = [4096, 3072, 2048, 1536, 1024, 768, 512];
 const TARGET = 4; // x realtime
@@ -129,6 +129,7 @@ $('b4').addEventListener('click', () => guarded(async () => {
     host = await KlontHost.create(ctx, { forceFallback: new URLSearchParams(location.search).get('fallback') === '1' });
     const song = encodeDemo();
     for (let l = 0; l < MAX_LAYERS; l++) {
+      if (await host.load(LOAD_PATCH, l, song.patches[l]) !== LOAD_OK) throw new Error(`patch ${l} failed to load`);
       if (await host.load(LOAD_LAYER, l, song.layers[l]) !== LOAD_OK) throw new Error(`layer ${l} failed to load`);
     }
     if (await host.load(LOAD_TRACK, 0, song.track) !== LOAD_OK) throw new Error('track failed to load');

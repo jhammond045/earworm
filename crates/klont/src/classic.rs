@@ -614,6 +614,22 @@ mod tests {
         }
     }
 
+    /// The app's compiler (web/src/synth) builds the same blobs; its test compares against these
+    /// files. CLASSIC_WRITE=1 rewrites them.
+    #[test]
+    fn classic_blobs_match_the_committed_fixtures() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/src/synth/fixtures");
+        for (kind, name) in [(KIND_MELODY, "melody"), (KIND_BEAT, "beat")] {
+            let blob = patch_blob(kind, 3);
+            let path = format!("{dir}/classic-{name}.bin");
+            if std::env::var("CLASSIC_WRITE").is_ok() {
+                std::fs::create_dir_all(dir).unwrap();
+                std::fs::write(&path, &blob).unwrap();
+            }
+            assert_eq!(std::fs::read(&path).expect("fixture: run with CLASSIC_WRITE=1"), blob, "{name}");
+        }
+    }
+
     #[test]
     fn every_old_parameter_but_smear_binds_on_melody() {
         for i in 0..P::COUNT {

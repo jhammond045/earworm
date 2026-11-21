@@ -6,7 +6,10 @@ import { instantiateEngine } from '../m1/protocol';
 import { renderSong } from '../m1/render-core';
 import { MatchCore, type Match } from './match';
 import { C4_CENTS, RENDER_RATE, matchLayerBlob, planMatchRender, toMono } from './test-render';
-import { LAYER_OFF_INFLUENCE, LAYER_WORDS } from '../m1/protocol';
+import { LAYER_HEADER_WORDS, LAYER_INFLUENCE_AMOUNT, LAYER_OFF_FIELDS, N_MACROS, layerWords } from '../m1/protocol';
+import { DESCS } from '../gen/params';
+import { classicPatch, vocabKeys } from '../synth/classic';
+import { layoutOf } from '../synth/patch';
 
 const SR = 48000;
 const pub = (f: string) => readFileSync(new URL(`../../public/wasm/${f}`, import.meta.url));
@@ -61,8 +64,16 @@ describe('match layer blob', () => {
   it('holds the target in the Influence slot at amount 1', () => {
     const t = Float32Array.from({ length: 96 }, (_, i) => i / 100);
     const b = matchLayerBlob(t);
-    expect(b.byteLength).toBe(LAYER_WORDS * 4);
-    expect(Array.from(new Float32Array(b, LAYER_OFF_INFLUENCE * 4, 96))).toEqual(Array.from(t));
+    const lay = layoutOf(classicPatch('melody'));
+    const n = lay.keys.length;
+    expect(b.byteLength).toBe(layerWords(n) * 4);
+    const f = new Float32Array(b);
+    expect(f[LAYER_OFF_FIELDS + LAYER_INFLUENCE_AMOUNT]).toBe(1);
+    const target = f.subarray(LAYER_HEADER_WORDS + n + N_MACROS, LAYER_HEADER_WORDS + 2 * n + N_MACROS);
+    // Each old parameter's target sits in every value it is bound to.
+    DESCS.forEach((d, i) => {
+      for (const k of vocabKeys('melody', 0, d.id)) expect(target[lay.index.get(k)!], d.id).toBe(Math.fround(t[i]));
+    });
   });
   it('rejects a wrong length', () => expect(() => matchLayerBlob(new Float32Array(5))).toThrow(RangeError));
 });
@@ -92,7 +103,7 @@ describe('blind test render', () => {
     expect(plan.cents).toBe(C4_CENTS);
     expect(plan.grain).toBe(m.useSound && m.grain !== null);
     expect(plan.grain).toBe(true); // unpitched sources default to use_sound on
-    expect(plan.song.grains).toHaveLength(1);
+    expect(plan.song.samples).toHaveLength(1);
     expect(r.frames).toBe(Math.round(1.6 * RENDER_RATE));
     expect(mono.every(Number.isFinite)).toBe(true);
     expect(r.peak).toBeGreaterThan(0.01);
@@ -104,7 +115,7 @@ describe('blind test render', () => {
     const m = analysis.match(src, SR, { useSound: false });
     const { plan, r } = await renderOf(src, m);
     expect(plan.grain).toBe(false);
-    expect(plan.song.grains).toBeUndefined();
+    expect(plan.song.samples).toBeUndefined();
     expect(r.peak).toBeGreaterThan(0.001);
   }, 60_000);
 });

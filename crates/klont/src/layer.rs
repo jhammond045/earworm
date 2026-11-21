@@ -898,7 +898,9 @@ impl Layer {
             let v = loudest.1;
             let t = &self.touched[self.slots[v].vp];
             for &i in &t.list[..t.n] {
-                self.live[i as usize] = self.voices[v].norm(i as usize);
+                if let Some(x) = self.voices[v].norm(i as usize) {
+                    self.live[i as usize] = x;
+                }
             }
         }
         for (k, vp) in self.patch.voices().iter().enumerate() {
@@ -917,8 +919,7 @@ impl Layer {
                 }
                 let k = self.slots[v].vp;
                 let Some((gb, _, _)) = self.patch.voices[k].grains else { continue };
-                let t = &self.touched[k];
-                let val = |i: usize| if t.is[i] { self.voices[v].real(i) } else { self.real[i] };
+                let val = |i: usize| self.voices[v].real(i).unwrap_or(self.real[i]);
                 let gb = gb as usize;
                 vg[v] = VoiceGrain {
                     on: true,

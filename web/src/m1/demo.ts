@@ -165,8 +165,9 @@ export const demoTrack: TrackInput = {
 /** Seconds one pass of the track lasts, ramp ignored (about 61 s). */
 export const DEMO_SECONDS = (4 * SECTION_BARS * 4 * 60) / 120 + (4 * SECTION_BARS * 4 * 60) / 132;
 
-export interface DemoSong { track: ArrayBuffer; layers: ArrayBuffer[] }
+export interface DemoSong { track: ArrayBuffer; patches: ArrayBuffer[]; layers: ArrayBuffer[] }
 
 export function encodeDemo(): DemoSong {
-  return { track: encodeTrack(demoTrack), layers: layerDefs.map(encodeLayer) };
+  const enc = layerDefs.map((d, i) => encodeLayer(d, i));
+  return { track: encodeTrack(demoTrack), patches: enc.map((e) => e.patch), layers: enc.map((e) => e.layer) };
 }

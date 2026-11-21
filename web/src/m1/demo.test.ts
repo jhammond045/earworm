@@ -10,7 +10,11 @@ const wasm = resolve(import.meta.dirname, '../../public/wasm/klont.wasm');
 
 describe('demo song', () => {
   const song = encodeDemo();
-  const files: [string, ArrayBuffer][] = [['track.bin', song.track], ...song.layers.map((b, i): [string, ArrayBuffer] => [`layer${i}.bin`, b])];
+  const files: [string, ArrayBuffer][] = [
+    ['track.bin', song.track],
+    ...song.patches.map((b, i): [string, ArrayBuffer] => [`patch${i}.bin`, b]),
+    ...song.layers.map((b, i): [string, ArrayBuffer] => [`layer${i}.bin`, b]),
+  ];
 
   it('matches the committed blobs (WRITE_DEMO=1 rewrites them)', () => {
     if (process.env.WRITE_DEMO === '1') {

@@ -12,6 +12,8 @@ pub const MAX_LAYERS: usize = 8;
 pub const VOICES_PER_LAYER: usize = 8;
 pub const KIT_SLOTS: usize = 4;
 pub const N_MACROS: usize = 8;
+/// Values in one layer's value vector (patch.rs).
+pub const MAX_VALUES: usize = 1024;
 pub const MAX_CURVES: usize = 64;
 /// Floats in the curve pool shared by all curves: 2^21 floats is 8 MB, about
 /// 14 minutes of 25-float frames at 100 per second.
@@ -280,8 +282,8 @@ pub const M_VOWEL: usize = 264; // 16 slots: live vowel shape, dB
 pub const M_STORED: usize = 280;
 /// Selected layer after step 6 (with its loudest sounding voice's routes
 /// applied, or the stored values when none sounds), MAX_VALUES values.
-pub const M_LIVE: usize = M_STORED + crate::patch::MAX_VALUES;
-pub const METER_LEN: usize = M_LIVE + crate::patch::MAX_VALUES;
+pub const M_LIVE: usize = M_STORED + MAX_VALUES;
+pub const METER_LEN: usize = M_LIVE + MAX_VALUES;
 
 // ---------------------------------------------------------------- buffer table
 

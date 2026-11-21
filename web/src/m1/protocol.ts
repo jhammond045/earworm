@@ -6,6 +6,7 @@ export const MAX_LAYERS = 8;
 export const VOICES_PER_LAYER = 8;
 export const KIT_SLOTS = 4;
 export const N_MACROS = 8;
+export const MAX_VALUES = 1024;
 export const MAX_CURVES = 64;
 export const CURVE_POOL_FLOATS = 1 << 21;
 export const STAGING_BYTES = 4 << 20;
@@ -40,7 +41,6 @@ export const METRO_SLOT = 4;
 export const METRO_BAR = 5;
 
 export const SET_BASE = 0;
-export const SET_KIT = 1;
 export const SET_INFLUENCE = 5;
 
 export const LAYER_LEVEL = 0;
@@ -91,8 +91,9 @@ export const BUDGET_MIN = 256;
 export const LOAD_TRACK = 1;
 export const LOAD_LAYER = 2;
 export const LOAD_CURVE = 3;
-export const LOAD_GRAIN = 4;
+export const LOAD_SAMPLE = 4;
 export const LOAD_STATES = 5;
+export const LOAD_PATCH = 6;
 
 export const LOAD_OK = 0;
 export const LOAD_BAD_KIND = -1;
@@ -101,25 +102,26 @@ export const LOAD_BAD_MAGIC = -3;
 export const LOAD_TOO_BIG = -4;
 export const LOAD_MALFORMED = -5;
 
-export const LAYER_MAGIC = 0x314c5745;
-export const LAYER_WORDS = 1 + LAYER_FIELDS + 96 + N_MACROS + 96 + KIT_SLOTS * 96;
+export const LAYER_MAGIC = 0x324c5745;
 export const LAYER_OFF_FIELDS = 1;
-export const LAYER_OFF_BASE = LAYER_OFF_FIELDS + LAYER_FIELDS;
-export const LAYER_OFF_MACROS = LAYER_OFF_BASE + 96;
-export const LAYER_OFF_INFLUENCE = LAYER_OFF_MACROS + N_MACROS;
-export const LAYER_OFF_KIT = LAYER_OFF_INFLUENCE + 96;
+export const LAYER_OFF_N = LAYER_OFF_FIELDS + LAYER_FIELDS;
+export const LAYER_HEADER_WORDS = LAYER_OFF_N + 1;
+/** Words in a layer blob v2 for a patch of `n` values. */
+export const layerWords = (n: number): number => LAYER_HEADER_WORDS + 3 * n + N_MACROS;
 
 export const LOAD_NAMES: Record<number, string> = {
   [LOAD_OK]: 'ok', [LOAD_BAD_KIND]: 'bad kind', [LOAD_BAD_SLOT]: 'bad slot',
   [LOAD_BAD_MAGIC]: 'bad magic', [LOAD_TOO_BIG]: 'too big', [LOAD_MALFORMED]: 'malformed',
 };
 
-export const GRAIN_MAGIC = 0x31475745;
-export const GRAIN_MAX_SAMPLES = 480000;
-export const GRAIN_HEADER_WORDS = 4;
-export const STATES_MAGIC = 0x31535745;
+export const SAMPLE_MAGIC = 0x314d5745;
+export const SAMPLE_HEADER_WORDS = 4;
+export const MAX_SAMPLES = 64;
+export const SAMPLE_POOL_FLOATS = 1 << 23;
+export const STATES_MAGIC = 0x32535745;
 export const MAX_STATES = 8;
-export const STATE_WORDS = 96 + N_MACROS + 1 + 3;
+/** Words per state in a states blob v2 for a patch of `n` values. */
+export const stateWords = (n: number): number => n + N_MACROS + 1;
 
 // ---- meter block
 export const M_BLOCKS = 0;
@@ -140,8 +142,7 @@ export const M_PEAK_R = 14;
 export const M_SELECTED = 15;
 export const M_LAYER_PEAK = 16;
 export const M_LAYER_VOICES = 24;
-export const M_STORED = 32;
-export const M_LIVE = 128;
+export const M_N_VALUES = 32;
 export const M_MACRO_LIVE = 224;
 export const M_IN_DB = 240;
 export const M_FLOOR_DB = 241;
@@ -168,7 +169,9 @@ export const M_METRO_BEAT = 261;
 export const M_COUNTIN = 262;
 export const M_COUNT_SEQ = 263;
 export const M_VOWEL = 264;
-export const METER_LEN = 280;
+export const M_STORED = 280;
+export const M_LIVE = M_STORED + MAX_VALUES;
+export const METER_LEN = M_LIVE + MAX_VALUES;
 
 // ---- buffer table (u32 fields, in this order; BT_* are field indices)
 export const BT_INPUT = 0;

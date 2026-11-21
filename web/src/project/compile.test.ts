@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { COUNT } from '../gen/params';
+import { COUNT, DESCS, P } from '../gen/params';
+import { classicPatch, valuesFromVocab, vocabKeys } from '../synth/classic';
+import { layoutOf } from '../synth/patch';
 import * as pr from '../m1/protocol';
 import { Compiler, layerBlob, sectionLength, sectionUnitsPerSec, type Upload } from './compile';
 import type { BeatClip, Influence, Layer, MelodyClip, MorphMarker, Project, Section, State, Take } from './types';
@@ -10,9 +12,12 @@ const shape = { attack: 0.002, burst: 0.5, cents: null, bend: 0, hold: 0.03, vow
 function layer(id: string, kind: Layer['kind'] = 'melody', extra: Partial<Layer> = {}): Layer {
   return {
     id, name: id, kind, color: 0xffffff, level: -3, pan: 0.25, mute: false,
-    states: [{ id: 's', name: 's', base: Array.from({ length: COUNT }, (_, i) => i / 100), macros: [0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.9], influenceAmount: 0.7 }],
+    patch: classicPatch(kind),
+    states: [{ id: 's', name: 's', values: valuesFromVocab(kind, Array.from({ length: COUNT }, (_, i) => i / 100),
+      kind === 'beat' ? [0, 1, 2, 3].map((k) => Array.from({ length: COUNT }, () => 0.1 * (k + 1))) : []),
+    macros: [0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.9], influenceAmount: 0.7 }],
     tune: { ...tune }, depth: { loud: 0.9, open: 0.4, hard: 0.3, breath: 0.2, mouth: 0.8 }, follow: 0.6,
-    kit: kind === 'beat' ? [0, 1, 2, 3].map((k) => ({ params: Array.from({ length: COUNT }, () => 0.1 * (k + 1)), cents: 1000 * (k + 1) })) : [],
+    kit: kind === 'beat' ? [0, 1, 2, 3].map((k) => ({ cents: 1000 * (k + 1) })) : [],
     ...extra,
   };
 }
@@ -44,6 +49,10 @@ const frames = (n = 3) => new Float32Array(n * 25).fill(1);
 
 function words(b: ArrayBuffer) { return { u: new Uint32Array(b), f: new Float32Array(b) }; }
 const kinds = (u: Upload[]) => u.map((x) => `${x.kind}:${x.slot}`);
+const MEL = layoutOf(classicPatch('melody'));
+const BEAT = layoutOf(classicPatch('beat'));
+/** Patch then layer blob for a slot. */
+const PL = (i: number) => [`${pr.LOAD_PATCH}:${i}`, `${pr.LOAD_LAYER}:${i}`];
 
 describe('helpers', () => {
   it('section units', () => {
@@ -59,8 +68,10 @@ describe('blobs', () => {
   it('layer blob carries the normalized sets and fields', () => {
     const l = layer('b', 'beat', { mute: true });
     const { u, f } = words(layerBlob(l));
-    expect(u.length).toBe(pr.LAYER_WORDS);
+    const n = BEAT.keys.length;
+    expect(u.length).toBe(pr.layerWords(n));
     expect(u[0]).toBe(pr.LAYER_MAGIC);
+    expect(u[pr.LAYER_OFF_N]).toBe(n);
     const fl = (k: number) => f[pr.LAYER_OFF_FIELDS + k];
     expect(fl(pr.LAYER_LEVEL)).toBe(-3);
     expect(fl(pr.LAYER_PAN)).toBeCloseTo(0.25);
@@ -71,9 +82,10 @@ describe('blobs', () => {
     expect(fl(pr.LAYER_FOLLOW)).toBeCloseTo(0.6);
     expect(fl(pr.LAYER_INFLUENCE_AMOUNT)).toBe(0);
     expect(fl(pr.LAYER_KIT_CENTS + 2)).toBe(3000);
-    expect(f[pr.LAYER_OFF_BASE + 7]).toBeCloseTo(0.07);
-    expect(f[pr.LAYER_OFF_MACROS + 7]).toBeCloseTo(0.9);
-    expect(f[pr.LAYER_OFF_KIT + 2 * COUNT + 5]).toBeCloseTo(0.3);
+    const v = (k: string) => f[pr.LAYER_HEADER_WORDS + BEAT.index.get(k)!];
+    expect(v('reverb1.mix')).toBeCloseTo(P['verb.mix'] / 100);
+    expect(f[pr.LAYER_HEADER_WORDS + n + 7]).toBeCloseTo(0.9);
+    expect(v('k3.partials1.stretch')).toBeCloseTo(0.3);
   });
 
   it('track blob decodes to the section, clip, event and warp records', () => {
@@ -113,7 +125,7 @@ describe('diff', () => {
     const c = new Compiler();
     const arr = frames();
     const first = c.compile(p, () => arr);
-    expect(kinds(first)).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_LAYER}:1`, `${pr.LOAD_CURVE}:0`, `${pr.LOAD_TRACK}:0`]);
+    expect(kinds(first)).toEqual([...PL(0), ...PL(1), `${pr.LOAD_CURVE}:0`, `${pr.LOAD_TRACK}:0`]);
     expect(c.compile(p, () => arr)).toEqual([]);
   });
 
@@ -161,7 +173,7 @@ describe('diff', () => {
     const arr = frames();
     c.compile(p, () => arr);
     c.reset();
-    expect(c.compile(p, () => arr).length).toBe(4);
+    expect(c.compile(p, () => arr).length).toBe(6);
   });
 });
 
@@ -225,15 +237,15 @@ describe('removed layers', () => {
 // ---------- M4: Influence, grain, states, morph ----------
 
 
-const GRAIN_MAGIC = 0x31475745;
-const STATES_MAGIC = 0x31535745;
+const SAMPLE_MAGIC = 0x314d5745;
+const STATES_MAGIC = 0x32535745;
 
 const ramp = (f: (i: number) => number) => Array.from({ length: COUNT }, (_, i) => f(i));
 const influence = (over: Partial<Influence> = {}): Influence => ({
   target: ramp((i) => (i % 7) / 7), mask: 0b01101, source: 'grain-a', sourceName: 'kettle', sourceRate: 16000,
   grain: { start: 0, end: 4, refCents: 6000 }, useSound: true, ...over,
 });
-const stateOf = (id: string, v: number, amount = 0): State => ({ id, name: id, base: ramp(() => v), macros: new Array(8).fill(v), influenceAmount: amount });
+const stateOf = (id: string, v: number, amount = 0): State => ({ id, name: id, values: valuesFromVocab('melody', ramp(() => v)), macros: new Array(8).fill(v), influenceAmount: amount });
 const withLayer0 = (p: Project, patch: Partial<Layer>): Project => ({ ...p, layers: [{ ...p.layers[0], ...patch }, p.layers[1]] });
 const withMorph = (p: Project, morph: MorphMarker[]): Project => {
   const clip = p.sections[0].clips.m as MelodyClip;
@@ -248,7 +260,11 @@ describe('layer blob with Influence', () => {
     const { f } = words(layerBlob(l));
     expect(f[pr.LAYER_OFF_FIELDS + pr.LAYER_INFLUENCE_AMOUNT]).toBeCloseTo(0.6);
     expect(f[pr.LAYER_OFF_FIELDS + pr.LAYER_INFLUENCE_MASK]).toBe(0b01101);
-    for (let i = 0; i < COUNT; i++) expect(f[pr.LAYER_OFF_INFLUENCE + i]).toBeCloseTo(l.influence!.target[i], 6);
+    const n = MEL.keys.length;
+    const at = pr.LAYER_HEADER_WORDS + n + pr.N_MACROS;
+    DESCS.forEach((d, i) => {
+      for (const k of vocabKeys('melody', 0, d.id)) expect(f[at + MEL.index.get(k)!]).toBeCloseTo(l.influence!.target[i], 6);
+    });
     const bare = words(layerBlob({ ...l, influence: undefined })).f;
     expect(bare[pr.LAYER_OFF_FIELDS + pr.LAYER_INFLUENCE_AMOUNT]).toBe(0);
     expect(bare[pr.LAYER_OFF_FIELDS + pr.LAYER_INFLUENCE_MASK]).toBe(0x1f);
@@ -261,9 +277,9 @@ describe('grain upload', () => {
     const c = new Compiler();
     const arr = frames();
     const first = c.compile(p, () => arr, { grainFor });
-    expect(kinds(first)).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_GRAIN}:0`, `${pr.LOAD_LAYER}:1`, `${pr.LOAD_CURVE}:0`, `${pr.LOAD_TRACK}:0`]);
-    const { u, f } = words(first[1].blob);
-    expect(u[0]).toBe(GRAIN_MAGIC);
+    expect(kinds(first)).toEqual([...PL(0), `${pr.LOAD_SAMPLE}:0`, ...PL(1), `${pr.LOAD_CURVE}:0`, `${pr.LOAD_TRACK}:0`]);
+    const { u, f } = words(first[2].blob);
+    expect(u[0]).toBe(SAMPLE_MAGIC);
     expect(f[1]).toBe(16000);
     expect(f[2]).toBe(6000);
     expect(u[3]).toBe(4);
@@ -272,7 +288,7 @@ describe('grain upload', () => {
     // A new array for the same source is sent again; the unpitched case encodes NaN.
     const other = () => ({ data: new Float32Array(samples), rate: 16000, refCents: null });
     const again = c.compile(p, () => arr, { grainFor: other });
-    expect(kinds(again)).toEqual([`${pr.LOAD_GRAIN}:0`]);
+    expect(kinds(again)).toEqual([`${pr.LOAD_SAMPLE}:0`]);
     expect(Number.isNaN(words(again[0].blob).f[2])).toBe(true);
   });
 
@@ -281,12 +297,12 @@ describe('grain upload', () => {
     for (const p of [
       withLayer0(project(), { influence: influence({ useSound: false }) }),
       withLayer0(project(), { influence: influence({ grain: null }) }),
-    ]) expect(new Compiler().compile(p, () => arr, { grainFor }).some((x) => x.kind === pr.LOAD_GRAIN)).toBe(false);
+    ]) expect(new Compiler().compile(p, () => arr, { grainFor }).some((x) => x.kind === pr.LOAD_SAMPLE)).toBe(false);
     const p = withLayer0(project(), { influence: influence() });
-    expect(new Compiler().compile(p, () => arr).some((x) => x.kind === pr.LOAD_GRAIN)).toBe(false);
+    expect(new Compiler().compile(p, () => arr).some((x) => x.kind === pr.LOAD_SAMPLE)).toBe(false);
     const c = new Compiler();
-    expect(c.compile(p, () => arr, { grainFor: () => null }).some((x) => x.kind === pr.LOAD_GRAIN)).toBe(false);
-    expect(kinds(c.compile(p, () => arr, { grainFor }))).toEqual([`${pr.LOAD_GRAIN}:0`]);
+    expect(c.compile(p, () => arr, { grainFor: () => null }).some((x) => x.kind === pr.LOAD_SAMPLE)).toBe(false);
+    expect(kinds(c.compile(p, () => arr, { grainFor }))).toEqual([`${pr.LOAD_SAMPLE}:0`]);
   });
 
   it('a layer whose grain source went away gets an empty grain blob, once', () => {
@@ -296,14 +312,14 @@ describe('grain upload', () => {
     c.compile(p, () => arr, { grainFor });
     const p2 = withLayer0(p, { influence: undefined });
     const ups = c.compile(p2, () => arr, { grainFor });
-    expect(kinds(ups)).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_GRAIN}:0`]);
+    expect(kinds(ups)).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_SAMPLE}:0`]);
     expect(words(ups[1].blob).u[3]).toBe(0);
     expect(c.compile(p2, () => arr, { grainFor })).toEqual([]);
     // Turning useSound off does the same.
     const c2 = new Compiler();
     c2.compile(p, () => arr, { grainFor });
     const off = c2.compile(withLayer0(p, { influence: influence({ useSound: false }) }), () => arr, { grainFor });
-    expect(words(off.find((x) => x.kind === pr.LOAD_GRAIN)!.blob).u[3]).toBe(0);
+    expect(words(off.find((x) => x.kind === pr.LOAD_SAMPLE)!.blob).u[3]).toBe(0);
   });
 
   it('a removed layer slot with a grain source is cleared', () => {
@@ -311,10 +327,10 @@ describe('grain upload', () => {
     const p: Project = { ...p0, layers: [p0.layers[0], { ...p0.layers[1], influence: influence() }] };
     const c = new Compiler();
     const arr = frames();
-    expect(c.compile(p, () => arr, { grainFor }).some((x) => x.kind === pr.LOAD_GRAIN && x.slot === 1)).toBe(true);
+    expect(c.compile(p, () => arr, { grainFor }).some((x) => x.kind === pr.LOAD_SAMPLE && x.slot === 1)).toBe(true);
     const gone: Project = { ...p, layers: [p.layers[0]], sections: [{ ...p.sections[0], clips: { m: p.sections[0].clips.m } }, p.sections[1]] };
     const ups = c.compile(gone, () => arr, { grainFor });
-    expect(ups.filter((x) => x.kind === pr.LOAD_GRAIN).map((x) => [x.slot, words(x.blob).u[3]])).toEqual([[1, 0]]);
+    expect(ups.filter((x) => x.kind === pr.LOAD_SAMPLE).map((x) => [x.slot, words(x.blob).u[3]])).toEqual([[1, 0]]);
   });
 });
 
@@ -334,23 +350,26 @@ describe('states upload', () => {
     expect(st.slot).toBe(0);
     const { u, f } = words(st.blob);
     expect(u[0]).toBe(STATES_MAGIC);
+    const n = MEL.keys.length, w = n + 9;
     expect(u[1]).toBe(2);
-    expect(u.length).toBe(2 + 2 * 108);
-    expect(f[2]).toBeCloseTo(0.25);
-    expect(f[2 + 95]).toBeCloseTo(0.25);
-    expect(f[2 + 96]).toBeCloseTo(0.25); // macro 0
-    expect(f[2 + 104]).toBeCloseTo(0.5); // amount
-    expect(f[2 + 108]).toBeCloseTo(0.75);
-    expect(f[2 + 108 + 104]).toBeCloseTo(0.9);
-    expect(f[2 + 108 + 105]).toBe(0);
+    expect(u[2]).toBe(n);
+    expect(u.length).toBe(3 + 2 * w);
+    const tilt = MEL.index.get('partials1.tilt')!, band = MEL.index.get('shaped_noise1.bands.15')!;
+    expect(f[3 + tilt]).toBeCloseTo(0.25);
+    expect(f[3 + band]).toBeCloseTo(0.25);
+    expect(f[3 + n]).toBeCloseTo(0.25); // macro 0
+    expect(f[3 + n + 8]).toBeCloseTo(0.5); // amount
+    expect(f[3 + w + tilt]).toBeCloseTo(0.75);
+    expect(f[3 + w + n + 8]).toBeCloseTo(0.9);
   });
 
   it('amounts go out as 0 when the layer has no Influence', () => {
     const p = withLayer0(project(), { states: [stateOf('s0', 0.25, 0.5), stateOf('s1', 0.75, 0.9)] });
     const st = new Compiler().compile(p, () => frames()).find((x) => x.kind === pr.LOAD_STATES)!;
     const { f } = words(st.blob);
-    expect(f[2 + 104]).toBe(0);
-    expect(f[2 + 108 + 104]).toBe(0);
+    const n = MEL.keys.length;
+    expect(f[3 + n + 8]).toBe(0);
+    expect(f[3 + (n + 9) + n + 8]).toBe(0);
   });
 
   it('is sent for one state when a clip has a morph marker', () => {
@@ -365,7 +384,7 @@ describe('states upload', () => {
     const arr = frames();
     const p = two(project());
     c.compile(p, () => arr, { grainFor });
-    const states = [p.layers[0].states[0], { ...p.layers[0].states[1], base: ramp(() => 0.1) }];
+    const states = [p.layers[0].states[0], { ...p.layers[0].states[1], values: valuesFromVocab('melody', ramp(() => 0.1)) }];
     const ups = c.compile(withLayer0(p, { states }), () => arr, { grainFor });
     expect(kinds(ups)).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_STATES}:0`]);
   });
@@ -381,7 +400,8 @@ describe('states upload', () => {
     expect(words(st.blob).u[1]).toBe(1);
     const gone: Project = { ...one, layers: [one.layers[1]], sections: [{ ...one.sections[0], clips: { b: one.sections[0].clips.b } }, { ...one.sections[1], clips: {} }] };
     const ups2 = c.compile(gone, () => arr, { grainFor });
-    expect(ups2.filter((x) => x.kind === pr.LOAD_STATES).map((x) => x.slot)).toContain(0);
+    // Slot 0 now holds the beat layer: its patch replaces the old one, which drops the old states.
+    expect(kinds(ups2).slice(0, 2)).toEqual(PL(0));
   });
 
   it('reset sends states and grain again', () => {
@@ -391,7 +411,7 @@ describe('states upload', () => {
     c.compile(p, () => arr, { grainFor });
     c.reset();
     const ups = c.compile(p, () => arr, { grainFor });
-    expect(kinds(ups)).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_GRAIN}:0`, `${pr.LOAD_STATES}:0`, `${pr.LOAD_LAYER}:1`, `${pr.LOAD_CURVE}:0`, `${pr.LOAD_TRACK}:0`]);
+    expect(kinds(ups)).toEqual([...PL(0), `${pr.LOAD_SAMPLE}:0`, `${pr.LOAD_STATES}:0`, ...PL(1), `${pr.LOAD_CURVE}:0`, `${pr.LOAD_TRACK}:0`]);
   });
 });
 
@@ -444,7 +464,7 @@ describe('track v2 morph markers', () => {
     const arr = frames();
     const p = withMorph(base(), markers);
     c.compile(p, () => arr);
-    const states = [p.layers[0].states[0], { ...p.layers[0].states[1], base: ramp(() => 0.9) }];
+    const states = [p.layers[0].states[0], { ...p.layers[0].states[1], values: valuesFromVocab('melody', ramp(() => 0.9)) }];
     expect(kinds(c.compile(withLayer0(p, { states }), () => arr))).toEqual([`${pr.LOAD_LAYER}:0`, `${pr.LOAD_STATES}:0`]);
   });
 });

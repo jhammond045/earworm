@@ -1,6 +1,6 @@
 # Synth engine: patches and modulation
 
-Nov 20, 2026. Design for review. Nothing on this page is built yet.
+Nov 20, 2026. Design approved. Stage S1 is built; [S1.md](S1.md) says how to check it and where the build differs from this page.
 
 Today a layer's sound is one fixed chain, the Klont voice, set by 96 numbers, and the app offers a short list of presets to pick from plus eight macros. This page turns that into an open patch: a small graph of modules the user can add, remove and wire, and one modulation system in which every envelope, LFO, knob and sung feature (pitch, intensity, volume, hardness) can drive any synth or channel-effect parameter. The aim is a tool that works as a real-time DAW and as an instrument for improvising.
 

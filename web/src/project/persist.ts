@@ -4,7 +4,7 @@
 import { SCHEMA } from './types';
 import type { BlobRef, Project } from './types';
 import type { HistoryState, JournalEntry } from './history';
-import { migrate, migrateEntry, migrateHistory } from './migrate';
+import { migrate, migrateEntry, migrateHistory, replaySchema } from './migrate';
 import { Store } from './store';
 import type { StorageReply, StorageRequest } from './storage-worker';
 
@@ -249,7 +249,8 @@ export class ProjectDb {
     this.projects.set(doc.id, { queue: [], doc, history: snap.history, seq: 0, since: 0, snapSeq: 0 });
   }
 
-  async open(id: string): Promise<{ doc: Project; history: HistoryState } | null> {
+  /** `historyReset`: the project was upgraded past a schema whose undo steps could not come along. */
+  async open(id: string): Promise<{ doc: Project; history: HistoryState; historyReset: boolean } | null> {
     await this.flush(); // our own queued writes must be visible to our own read
     const snap = (await this.kv.get('projects', SNAP(id))) as Snapshot | undefined;
     if (!snap || !snap.doc) return null;
@@ -258,7 +259,11 @@ export class ProjectDb {
     // (older) schema before anything replays. The journal's ops carry whole clips and sections,
     // so they need the same step as the document.
     const fromSchema = typeof snap.doc.schema === 'number' ? snap.doc.schema : 1;
-    const store = new Store(migrate(snap.doc), migrateHistory(snap.history, fromSchema));
+    // Journal entries replay on the document in the last shape their ops can be upgraded to; any
+    // later step (one that starts a fresh undo history) runs after the replay.
+    const upTo = replaySchema(fromSchema);
+    const reset = upTo < SCHEMA;
+    let store = new Store(migrate(snap.doc, upTo), reset ? { undo: [], redo: [] } : migrateHistory(snap.history, fromSchema));
     let seq = snap.seq;
     let n = 0;
     for (let i = 0; i < keys.length; i++) {
@@ -269,10 +274,11 @@ export class ProjectDb {
         for (const k of keys.slice(i)) await this.kv.del('journal', k);
         break;
       }
-      store.replay(migrateEntry(v, fromSchema));
+      store.replay(migrateEntry(v, fromSchema, upTo));
       seq = jseq(keys[i]!);
       n++;
     }
+    if (reset) store = new Store(migrate(store.doc), { undo: [], redo: [] });
     const history = store.history.toJSON();
     if (fromSchema < SCHEMA) {
       // Write the upgraded state back now. Entries journaled from here on are in the new shape, and
@@ -280,10 +286,10 @@ export class ProjectDb {
       await this.kv.putMany([{ store: 'projects', key: SNAP(id), value: { doc: store.doc, history, seq } satisfies Snapshot }]);
       for (const k of await this.kv.keys('journal', `${id}/`)) if (jseq(k) <= seq) await this.kv.del('journal', k);
       this.projects.set(id, { queue: [], doc: store.doc, history, seq, since: 0, snapSeq: seq });
-      return { doc: store.doc, history };
+      return { doc: store.doc, history, historyReset: reset };
     }
     this.projects.set(id, { queue: [], doc: store.doc, history, seq, since: n, snapSeq: snap.seq });
-    return { doc: store.doc, history };
+    return { doc: store.doc, history, historyReset: false };
   }
 
   append(id: string, entry: JournalEntry, doc: Project, history: HistoryState): void {

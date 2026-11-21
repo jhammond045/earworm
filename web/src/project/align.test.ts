@@ -7,7 +7,8 @@
 // round trip passed in, notes should land on the beats; with 0 they should be about 30 ms late.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { COUNT, neutralSet } from '../gen/params';
+import { neutralSet } from '../gen/params';
+import { classicPatch, valuesFromVocab } from '../synth/classic';
 import * as pr from '../m1/protocol';
 import { encodeMessage, instantiateEngine, readBufferTable } from '../m1/protocol';
 import { AnalysisCore, type SecondPass } from '../m2/analysis';
@@ -33,8 +34,10 @@ function layer(id: string, kind: Layer['kind']): Layer {
   return {
     id, name: id, kind, color: 0, level: 0, pan: 0, mute: false, tune, follow: 1,
     depth: { loud: 1, open: 0.5, hard: 0.5, breath: 0.5, mouth: 1 },
-    states: [{ id: 's', name: 's', base: neutral.slice(0, COUNT), macros: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], influenceAmount: 0 }],
-    kit: kind === 'beat' ? [2400, 4800, 6000, 7200].map((cents) => ({ params: neutral.slice(), cents })) : [],
+    patch: classicPatch(kind),
+    states: [{ id: 's', name: 's', values: valuesFromVocab(kind, neutral, kind === 'beat' ? [neutral, neutral, neutral, neutral] : []),
+      macros: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], influenceAmount: 0 }],
+    kit: kind === 'beat' ? [2400, 4800, 6000, 7200].map((cents) => ({ cents })) : [],
   };
 }
 const shape = { attack: 0.002, burst: 0.5, cents: null, bend: 0, hold: 0.03, vowel: 0, tone: 0.5, endStop: 0, endClick: 0 };

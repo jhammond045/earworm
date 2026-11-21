@@ -5,7 +5,7 @@ import { download, encodeWav } from '../common/wav';
 import { DEMO_SECONDS, LAYER_NAMES, encodeDemo, layerDefs } from './demo';
 import { KlontHost } from './klont-host';
 import { OfflineRenderer } from './offline';
-import { LAYER_LEVEL, LAYER_MUTE, LOAD_LAYER, LOAD_NAMES, LOAD_OK, LOAD_TRACK, METER_LEN, M_ACTIVE_PARTIALS, M_ACTIVE_VOICES,
+import { LAYER_LEVEL, LAYER_MUTE, LOAD_LAYER, LOAD_NAMES, LOAD_PATCH, LOAD_OK, LOAD_TRACK, METER_LEN, M_ACTIVE_PARTIALS, M_ACTIVE_VOICES,
   M_BPM, M_BUDGET, M_LAYER_PEAK, M_LAYER_VOICES, M_LOAD, M_OVERLOADS, M_PEAK_L, M_PEAK_R, M_PLAYING, M_REPEAT, M_SECTION,
   M_SECTION_POS, M_STEALS, MAX_LAYERS } from './protocol';
 
@@ -66,6 +66,8 @@ $('start').addEventListener('click', async () => {
     host = await KlontHost.create(ctx, { forceFallback: force });
     const song = encodeDemo();
     for (let l = 0; l < MAX_LAYERS; l++) {
+      const ps = await host.load(LOAD_PATCH, l, song.patches[l]);
+      if (ps !== LOAD_OK) throw new Error(`patch ${l}: ${LOAD_NAMES[ps] ?? ps}`);
       const s = await host.load(LOAD_LAYER, l, song.layers[l]);
       if (s !== LOAD_OK) throw new Error(`layer ${l}: ${LOAD_NAMES[s] ?? s}`);
     }

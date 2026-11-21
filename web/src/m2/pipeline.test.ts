@@ -111,7 +111,9 @@ describe('capture pipeline', () => {
 
     // 3. Playback on a fresh engine: layer, curve, track, play.
     const play = engine();
-    expect(play.load(pr.LOAD_LAYER, 0, encodeLayer({ kind: 'melody', base: { 'env.sustain': 1, 'env.release': 0.03 } }))).toBe(pr.LOAD_OK);
+    const lay = encodeLayer({ kind: 'melody', base: { 'env.sustain': 1, 'env.release': 0.03 } });
+    expect(play.load(pr.LOAD_PATCH, 0, lay.patch)).toBe(pr.LOAD_OK);
+    expect(play.load(pr.LOAD_LAYER, 0, lay.layer)).toBe(pr.LOAD_OK);
     expect(play.load(pr.LOAD_CURVE, 0, buildCurveBlob(rec, tuned))).toBe(pr.LOAD_OK);
     expect(play.load(pr.LOAD_TRACK, 0, buildTrackBlob({ kind: 'melody', layer: 0, curveSlot: 0, sp, frameCount: nFrames })))
       .toBe(pr.LOAD_OK);

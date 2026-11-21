@@ -6,10 +6,12 @@
 // length, then the release. The page renders this in a worker; the Node test
 // renders the same job with renderSong.
 
-import { LAYER_OFF_INFLUENCE } from '../m1/protocol';
-import { COUNT } from '../gen/params';
-import { encodeGrain, GRAIN_MAX_SAMPLES } from '../m1/blobs';
+import { LAYER_FIELDS, LAYER_OFF_FIELDS, N_MACROS } from '../m1/protocol';
+import { COUNT, neutralSet } from '../gen/params';
+import { encodeLayerBlob, encodeSample } from '../m1/blobs';
 import { encodeLayer } from '../m1/layer';
+import { GRAIN_SAMPLES } from '../project/compile';
+import { classicVectors, valuesFromVocab } from '../synth/classic';
 import { encodeTrack } from '../m1/track';
 import type { RenderOptions, SongBlobs } from '../m1/render-core';
 import type { Match } from './match';
@@ -39,14 +41,17 @@ export interface MatchPlan {
   frames: number;
 }
 
-/** Layer blob with a neutral base and `target` as the Influence target at amount 1, all groups. */
+/** Layer blob (for the engine's classic melody patch) with a neutral base and `target` (the old
+ *  parameters, normalized) as the Influence target at amount 1, all groups. */
 export function matchLayerBlob(target: ArrayLike<number>): ArrayBuffer {
   if (target.length !== COUNT) throw new RangeError(`match target has ${target.length} values, wanted ${COUNT}`);
-  // encodeLayer writes the layout (fields, kit, macros); only the target is replaced, with
-  // the normalized values the match already is (encodeLayer itself takes real units).
-  const blob = encodeLayer({ kind: 'melody', influence: { amount: 1 } });
-  new Float32Array(blob, LAYER_OFF_INFLUENCE * 4, COUNT).set(target as ArrayLike<number>);
-  return blob;
+  const fields = new Float32Array(decodeFields(encodeLayer({ kind: 'melody', influence: { amount: 1 } }).layer));
+  const v = classicVectors('melody', valuesFromVocab('melody', neutralSet()), target);
+  return encodeLayerBlob({ fields, values: v.values, macros: new Array<number>(N_MACROS).fill(0.5), target: v.target, groups: v.groups });
+}
+
+function decodeFields(blob: ArrayBuffer): Float32Array {
+  return new Float32Array(blob, LAYER_OFF_FIELDS * 4, LAYER_FIELDS).slice();
 }
 
 export function planMatchRender(src: Source, m: Match): MatchPlan {
@@ -62,9 +67,9 @@ export function planMatchRender(src: Source, m: Match): MatchPlan {
   let grain = false;
   if (m.useSound && m.grain) {
     const g = m.grain;
-    const end = Math.min(g.end, g.start + GRAIN_MAX_SAMPLES, src.signal.length);
+    const end = Math.min(g.end, g.start + GRAIN_SAMPLES, src.signal.length);
     if (end > g.start) {
-      song.grains = [{ slot: 0, buf: encodeGrain(src.sampleRate, g.refCents, src.signal.slice(g.start, end)) }];
+      song.samples = [{ slot: 0, buf: encodeSample(src.sampleRate, g.refCents, src.signal.slice(g.start, end)) }];
       grain = true;
     }
   }

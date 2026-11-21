@@ -2,6 +2,7 @@
 // Milestone and gate pages stay linked from Tests. This file is the shell; the document still changes only through commands.
 
 import { decodeBytes, decodeFile, loadSources, MAX_SOURCE_S, trimAndCap, type SavedSource } from '../influence/audio';
+import { stateVocab, vocabIndices } from '../synth/classic';
 import { download, encodeWav } from '../common/wav';
 import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { soundToSet } from '../m1/layer';
@@ -28,6 +29,10 @@ import { commands, newId } from '../project/commands';
 import { Compiler } from '../project/compile';
 import { cleanupPlan, unusedRefs } from '../project/cleanup';
 import { exportProject, importProject } from '../project/archive';
+import { historyResets } from '../project/migrate';
+
+/** Said once when a project opens upgraded past a schema whose undo steps could not come along. */
+const UPGRADED = 'This project was saved by an earlier version and has been upgraded. Its undo history starts fresh.';
 import { applyOps } from '../project/patch';
 import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
 import { MACRO_NAMES, N_MACROS, P } from '../gen/params';
@@ -304,7 +309,7 @@ async function main(): Promise<void> {
     if (document.activeElement !== scale) scale.value = String(Math.min(scale.options.length - 1, tune.scale));
     if (document.activeElement !== num('tuneOctave')) num('tuneOctave').value = String(tune.octave);
     if (document.activeElement !== num('stateName')) num('stateName').value = st.name;
-    paintMeters(liveTarget ?? infl?.target ?? null, st.base, liveTarget ? liveProvisional : false);
+    paintMeters(liveTarget ?? infl?.target ?? null, stateVocab(l, st), liveTarget ? liveProvisional : false);
     fillTakes();
     for (let k = 0; k < N_MACROS; k++) {
       const el = document.getElementById(`macro-${k}`);
@@ -1138,7 +1143,7 @@ async function main(): Promise<void> {
     const host = app.host;
     const i = app.doc.layers.findIndex((x) => x.id === l.id);
     if (!host || i < 0) return;
-    for (let k = 0; k < 96; k++) host.setParam(i, k, target[k], SET_INFLUENCE);
+    vocabIndices(l.kind).forEach((ix, k) => { for (const v of ix) host.setParam(i, v, target[k], SET_INFLUENCE); });
     host.setLayer(i, LAYER_INFLUENCE_AMOUNT, amount);
     host.setLayer(i, LAYER_INFLUENCE_MASK, mask);
     if (layerUsesStates(app.doc, l)) {
@@ -1179,7 +1184,7 @@ async function main(): Promise<void> {
       liveProvisional = m.provisional;
       if (cur) {
         previewTarget(cur, m.target, amount, cur.influence?.mask ?? 0x1f);
-        paintMeters(m.target, app.ui.editState(cur).base, m.provisional);
+        paintMeters(m.target, stateVocab(cur, app.ui.editState(cur)), m.provisional);
       }
       $('infStatus').textContent = m.provisional ? 'Listening… motion is provisional.' : 'Listening…';
     }, { sampleRate: host.sampleRate, onError: (e) => app.fail(e.message) });
@@ -1443,7 +1448,7 @@ async function main(): Promise<void> {
   });
   btn('openBtn').addEventListener('click', async () => {
     const id = $<HTMLSelectElement>('openList').value;
-    if (id) await session.open(id);
+    if (id && (await session.open(id)) && session.historyReset) $('capStatus').textContent = UPGRADED;
   });
   btn('exportBtn').addEventListener('click', async () => {
     const { bytes, missing } = await exportProject(app.doc, (ref) => session.blobs.get(ref));
@@ -1492,7 +1497,9 @@ async function main(): Promise<void> {
       if (!got.doc.name) got.doc.name = file.name.replace(/\.zip$/i, '');
       await session.adopt(got.doc);
       await writeBlobs(got.blobs, got.doc);
-      $('capStatus').textContent = `Imported ${got.doc.name}.`;
+      $('capStatus').textContent = historyResets(got.savedSchema)
+        ? `Imported ${got.doc.name}. It was saved by an earlier version, so its undo history starts fresh.`
+        : `Imported ${got.doc.name}.`;
     } catch (e) {
       app.fail(e instanceof Error ? e.message : String(e));
     }
@@ -1619,7 +1626,7 @@ async function main(): Promise<void> {
     const macroNow = (i: number) => metersNow ? metersNow[M_MACRO_LIVE + i] : (stateNow?.macros[i] ?? 0.5);
     glyph?.draw({
       bright: macroNow(0), grit: macroNow(3), motion: macroNow(2), space: macroNow(4),
-      noise: stateNow?.base[P['src.noise_mix']] ?? 0.1,
+      noise: stateNow && singing ? stateVocab(singing, stateNow)[P['src.noise_mix']] : 0.1,
     }, reduceMotion);
     const origin = capture.originFrame();
     if (ribbon && origin != null && app.host) {
@@ -1660,6 +1667,7 @@ async function main(): Promise<void> {
   };
 
   await session.init();
+  if (session.historyReset) $('capStatus').textContent = UPGRADED;
   app.refreshAll();
   showPanel('pattern');
   requestAnimationFrame(tick);

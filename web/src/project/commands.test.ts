@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { DESCS, DESCS as DESCS0 } from '../gen/params';
 import { commands, newId, newProject } from './commands';
 import { applyOps } from './patch';
 import type { Op } from './patch';
 import { Store } from './store';
-import type { BeatClip, Hit, MelodyClip, Project, Take } from './types';
+import type { BeatClip, Hit, Layer, MelodyClip, Project, Take } from './types';
+import { classicPatch, vocabFromValues, vocabKeys } from '../synth/classic';
+import { layoutOf } from '../synth/patch';
+import { SCHEMA } from './types';
+
+/** A layer's sound as the old 96 parameters: its own set (0) or a kit slot (1..4). */
+const vocab = (l: Layer, set = 0, state = 0) => vocabFromValues(l.kind, l.states[state].values, set);
+/** Old parameters that have a value on a layer of this kind (smear has none). */
+const bound = (l: Layer, set = 0) => (i: number) => vocabKeys(l.kind, set, DESCS0[i].id).length > 0;
 
 function deepFreeze<T>(v: T): T {
   if (typeof v === 'object' && v !== null && !Object.isFrozen(v)) {
@@ -34,9 +43,12 @@ describe('newProject', () => {
     expect(p.sections).toHaveLength(1);
     expect(p.sections[0]).toMatchObject({ name: 'A', feel: 'grid', beats: 8, bpm: 100, repeats: 1 });
     expect(p.layers.map((l) => [l.name, l.kind])).toEqual([['Melody', 'melody'], ['Beat', 'beat']]);
-    expect(p.layers[0].states[0].base).toHaveLength(96);
+    expect(Object.keys(p.layers[0].states[0].values)).toEqual(layoutOf(classicPatch('melody')).keys);
+    expect(p.layers[0].patch.voices).toHaveLength(1);
+    expect(p.layers[1].patch.voices).toHaveLength(4);
     expect(p.layers[1].kit).toHaveLength(4);
-    expect(p.layers[1].kit[0].params).toHaveLength(96);
+    expect(p.layers[1].kit[0]).toEqual({ cents: expect.any(Number) });
+    expect(Object.keys(p.layers[1].states[0].values)).toContain('k4.partials1.tilt');
     expect(p.loop).toBe(true);
     expect(newId('x')).not.toBe(newId('x'));
   });
@@ -152,7 +164,7 @@ describe('layers', () => {
     const { store } = setup();
     store.dispatch('addLayer', { kind: 'melody', sound: 2 });
     expect(store.doc.layers[2].name).toBe('Melody 2');
-    expect(store.doc.layers[2].states[0].base).toHaveLength(96);
+    expect(vocab(store.doc.layers[2])).toHaveLength(96);
     store.dispatch('addLayer', { kind: 'beat', name: 'Perc', sound: 1 });
     expect(store.doc.layers[3].kit).toHaveLength(4);
     for (let i = store.doc.layers.length; i < 8; i++) store.dispatch('addLayer', { kind: 'texture' });
@@ -187,10 +199,13 @@ describe('layers', () => {
     const { store, mel, beat } = setup();
     const base = new Array(96).fill(0.25);
     store.dispatch('setLayerSound', { id: mel, base });
-    expect(store.doc.layers[0].states[0].base).toBe(base);
-    const kit = store.doc.layers[1].kit.map((k) => ({ ...k, cents: 3000 }));
+    const l0 = store.doc.layers[0];
+    vocab(l0).forEach((v, i) => expect(v).toBe(bound(l0)(i) ? 0.25 : vocab(setup().store.doc.layers[0])[i]));
+    const kit = store.doc.layers[1].kit.map((k, i) => ({ params: new Array(96).fill(0.1 * (i + 1)), cents: 3000 }));
     store.dispatch('setLayerSound', { id: beat, kit });
-    expect(store.doc.layers[1].kit[2].cents).toBe(3000);
+    const l1 = store.doc.layers[1];
+    expect(l1.kit[2]).toEqual({ cents: 3000 });
+    expect(vocab(l1, 3)[DESCS.findIndex((d) => d.id === 'src.tilt')]).toBeCloseTo(0.3, 12);
     expect(() => store.dispatch('setLayerSound', { id: mel, kit })).toThrow(/beat layer/);
     expect(() => store.dispatch('setLayerSound', { id: mel, base: [1, 2] })).toThrow(/96/);
   });
@@ -328,7 +343,6 @@ describe('commands return ops only for real changes', () => {
 
 // ---------- M4: Influence, states, morph markers, kit slot ----------
 
-import { DESCS } from '../gen/params';
 import type { Influence } from './types';
 
 const ramp = (f: (i: number) => number) => Array.from({ length: 96 }, (_, i) => f(i));
@@ -388,7 +402,8 @@ describe('Influence commands', () => {
     expect(after.states[0].influenceAmount).toBe(0);
     const bit = { tone: 1, shape: 2, motion: 4, grit: 8, space: 16 } as const;
     const seen = new Set<string>();
-    after.states[0].base.forEach((v, i) => {
+    vocab(after).forEach((v, i) => {
+      if (!bound(after)(i)) return;
       const g = DESCS[i].group;
       seen.add(g);
       const masked = (1 | 4) & bit[g];
@@ -397,22 +412,23 @@ describe('Influence commands', () => {
     expect(seen.size).toBeGreaterThan(3); // the table really spans several groups
     store.undo();
     expect(store.doc.layers[0].influence).toBeTruthy();
-    expect(store.doc.layers[0].states[0].base).toEqual(base);
+    vocab(store.doc.layers[0]).forEach((v, i) => { if (bound(store.doc.layers[0])(i)) expect(v).toBe(base[i]); });
     expect(() => store.dispatch('commitInfluence', { layer: mel, state: 'x' })).toThrow(RangeError);
   });
 
   it('commitInfluence at amount 0 keeps the base, at 1 with a full mask takes the target', () => {
     const { store, mel } = setup();
     const st = store.doc.layers[0].states[0];
-    const base = st.base.slice();
+    const values = st.values;
     const target = ramp((i) => ((i * 7) % 11) / 10);
     store.dispatch('setInfluence', { layer: mel, influence: influence({ target }) });
     store.dispatch('commitInfluence', { layer: mel, state: st.id });
-    expect(store.doc.layers[0].states[0].base).toEqual(base);
+    expect(store.doc.layers[0].states[0].values).toEqual(values);
     store.dispatch('setInfluence', { layer: mel, influence: influence({ target }) });
     store.dispatch('setInfluenceAmount', { layer: mel, state: st.id, amount: 1 });
     store.dispatch('commitInfluence', { layer: mel, state: st.id });
-    expect(store.doc.layers[0].states[0].base).toEqual(target);
+    const l = store.doc.layers[0];
+    vocab(l).forEach((v, i) => { if (bound(l)(i)) expect(v).toBe(target[i]); });
   });
 
   it('commitInfluence needs an Influence', () => {
@@ -428,8 +444,8 @@ describe('state commands', () => {
     store.dispatch('addState', { layer: mel });
     const s2 = store.doc.layers[0].states[1];
     expect(s2.name).toBe('State 2');
-    expect(s2.base).toEqual(first.base);
-    expect(s2.base).not.toBe(first.base);
+    expect(s2.values).toEqual(first.values);
+    expect(s2.values).not.toBe(first.values);
     expect(s2.id).not.toBe(first.id);
     store.dispatch('addState', { layer: mel, from: s2.id, name: 'Wide', id: 'st_fixed' });
     expect(store.doc.layers[0].states[2]).toMatchObject({ id: 'st_fixed', name: 'Wide' });
@@ -548,7 +564,10 @@ describe('setKitSlot', () => {
     const { store, mel, beat } = setup();
     const params = ramp((i) => i / 100);
     expect(store.dispatch('setKitSlot', { layer: beat, slot: 2, params, cents: 3600 })).toBe(true);
-    expect(store.doc.layers[1].kit[2]).toEqual({ params, cents: 3600 });
+    expect(store.doc.layers[1].kit[2]).toEqual({ cents: 3600 });
+    const l = store.doc.layers[1];
+    vocab(l, 3).forEach((v, i) => { if (bound(l, 3)(i)) expect(v).toBe(params[i]); });
+    expect(vocab(l, 2)).toEqual(vocab(setup().store.doc.layers[1], 2));
     expect(store.doc.layers[1].kit[1]).toBe(store.doc.layers[1].kit[1]);
     expect(store.dispatch('setKitSlot', { layer: beat, slot: 2, params, cents: 3600 })).toBe(false);
     expect(() => store.dispatch('setKitSlot', { layer: beat, slot: 4, params, cents: 0 })).toThrow(RangeError);
@@ -563,7 +582,8 @@ describe('setKitSlot', () => {
 describe('newProject (M4)', () => {
   it('has one state per layer, empty morph lanes and the current schema', () => {
     const p = newProject('x');
-    expect(p.schema).toBe(3);
+    expect(p.schema).toBe(SCHEMA);
+    expect(SCHEMA).toBe(4);
     expect(p.metro?.bar).toBe(4);
     expect(p.metro?.layerId).toBe(p.layers[1].id);
     for (const l of p.layers) expect(l.states).toHaveLength(1);

@@ -42,11 +42,11 @@
 //! 19f rise ms  20f fall ms  21 n_points  22..38f points (x, y) x 8
 //! ```
 
+pub use crate::protocol::MAX_VALUES;
 use crate::protocol::{KIT_SLOTS, N_MACROS};
 use params as P;
 
 pub const PATCH_MAGIC: u32 = 0x3150_5745; // "EWP1"
-pub const MAX_VALUES: usize = 1024;
 pub const MAX_MODULES: usize = 16;
 pub const MAX_CABLES: usize = 32;
 pub const MAX_MODS: usize = 8;
@@ -57,7 +57,7 @@ pub const MAX_LAYER_ROUTES: usize = 64;
 pub const MAX_CHANNEL: usize = 8;
 pub const MAX_TARGETS: usize = 4;
 pub const MAX_POINTS: usize = 8;
-pub const MAX_SAMPLES: usize = 64;
+pub use crate::protocol::MAX_SAMPLES;
 pub const ROUTE_WORDS: usize = 22 + 2 * MAX_POINTS;
 pub const NONE: u32 = u32::MAX;
 
@@ -266,6 +266,8 @@ pub struct VoicePatch {
     /// An amp whose only input is the partial bank and which is the bank's
     /// only reader: its gain is applied to the partials' own amplitude ramps.
     pub fused_amp: Option<u8>,
+    /// The partial bank's module index.
+    pub partials: Option<u8>,
 }
 
 impl VoicePatch {
@@ -286,6 +288,7 @@ impl VoicePatch {
         noise: None,
         grains: None,
         fused_amp: None,
+        partials: None,
     };
 
     pub fn modules(&self) -> &[Module] {
@@ -548,6 +551,7 @@ fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize) -> Result<()
     }
     check(order_ok(vp.routes()))?;
     vp.fused_amp = fused_amp(vp);
+    vp.partials = vp.find(P::T_PARTIALS).map(|p| p as u8);
     Ok(())
 }
 

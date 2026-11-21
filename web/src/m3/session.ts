@@ -71,10 +71,14 @@ export class Session {
     await this.attach(new Store(doc), remember);
   }
 
+  /** Set by `open` when the project was upgraded and its undo history could not come along. */
+  historyReset = false;
+
   async open(id: string, remember = true): Promise<boolean> {
     await this.db.flush();
     const r = await this.db.open(id);
     if (!r) return false;
+    this.historyReset = r.historyReset;
     await this.attach(new Store(r.doc, r.history), remember);
     return true;
   }

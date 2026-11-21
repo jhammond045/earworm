@@ -3,6 +3,25 @@ import { memoryBlobs, memoryKv, ProjectDb, type Kv } from './persist';
 import { Store } from './store';
 import { newProject } from './commands';
 import { SCHEMA, type Project } from './types';
+import { migrate } from './migrate';
+import { vocabFromValues } from '../synth/classic';
+
+/** A schema 4 document written back in the schema 3 shape: no patches, 96-value states and kit slot sets. */
+function toV3(p: Project): Record<string, any> {
+  const doc = JSON.parse(JSON.stringify(p)) as Record<string, any>;
+  doc.schema = 3;
+  doc.layers = p.layers.map((l) => {
+    const { patch, ...rest } = JSON.parse(JSON.stringify(l)) as Record<string, any>;
+    void patch;
+    return {
+      ...rest,
+      states: l.states.map(({ values, ...st }) => ({ ...st, base: vocabFromValues(l.kind, values) })),
+      kit: l.kit.map((k, i) => ({ cents: k.cents, params: vocabFromValues(l.kind, l.states[0].values, i + 1) })),
+    };
+  });
+  return doc;
+}
+
 
 // Wires a Store to a ProjectDb the way the app does: every change is appended.
 function session(db: ProjectDb, doc: Project, history?: ConstructorParameters<typeof Store>[1]) {
@@ -234,6 +253,32 @@ function asSchema1<T>(v: T): T {
 }
 
 describe('schema migration on open', () => {
+  it('a schema 3 snapshot replays its journal before the 3 -> 4 step and reports the history reset', async () => {
+    const kv = memoryKv();
+    const db = new ProjectDb(kv, { flushMs: 10_000, snapshotEvery: 1000 });
+    const start = newProject('Three');
+    await db.create(start);
+    const store = session(db, start);
+    const mel = store.doc.layers[0]!.id;
+    const sec = store.doc.sections[0]!.id;
+    store.dispatch('setLayer', { id: mel, level: -4 });
+    store.dispatch('addNote', { section: sec, layer: mel, note: { id: 'n1', t: 0, dur: 480, cents: 5000, hard: 0.5 } });
+    const final = store.doc;
+    await db.flush();
+    const snap = (await kv.get('projects', `snap/${start.id}`)) as { doc: Project; history: unknown; seq: number };
+    await kv.put('projects', `snap/${start.id}`, { ...snap, doc: toV3(snap.doc) });
+    expect((await journalKeys(kv, start.id)).length).toBeGreaterThan(0);
+
+    const opened = await new ProjectDb(kv).open(start.id);
+    expect(opened!.historyReset).toBe(true);
+    expect(opened!.history).toEqual({ undo: [], redo: [] });
+    expect(opened!.doc.schema).toBe(4);
+    expect(opened!.doc.layers[0].level).toBe(-4);
+    const clip = opened!.doc.sections[0].clips[mel] as { notes: { id: string; vel?: number }[] };
+    expect(clip.notes.map((n) => [n.id, n.vel])).toEqual([['n1', 1]]);
+    expect(opened!.doc.layers.map((l) => l.states[0].values)).toEqual(final.layers.map((l) => l.states[0].values));
+  });
+
   it('upgrades an old snapshot and replays old journal entries into the new shape', async () => {
     const kv = memoryKv();
     const db = new ProjectDb(kv, { flushMs: 10_000, snapshotEvery: 1000 });
@@ -255,22 +300,30 @@ describe('schema migration on open', () => {
 
     // Rewrite storage as the old app would have written it.
     const snap = (await kv.get('projects', `snap/${start.id}`)) as { doc: Project; history: unknown; seq: number };
-    await kv.put('projects', `snap/${start.id}`, { ...snap, doc: { ...asSchema1(snap.doc), schema: 1 } });
+    await kv.put('projects', `snap/${start.id}`, { ...snap, doc: { ...asSchema1(toV3(snap.doc)), schema: 1 } });
     for (const k of await journalKeys(kv, start.id)) await kv.put('journal', k, asSchema1(await kv.get('journal', k)));
     const stored = JSON.stringify(await kv.get('journal', (await journalKeys(kv, start.id))[0]!));
     expect(stored).not.toContain('morph');
 
     const opened = await new ProjectDb(kv).open(start.id);
     expect(opened!.doc.schema).toBe(SCHEMA);
-    expect(opened!.doc).toEqual(expectedDoc);
+    // The journal replays in the old shape, then the document moves to schema 4 (notes get velocity 1).
+    expect(opened!.doc).toEqual(migrate(toV3(expectedDoc)));
+    for (const sc of opened!.doc.sections) for (const c of Object.values(sc.clips)) expect(c.morph).toEqual([]);
+    expect(opened!.doc.layers[0].states[0].values).toEqual(expectedDoc.layers[0].states[0].values);
 
-    // Undo history built from old entries restores clips that carry a morph lane too.
-    const again = new Store(opened!.doc, opened!.history);
-    while (again.undo());
-    expect(again.doc).toEqual(start);
-    while (again.redo());
-    expect(again.doc).toEqual(redone);
-    for (const sc of again.doc.sections) for (const c of Object.values(sc.clips)) expect(c.morph).toEqual([]);
+    // Undo steps from before schema 4 cannot come along: the history starts fresh, and says so.
+    expect(opened!.historyReset).toBe(true);
+    expect(opened!.history).toEqual({ undo: [], redo: [] });
+    expect(redone).not.toEqual(expectedDoc);
+    // The upgraded snapshot is written back: opening again is plain.
+    const twice = await new ProjectDb(kv).open(start.id);
+    expect(twice!.historyReset).toBe(false);
+    expect(twice!.doc).toEqual(opened!.doc);
+    const again = new Store(twice!.doc, twice!.history);
+    again.dispatch('addNote', { section: sec, layer: mel, note: { id: 'n3', t: 1920, dur: 480, cents: 5400, hard: 0.5 } });
+    expect(again.undo()).toBe(true);
+    expect(again.doc).toEqual(opened!.doc);
   });
 
   it('writes the upgraded snapshot back and drops the old journal, so new entries do not mix shapes', async () => {

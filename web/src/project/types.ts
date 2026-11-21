@@ -8,10 +8,12 @@
 // - Free sections: seconds.
 // - Curves (a take's frames) stay in take seconds; a clip's warp map maps take
 //   seconds to clip time.
-// - Parameter sets are 96 normalized values (gen/params.ts order).
+// - A layer's sound is a patch (synth/patch.ts) and, per state, a value for every key of it,
+//   normalized 0..1. The classic patch's values map to the old 96 parameters (synth/classic.ts).
 
-/** 3: the project carries metronome settings (M5). Older documents are upgraded by migrate.ts. */
-export const SCHEMA = 3;
+/** 4: layers carry a patch and states carry values by key (docs/synth.md, stage S1); notes carry a
+ *  velocity. Older documents are upgraded by migrate.ts. */
+export const SCHEMA = 4;
 
 /** Click track. The engine plays it live only; exports and the mic never contain it. */
 export interface Metro {
@@ -35,6 +37,9 @@ export const MAX_LAYERS = 8;
 export const KIT_SLOTS = 4;
 /** Sound states per layer (matches the engine's MAX_STATES). */
 export const MAX_STATES = 8;
+
+import type { Patch } from '../synth/patch';
+export type { Patch };
 
 export type Ticks = number;
 export type Seconds = number;
@@ -91,9 +96,8 @@ export interface Tune {
   octave: number;
 }
 
+/** A kit slot's sound is its voice patch (patch.voices[slot]) and values `k<n>.*` in every state. */
 export interface KitSlot {
-  /** 96 normalized values. */
-  params: number[];
   /** Default pitch, cents above C0. */
   cents: number;
 }
@@ -102,16 +106,16 @@ export interface KitSlot {
 export interface State {
   id: string;
   name: string;
-  /** 96 normalized values. */
-  base: number[];
+  /** A normalized value for every key of the layer's patch. */
+  values: Record<string, number>;
   /** 8 macro positions, 0.5 neutral. */
   macros: number[];
   influenceAmount: number;
 }
 
-/** Sound Influence (TDD "Sound Influence"): a target parameter set the layer's base is blended toward. */
+/** Sound Influence (TDD "Sound Influence"): a target parameter set the layer's values are blended toward. */
 export interface Influence {
-  /** 96 normalized values. */
+  /** 96 normalized values in the Klont vocabulary (the old parameters, gen/params.ts). */
   target: number[];
   /** One bit per aspect group (tone 1, shape 2, motion 4, grit 8, space 16); 0x1f is all. */
   mask: number;
@@ -135,6 +139,8 @@ export interface Layer {
   level: number;
   pan: number;
   mute: boolean;
+  /** The sound's structure: modules, routes, channel. The same for every state. */
+  patch: Patch;
   states: State[];
   tune: Tune;
   depth: GestureDepth;
@@ -154,6 +160,8 @@ export interface Note {
   /** Cents above C0, octave not applied (Tune.octave is added at compile time). */
   cents: number;
   hard: number;
+  /** Velocity 0..1; missing means 1 (documents from before schema 4 get 1). */
+  vel?: number;
 }
 
 export interface HitShape {

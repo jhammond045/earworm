@@ -9,8 +9,9 @@
 
 import type { Group, HistoryState, JournalEntry } from './history';
 import type { Op } from './patch';
+import { classicPatch, valuesFromVocab } from '../synth/classic';
 import { SCHEMA, defaultMetro } from './types';
-import type { Metro, Project } from './types';
+import type { LayerKind, Metro, Project } from './types';
 
 interface Step {
   /** The schema this step upgrades from; it produces from + 1. */
@@ -19,6 +20,9 @@ interface Step {
   doc(doc: Record<string, unknown>): Record<string, unknown>;
   /** Upgrade one value found in an op, anywhere in it. Returns the same object when nothing changes. */
   value(v: unknown): unknown;
+  /** The step cannot upgrade old ops: the undo history starts fresh, and crash-journal entries
+   *  written before it are replayed on the document before this step runs. */
+  resetsHistory?: boolean;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -82,7 +86,44 @@ const v2to3: Step = {
   },
 };
 
-const STEPS: Step[] = [v1to2, v2to3];
+const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+
+/** 3 -> 4 (docs/synth.md "Existing projects and presets"): each layer plays the classic patch;
+ *  a state's 96 values and the layer's kit slot sets become values by key (the kit's in every
+ *  state); kit slots keep their pitch; notes get velocity 1. Old ops name paths that no longer
+ *  exist (states[0].base), so the undo history starts fresh. */
+const v3to4: Step = {
+  from: 3,
+  resetsHistory: true,
+  doc(doc) {
+    const layers = Array.isArray(doc.layers) ? doc.layers : [];
+    const sections = Array.isArray(doc.sections) ? doc.sections : [];
+    return {
+      ...doc,
+      schema: 4,
+      layers: layers.map((l) => {
+        if (!isObj(l)) return l;
+        const kind = (l.kind === 'beat' || l.kind === 'texture' ? l.kind : 'melody') as LayerKind;
+        const kitIn = Array.isArray(l.kit) ? l.kit : [];
+        const kitSets = kitIn.map((k) => (isObj(k) && Array.isArray(k.params) ? (k.params as number[]) : []));
+        const states = (Array.isArray(l.states) ? l.states : []).map((st) => {
+          if (!isObj(st)) return st;
+          const { base, ...rest } = st;
+          return { ...rest, values: valuesFromVocab(kind, Array.isArray(base) ? (base as number[]) : [], kitSets) };
+        });
+        const kit = kitIn.map((k) => ({ cents: num(isObj(k) ? k.cents : undefined, 4800) }));
+        return { ...l, patch: classicPatch(kind), states, kit };
+      }),
+      sections: mapObjects(sections, (o) =>
+        looksLikeClip(o) && Array.isArray(o.notes) ? { ...o, notes: o.notes.map((n) => (isObj(n) && n.vel === undefined ? { ...n, vel: 1 } : n)) } : o),
+    };
+  },
+  value(v) {
+    return v;
+  },
+};
+
+const STEPS: Step[] = [v1to2, v2to3, v3to4];
 
 function stepsFrom(schema: unknown): Step[] {
   if (typeof schema !== 'number' || !Number.isInteger(schema) || schema < 1) {
@@ -94,14 +135,25 @@ function stepsFrom(schema: unknown): Step[] {
   return STEPS.filter((s) => s.from >= schema);
 }
 
-/** Bring a stored document up to the current schema. Returns the same object if it is current.
- *  Throws RangeError for a future or malformed schema. */
-export function migrate(doc: unknown): Project {
+/** Bring a stored document up to the current schema (or to `upTo`). Returns the same object if
+ *  it is current. Throws RangeError for a future or malformed schema. */
+export function migrate(doc: unknown, upTo = SCHEMA): Project {
   if (!isObj(doc)) throw new RangeError('project document is not an object');
-  const steps = stepsFrom(doc.schema);
+  const steps = stepsFrom(doc.schema).filter((s) => s.from < upTo);
   let cur: Record<string, unknown> = doc;
   for (const s of steps) cur = s.doc(cur);
   return cur as unknown as Project;
+}
+
+/** The last schema from which old ops can still be upgraded when coming from `fromSchema`:
+ *  the `from` of the first step that resets the history, or SCHEMA when none does. */
+export function replaySchema(fromSchema: number): number {
+  return stepsFrom(fromSchema).find((s) => s.resetsHistory)?.from ?? SCHEMA;
+}
+
+/** Does upgrading from `fromSchema` start a fresh undo history. */
+export function historyResets(fromSchema: number): boolean {
+  return replaySchema(fromSchema) < SCHEMA;
 }
 
 function migrateOps(ops: Op[], steps: Step[]): Op[] {
@@ -117,20 +169,22 @@ function migrateOps(ops: Op[], steps: Step[]): Op[] {
   return changed ? out : ops;
 }
 
-/** An undo group recorded under `fromSchema`, upgraded. Same object if nothing changes. */
-export function migrateGroup(g: Group, fromSchema: number): Group {
-  const steps = stepsFrom(fromSchema);
+/** An undo group recorded under `fromSchema`, upgraded (to `upTo`). Same object if nothing changes. */
+export function migrateGroup(g: Group, fromSchema: number, upTo = SCHEMA): Group {
+  const steps = stepsFrom(fromSchema).filter((s) => s.from < upTo);
   const ops = migrateOps(g.ops, steps);
   const inverse = migrateOps(g.inverse, steps);
   return ops === g.ops && inverse === g.inverse ? g : { ...g, ops, inverse };
 }
 
-export function migrateEntry(e: JournalEntry, fromSchema: number): JournalEntry {
-  const group = migrateGroup(e.group, fromSchema);
+export function migrateEntry(e: JournalEntry, fromSchema: number, upTo = SCHEMA): JournalEntry {
+  const group = migrateGroup(e.group, fromSchema, upTo);
   return group === e.group ? e : { ...e, group };
 }
 
+/** The undo history upgraded; empty when a step on the way cannot upgrade old ops. */
 export function migrateHistory(h: HistoryState, fromSchema: number): HistoryState {
   if (stepsFrom(fromSchema).length === 0) return h;
+  if (historyResets(fromSchema)) return { undo: [], redo: [] };
   return { undo: h.undo.map((g) => migrateGroup(g, fromSchema)), redo: h.redo.map((g) => migrateGroup(g, fromSchema)) };
 }

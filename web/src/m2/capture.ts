@@ -9,7 +9,7 @@ import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { encodeLayer, type LayerDef } from '../m1/layer';
 import { CURVE_STRIDE } from '../m1/track';
 import { LAYER_DEPTH_BREATH, LAYER_DEPTH_HARD, LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_DEPTH_OPEN, LAYER_FOLLOW, LAYER_LEVEL,
-  LIVE_KIT_BRIGHT, LIVE_KIT_LOW, LIVE_KIT_NOISE, LIVE_KIT_TAUGHT, LOAD_CURVE, LOAD_LAYER, LOAD_NAMES, LOAD_OK, LOAD_TRACK, METER_LEN,
+  LIVE_KIT_BRIGHT, LIVE_KIT_LOW, LIVE_KIT_NOISE, LIVE_KIT_TAUGHT, LOAD_CURVE, LOAD_LAYER, LOAD_NAMES, LOAD_PATCH, LOAD_OK, LOAD_TRACK, METER_LEN,
   M_ARMED, M_DELAY_LEVEL, M_DELAY_PITCH, M_FLOOR_DB, M_GATE, M_HARD, M_IN_DB, M_LIVE_HITS, M_LIVE_SLOT, M_LOUD, M_OPEN, M_PITCH,
   M_PLAYING, M_SECTION_POS, M_TUNED, M_VOICING, M_VOWEL, M_BREATH, TUNE_OCTAVE, TUNE_REF_CENTS, TUNE_ROOT, TUNE_SCALE, TUNE_SLIDES, TUNE_SNAP,
   TUNE_SPEED, TUNE_VIBRATO } from '../m1/protocol';
@@ -157,7 +157,10 @@ function layerDef(kind: PageKind): LayerDef {
 
 async function loadLayer(kind: PageKind): Promise<void> {
   if (!host) return;
-  const s = await host.load(LOAD_LAYER, layerOf(kind), encodeLayer(layerDef(kind)));
+  const blobs = encodeLayer(layerDef(kind), layerOf(kind));
+  const p = await host.load(LOAD_PATCH, layerOf(kind), blobs.patch);
+  if (p !== LOAD_OK) throw new Error(`patch ${layerOf(kind)}: ${LOAD_NAMES[p] ?? p}`);
+  const s = await host.load(LOAD_LAYER, layerOf(kind), blobs.layer);
   if (s !== LOAD_OK) throw new Error(`layer ${layerOf(kind)}: ${LOAD_NAMES[s] ?? s}`);
 }
 

@@ -11,6 +11,8 @@ const MAX_FILES = 4000;
 export interface ArchivedProject {
   doc: Project;
   blobs: Map<string, Float32Array>;
+  /** The schema the file was saved with. */
+  savedSchema: number;
 }
 
 const CRC_TABLE = (() => {
@@ -172,6 +174,7 @@ export async function importProject(bytes: Uint8Array): Promise<ArchivedProject>
   let parsed: unknown;
   try { parsed = JSON.parse(new TextDecoder().decode(json.data)); }
   catch { throw new Error('project.json is not valid JSON.'); }
+  const savedSchema = typeof (parsed as { schema?: unknown })?.schema === 'number' ? (parsed as { schema: number }).schema : 1;
   const doc = migrate(parsed);
   if (!doc.id || typeof doc.id !== 'string' || !SAFE_REF.test(doc.id)) throw new Error('The project id is missing or not a plain name.');
   if (!Array.isArray(doc.sections) || !Array.isArray(doc.layers)) throw new Error('The project has no sections or layers.');
@@ -182,5 +185,5 @@ export async function importProject(bytes: Uint8Array): Promise<ArchivedProject>
     if (!m || !SAFE_REF.test(m[1])) throw new Error(`Unexpected file in the zip: ${f.name}`);
     blobs.set(m[1], bytesToFloats(f.data, f.name));
   }
-  return { doc, blobs };
+  return { doc, blobs, savedSchema };
 }

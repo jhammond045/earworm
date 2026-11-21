@@ -5,19 +5,19 @@
 // command replaces only the objects on the path it changed (patch.ts), so "same
 // object as last time" means "same content". That keeps a compile cheap while playing.
 
-import { COUNT, neutralSet } from '../gen/params';
-import { encodeGrain, encodeStates, GRAIN_MAX_SAMPLES } from '../m1/blobs';
+import { encodeLayerBlob, encodeSample, encodeStates } from '../m1/blobs';
 import { encodeCurve, encodeTrack, MAX_CURVES, type TrackClip, type TrackEvent, type TrackInput } from '../m1/track';
 import {
   KIND_BEAT, KIND_MELODY, KIND_TEXTURE, LAYER_DEPTH_LOUD, LAYER_FIELDS, LAYER_FOLLOW, LAYER_INFLUENCE_AMOUNT,
-  LAYER_INFLUENCE_MASK, LAYER_KIND, LAYER_KIT_CENTS, LAYER_LEVEL, LAYER_MAGIC, LAYER_MUTE, LAYER_OFF_BASE,
-  LAYER_OFF_FIELDS, LAYER_OFF_INFLUENCE, LAYER_OFF_KIT, LAYER_OFF_MACROS, LAYER_PAN, LAYER_WORDS,
-  LOAD_CURVE, LOAD_GRAIN, LOAD_LAYER, LOAD_STATES, LOAD_TRACK, MAX_LAYERS, N_MACROS,
+  LAYER_INFLUENCE_MASK, LAYER_KIND, LAYER_KIT_CENTS, LAYER_LEVEL, LAYER_MUTE, LAYER_PAN,
+  LOAD_CURVE, LOAD_LAYER, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TRACK, MAX_LAYERS, N_MACROS, SAMPLE_POOL_FLOATS,
 } from '../m1/protocol';
+import { classicPatch, classicVectors, isClassic } from '../synth/classic';
+import { layoutOf, patchBlob, type Patch } from '../synth/patch';
 import { KIT_SLOTS, MORPH_SHAPES, PPQ, type Hit, type Layer, type MorphMarker, type Project, type Section, type Take } from './types';
 
 export interface Upload {
-  /** LOAD_TRACK, LOAD_LAYER, LOAD_CURVE, LOAD_GRAIN or LOAD_STATES (m1/protocol.ts). */
+  /** LOAD_TRACK, LOAD_PATCH, LOAD_LAYER, LOAD_CURVE, LOAD_SAMPLE or LOAD_STATES (m1/protocol.ts). */
   kind: number;
   slot: number;
   blob: ArrayBuffer;
@@ -38,15 +38,17 @@ export function sectionLength(s: Section): number {
 const KIND_CODE = { melody: KIND_MELODY, beat: KIND_BEAT, texture: KIND_TEXTURE } as const;
 const DEFAULT_KIT_CENTS = [2400, 4800, 6000, 7200];
 
-/** Layer blob (crates/klont/src/protocol.rs "Layer blob") from a document layer. The document
- *  already holds normalized 96-value sets, so nothing is converted. With an Influence the blob carries its
- *  target and mask and state 0's amount; without one the amount is 0 (the engine then ignores the target).
- *  When the layer also has LOAD_STATES, those override base, macros and amount each control tick. */
+/** The patch's values in layout order from a state's values (missing keys take the patch's start). */
+function vector(p: Patch, values: Record<string, number>): number[] {
+  const lay = layoutOf(p);
+  return lay.keys.map((k, i) => values[k] ?? lay.init[i]);
+}
+
+/** Layer blob v2 (crates/klont/src/protocol.rs "Layer blob v2") from a document layer: state 0's
+ *  values, macros and Influence. With an Influence the blob carries its target (the old parameters,
+ *  bound to the classic patch's values) and mask and state 0's amount; without one the amount is 0.
+ *  When the layer also has LOAD_STATES, those override values, macros and amount each control tick. */
 export function layerBlob(l: Layer): ArrayBuffer {
-  const buf = new ArrayBuffer(LAYER_WORDS * 4);
-  const u = new Uint32Array(buf);
-  const f = new Float32Array(buf);
-  u[0] = LAYER_MAGIC;
   const st = l.states[0];
   const fields = new Float32Array(LAYER_FIELDS);
   fields[LAYER_LEVEL] = l.level;
@@ -60,34 +62,30 @@ export function layerBlob(l: Layer): ArrayBuffer {
   fields[LAYER_INFLUENCE_AMOUNT] = infl && st ? st.influenceAmount : 0;
   fields[LAYER_INFLUENCE_MASK] = infl ? infl.mask : 0x1f;
   for (let k = 0; k < KIT_SLOTS; k++) fields[LAYER_KIT_CENTS + k] = l.kit[k]?.cents ?? DEFAULT_KIT_CENTS[k];
-  f.set(fields, LAYER_OFF_FIELDS);
-  const neutral = neutralSet();
-  f.set(st ? st.base.slice(0, COUNT) : neutral, LAYER_OFF_BASE);
-  for (let k = 0; k < N_MACROS; k++) f[LAYER_OFF_MACROS + k] = st?.macros[k] ?? 0.5;
-  f.set(infl ? infl.target.slice(0, COUNT) : neutral, LAYER_OFF_INFLUENCE);
-  for (let k = 0; k < KIT_SLOTS; k++) f.set(l.kit[k] ? l.kit[k].params.slice(0, COUNT) : neutral, LAYER_OFF_KIT + k * COUNT);
-  return buf;
+  const macros = Array.from({ length: N_MACROS }, (_, k) => st?.macros[k] ?? 0.5);
+  if (isClassic(l.patch)) {
+    const v = classicVectors(l.kind, st?.values ?? {}, infl ? infl.target : null);
+    return encodeLayerBlob({ fields, values: v.values, macros, target: v.target, groups: v.groups });
+  }
+  const values = vector(l.patch, st?.values ?? {});
+  return encodeLayerBlob({ fields, values, macros, target: values, groups: values.map(() => 0) });
 }
 
-/** A layer slot that no longer has a layer: neutral sound, muted, so nothing from it can be heard. */
+/** A layer slot that no longer has a layer: the classic melody patch's starting values, muted. */
 function silentLayerBlob(): ArrayBuffer {
-  const buf = new ArrayBuffer(LAYER_WORDS * 4);
-  const f = new Float32Array(buf);
-  new Uint32Array(buf)[0] = LAYER_MAGIC;
   const fields = new Float32Array(LAYER_FIELDS);
   fields[LAYER_MUTE] = 1;
   fields[LAYER_INFLUENCE_MASK] = 0x1f;
   fields.set([1, 0.5, 0.5, 0.5, 1], LAYER_DEPTH_LOUD);
   fields[LAYER_FOLLOW] = 1;
   fields.set(DEFAULT_KIT_CENTS, LAYER_KIT_CENTS);
-  f.set(fields, LAYER_OFF_FIELDS);
-  const neutral = neutralSet();
-  f.set(neutral, LAYER_OFF_BASE);
-  f.fill(0.5, LAYER_OFF_MACROS, LAYER_OFF_MACROS + N_MACROS);
-  f.set(neutral, LAYER_OFF_INFLUENCE);
-  for (let k = 0; k < KIT_SLOTS; k++) f.set(neutral, LAYER_OFF_KIT + k * COUNT);
-  return buf;
+  const init = layoutOf(SILENT_PATCH).init;
+  return encodeLayerBlob({ fields, values: init, macros: new Array<number>(N_MACROS).fill(0.5), target: init, groups: init.map(() => 0) });
 }
+
+const SILENT_PATCH = classicPatch('melody');
+/** Longest grain source sent for one layer. */
+export const GRAIN_SAMPLES = 480_000;
 
 /** Same mapping as hitsToEvents in m2/take.ts (the document's Hit has no analysis-only fields). */
 function hitEvents(hits: Hit[]): TrackEvent[] {
@@ -101,9 +99,10 @@ function hitEvents(hits: Hit[]): TrackEvent[] {
 
 export type CurveFor = (take: Take, layer: Layer) => Float32Array | null;
 
-/** The grain source of a layer, ready to send: the steady region of its Influence source, at the source's
- *  rate, with the region's reference pitch. null: the data is not loaded yet. The array's identity is the
- *  cache key (same array, not sent again), so return the same array until the source changes. */
+/** The grain source of a layer, ready to send as its sample (layer i's grains read sample i): the steady
+ *  region of its Influence source, at the source's rate, with the region's reference pitch. null: the data
+ *  is not loaded yet. The array's identity is the cache key (same array, not sent again), so return the
+ *  same array until the source changes. */
 export type GrainFor = (layer: Layer) => { data: Float32Array; rate: number; refCents: number | null } | null;
 
 export interface CompileOptions { grainFor?: GrainFor }
@@ -119,20 +118,24 @@ function usesStates(doc: Project, l: Layer): boolean {
 function statesBlob(l: Layer): ArrayBuffer {
   // Without an Influence the engine has no target to blend toward, so amounts go out as 0.
   const on = !!l.influence;
-  return encodeStates(l.states.map((s) => ({ base: s.base, macros: s.macros, influenceAmount: on ? s.influenceAmount : 0 })));
+  const n = layoutOf(l.patch).keys.length;
+  return encodeStates(n, l.states.map((s) => ({ values: vector(l.patch, s.values), macros: s.macros, influenceAmount: on ? s.influenceAmount : 0 })));
 }
 
-/** A layer slot that no longer has a layer, but had states loaded: one neutral state, so a later layer
- *  in the same slot does not inherit the old states. */
+/** A layer slot that no longer has a layer, but had states loaded: one state at the starting values,
+ *  so a later layer in the same slot does not inherit the old states. */
 function silentStatesBlob(): ArrayBuffer {
-  return encodeStates([{ base: neutralSet(), macros: new Array<number>(N_MACROS).fill(0.5), influenceAmount: 0 }]);
+  const init = layoutOf(SILENT_PATCH).init;
+  return encodeStates(init.length, [{ values: init, macros: new Array<number>(N_MACROS).fill(0.5), influenceAmount: 0 }]);
 }
 
-const emptyGrain = (): ArrayBuffer => encodeGrain(48000, null, new Float32Array(0));
+const emptySample = (): ArrayBuffer => encodeSample(48000, null, new Float32Array(0));
 
 export class Compiler {
   /** Layer object last sent per engine slot; null: the slot was silenced; undefined: never sent. */
   private layers: (Layer | null | undefined)[] = [];
+  /** Patch object last sent per engine slot; undefined: the engine's own (classic melody). */
+  private patches: (Patch | undefined)[] = [];
   /** Take id -> curve slot. */
   private slotOf = new Map<string, number>();
   /** Curve array last sent per slot. */
@@ -150,6 +153,7 @@ export class Compiler {
 
     // Layers: a slot is the layer's index in the array. Grain and states follow their layer's blob.
     doc.layers.forEach((l, i) => {
+      this.compilePatch(out, i, l.patch, `"${l.name}"`);
       if (this.layers[i] !== l) {
         out.push({ kind: LOAD_LAYER, slot: i, blob: layerBlob(l), what: `layer ${i} "${l.name}"` });
         this.layers[i] = l;
@@ -169,11 +173,12 @@ export class Compiler {
     });
     for (let i = doc.layers.length; i < MAX_LAYERS; i++) {
       if (this.layers[i] !== undefined && this.layers[i] !== null) {
+        this.compilePatch(out, i, SILENT_PATCH, '(removed)');
         out.push({ kind: LOAD_LAYER, slot: i, blob: silentLayerBlob(), what: `layer ${i} (removed, muted)` });
         this.layers[i] = null;
       }
       if (this.grainSent[i]) {
-        out.push({ kind: LOAD_GRAIN, slot: i, blob: emptyGrain(), what: `grain ${i} (cleared)` });
+        out.push({ kind: LOAD_SAMPLE, slot: i, blob: emptySample(), what: `sample ${i} (cleared)` });
         this.grainSent[i] = null;
       }
       if (this.statesSent[i] !== undefined && this.statesSent[i] !== 'silent') {
@@ -233,26 +238,39 @@ export class Compiler {
     return out;
   }
 
+  /** A new patch for a slot. The engine then starts its values over and drops its states, so the
+   *  layer and its states go again too. */
+  private compilePatch(out: Upload[], i: number, p: Patch, name: string): void {
+    if (this.patches[i] === p) return;
+    out.push({ kind: LOAD_PATCH, slot: i, blob: patchBlob(p, i), what: `patch ${i} ${name}` });
+    this.patches[i] = p;
+    this.layers[i] = undefined;
+    this.statesSent[i] = undefined;
+  }
+
   private compileGrain(out: Upload[], l: Layer, i: number, grainFor: GrainFor | undefined): void {
     const infl = l.influence;
     const wanted = !!infl && infl.useSound && infl.grain !== null;
     if (!wanted) {
       if (this.grainSent[i]) {
-        out.push({ kind: LOAD_GRAIN, slot: i, blob: emptyGrain(), what: `grain ${i} (cleared)` });
+        out.push({ kind: LOAD_SAMPLE, slot: i, blob: emptySample(), what: `sample ${i} (cleared)` });
         this.grainSent[i] = null;
       }
       return;
     }
     const g = grainFor?.(l);
     if (!g || g.data === this.grainSent[i]) return;
-    // The engine keeps at most GRAIN_MAX_SAMPLES; the start of the region is the part that matters.
-    const data = g.data.length > GRAIN_MAX_SAMPLES ? g.data.subarray(0, GRAIN_MAX_SAMPLES) : g.data;
-    out.push({ kind: LOAD_GRAIN, slot: i, blob: encodeGrain(g.rate, g.refCents, data), what: `grain ${i} "${infl!.sourceName}"` });
+    // Ten seconds at 48 kHz per layer, as before the shared pool, so a long source sounds as it did.
+    // The start of the region is the part that matters.
+    const max = Math.min(GRAIN_SAMPLES, SAMPLE_POOL_FLOATS / MAX_LAYERS);
+    const data = g.data.length > max ? g.data.subarray(0, max) : g.data;
+    out.push({ kind: LOAD_SAMPLE, slot: i, blob: encodeSample(g.rate, g.refCents, data), what: `sample ${i} "${infl!.sourceName}"` });
     this.grainSent[i] = g.data;
   }
 
   /** The engine restarted: everything is sent again on the next compile. */
   reset(): void {
+    this.patches = [];
     this.grainSent = [];
     this.statesSent = [];
     this.layers = [];
@@ -285,7 +303,7 @@ export class Compiler {
         const curve = c.take ? (this.slotOf.get(c.take) ?? -1) : -1;
         clips.push({
           section: si, layer: li, loopLen: c.loopLen, curve,
-          events: c.notes.map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: 1 })),
+          events: c.notes.map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1 })),
           warp: curve >= 0 ? c.warp : [],
           morph,
         });

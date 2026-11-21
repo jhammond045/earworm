@@ -3,6 +3,7 @@
 // that is being dragged is never rebuilt under the pointer.
 
 import { SCALES } from '../host/protocol';
+import { stateVocab } from '../synth/classic';
 import { soundToSet } from '../m1/layer';
 import { LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_FOLLOW, LAYER_LEVEL, LAYER_PAN, MSG_SET_LAYER, M_PLAYING } from '../m1/protocol';
 import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
@@ -289,7 +290,7 @@ function matchPreset(l: Layer, state: State = l.states[0]): number {
     beat: BEAT_KITS.map((_, i) => presetArgs('beat', i).base),
   };
   const sets = l.kind === 'beat' ? presetCache.beat : presetCache.melody;
-  const base = state?.base;
+  const base = state ? stateVocab(l, state) : undefined;
   return sets.findIndex((s) => base && s.length === base.length && s.every((v, k) => v === base[k]));
 }
 

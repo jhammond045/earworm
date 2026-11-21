@@ -110,10 +110,10 @@ pub struct LayerView<'a> {
     pub follow_gain: f32,
 }
 
-impl LayerView<'_> {
-    fn val(&self, rv: &[f32], i: usize) -> f32 {
-        if self.is_touched[i] { rv[i] } else { self.real[i] }
-    }
+/// Value `i` in real units for a voice: its own when a route moved it this tick, else the layer's.
+#[inline]
+fn val_of(moved: &[bool], rv: &[f32], real: &[f32], i: usize) -> f32 {
+    if moved[i] { rv[i] } else { real[i] }
 }
 
 // ------------------------------------------------------------------ processors
@@ -181,6 +181,8 @@ pub struct Voice {
     /// Program module whose buffer a module's output is (a fused amp reads the bank's).
     alias: [u8; MAX_MODULES],
     bufs: [[f32; TICK]; MAX_MODULES],
+    /// The buffer holding each module's output this span (its own, or a passed-on input).
+    buf_of: [u8; MAX_MODULES],
     inb: [f32; TICK],
 
     envs: [Env; MAX_ENVS],
@@ -202,6 +204,15 @@ pub struct Voice {
     amt_add: Box<[f32; MAX_VALUES]>,
     /// Octaves routes move a log-scaled value by after mapping.
     oct: Box<[f32; MAX_VALUES]>,
+    /// A route moved the value this tick (otherwise it keeps the layer's value exactly).
+    moved: Box<[bool; MAX_VALUES]>,
+    /// The values moved this tick.
+    dirty: Box<[u16; MAX_VALUES]>,
+    n_dirty: usize,
+    /// Routes that can move anything for this note, in order (a note field the note lacks, or a
+    /// note source that sits at the shaper's zero, never will).
+    act: [u8; MAX_ROUTES],
+    n_act: usize,
     smooth: [f32; MAX_ROUTES],
     latched: [f32; MAX_ROUTES],
     latched_raw: [f32; MAX_ROUTES],
@@ -256,6 +267,7 @@ impl Voice {
             inst: [Inst::None; MAX_MODULES],
             alias: std::array::from_fn(|i| i as u8),
             bufs: [[0.0; TICK]; MAX_MODULES],
+            buf_of: std::array::from_fn(|i| i as u8),
             inb: [0.0; TICK],
             envs: std::array::from_fn(|_| Env::new()),
             lfos: std::array::from_fn(|j| LfoSrc::new(s ^ LFO_SALT[j])),
@@ -268,6 +280,11 @@ impl Voice {
             pulled: Box::new([f32::NAN; MAX_VALUES]),
             amt_add: Box::new([0.0; MAX_VALUES]),
             oct: Box::new([0.0; MAX_VALUES]),
+            moved: Box::new([false; MAX_VALUES]),
+            dirty: Box::new([0; MAX_VALUES]),
+            n_dirty: 0,
+            act: [0; MAX_ROUTES],
+            n_act: 0,
             smooth: [0.0; MAX_ROUTES],
             latched: [0.0; MAX_ROUTES],
             latched_raw: [0.0; MAX_ROUTES],
@@ -360,11 +377,19 @@ impl Voice {
         }
         // Latched routes take their source now; smoothing starts at it.
         let src = self.sources(frame);
+        self.n_act = 0;
         for (i, r) in vp.routes().iter().enumerate() {
             let y = self.shaped(r, vp, &src, frame);
             self.latched[i] = y;
             self.latched_raw[i] = self.raw(r.source, r.arg, &src);
             self.smooth[i] = y;
+            // Note sources are fixed for the note: drop a route they leave without a value or at zero.
+            let note = (SRC_NOTE_PITCH..=SRC_NOTE_END_CLICK).contains(&r.source);
+            let idle = note && (!y.is_finite() || (r.mode != MODE_PULL && r.via == SRC_NONE && r.polar(y) == 0.0));
+            if !idle {
+                self.act[self.n_act] = i as u8;
+                self.n_act += 1;
+            }
         }
         // Envelope times and click amounts from the values with the note's routes applied.
         self.holding = true;
@@ -373,7 +398,7 @@ impl Voice {
         for (k, m) in vp.mods().iter().enumerate() {
             if m.code == P::T_ENV {
                 let b = m.base as usize;
-                let v = |i: usize| lv.val(&self.rv[..], b + i);
+                let v = |i: usize| val_of(&self.moved[..], &self.rv[..], lv.real, b + i);
                 let hold_off = lv.real[b + P::env::HOLD] <= HOLD_OFF_S;
                 let t = EnvTimes {
                     mode: v(P::env::MODE).round() as u8,
@@ -388,7 +413,7 @@ impl Voice {
         }
         if let Some(c) = vp.find(P::T_CLICK) {
             let b = vp.modules[c].base as usize;
-            let v = |i: usize| lv.val(&self.rv[..], b + i);
+            let v = |i: usize| val_of(&self.moved[..], &self.rv[..], lv.real, b + i);
             let (amt, colour) = (cl(v(P::click::START), 0.0, 1.0), cl(v(P::click::COLOUR), 40.0, 20_000.0));
             self.click.end = cl(v(P::click::END), 0.0, 1.0);
             self.click.colour = colour;
@@ -496,14 +521,14 @@ impl Voice {
         self.cents_now
     }
 
-    /// Value `i` in real units after this voice's routes (`lv.touched` values only).
-    pub fn real(&self, i: usize) -> f32 {
-        self.rv[i]
+    /// Value `i` in real units after this voice's routes, or None when no route moved it.
+    pub fn real(&self, i: usize) -> Option<f32> {
+        self.moved[i].then(|| self.rv[i])
     }
 
-    /// Value `i` normalized after this voice's routes (`lv.touched` values only).
-    pub fn norm(&self, i: usize) -> f32 {
-        self.nv[i]
+    /// Value `i` normalized after this voice's routes, or None when no route moved it.
+    pub fn norm(&self, i: usize) -> Option<f32> {
+        self.moved[i].then(|| self.nv[i])
     }
 
     // ------------------------------------------------------------ state
@@ -606,6 +631,22 @@ impl Voice {
         if x.is_finite() { r.shape(x) } else { f32::NAN }
     }
 
+    /// First write to a value this tick: a value only note-start routes move starts from its real
+    /// value mapped back, as the old note-start maps did.
+    #[inline]
+    fn mark(&mut self, lv: &LayerView, t: usize) {
+        if !self.moved[t] {
+            self.moved[t] = true;
+            self.dirty[self.n_dirty] = t as u16;
+            self.n_dirty += 1;
+            self.nv[t] = if lv.from_real[t] { P::to_norm(lv.descs[t] as usize, lv.real[t]) } else { lv.norm[t] };
+            self.scale[t] = 1.0;
+            self.pulled[t] = f32::NAN;
+            self.amt_add[t] = 0.0;
+            self.oct[t] = 0.0;
+        }
+    }
+
     /// y and the movement c of route `i` this tick, or None when its source has no value.
     #[allow(clippy::too_many_arguments)]
     fn route_c(&mut self, i: usize, r: &Route, vp: &VoicePatch, s: &Sources, frame: Option<&[f32; CURVE_STRIDE]>, first: bool, dt: f32) -> Option<(f32, f32)> {
@@ -650,10 +691,10 @@ impl Voice {
     /// another route moves is read from this voice's values as they stand.
     fn k(&self, r: &Route, lv: &LayerView, s: &Sources) -> (f32, f32) {
         let a = r.amount as usize;
-        let amount = if lv.is_touched[a] && lv.is_amount[a] {
+        let amount = if self.moved[a] && lv.is_amount[a] {
             let d = P::desc(lv.descs[a] as usize);
             (lv.real[a] + self.amt_add[a]).clamp(d.min, d.max)
-        } else if lv.is_touched[a] {
+        } else if self.moved[a] {
             P::to_real(lv.descs[a] as usize, self.nv[a].clamp(0.0, 1.0))
         } else {
             lv.real[a]
@@ -669,67 +710,77 @@ impl Voice {
     /// `base` (cents) with the pitch routes added one by one.
     #[allow(clippy::too_many_arguments)]
     fn resolve(&mut self, vp: &VoicePatch, lv: &LayerView, s: &Sources, frame: Option<&[f32; CURVE_STRIDE]>, first: bool, mods: bool, base: f32) -> f32 {
-        for &t in lv.touched {
-            let t = t as usize;
-            self.nv[t] = if lv.from_real[t] { P::to_norm(lv.descs[t] as usize, lv.real[t]) } else { lv.norm[t] };
-            self.scale[t] = 1.0;
-            self.pulled[t] = f32::NAN;
-            self.amt_add[t] = 0.0;
-            self.oct[t] = 0.0;
+        for &t in &self.dirty[..self.n_dirty] {
+            self.moved[t as usize] = false;
         }
+        self.n_dirty = 0;
         let mut pitch = base;
         let dt = TICK as f32 / self.sr;
         // Add and scale routes; pull routes come after the clamp.
-        for (i, r) in vp.routes().iter().enumerate() {
-            if (!mods && r.source == SRC_MOD) || r.mode == MODE_PULL {
+        for x in 0..self.n_act {
+            let i = self.act[x] as usize;
+            let r = &vp.routes[i];
+            if (!mods && r.source == SRC_MOD) || r.mode == MODE_PULL || (frame.is_none() && r.source >= SRC_VOICE_PITCH) {
+                continue;
+            }
+            let (ku, dv) = self.k(r, lv, s);
+            if (ku == 0.0 && !r.smoothed()) || !(ku.is_finite() && dv.is_finite()) {
                 continue;
             }
             let Some((y, c)) = self.route_c(i, r, vp, s, frame, first, dt) else { continue };
-            let (ku, dv) = self.k(r, lv, s);
-            if !(ku.is_finite() && dv.is_finite()) {
-                continue;
-            }
             let m = |x: f32| ku * if dv == 1.0 { x } else { x * dv };
             // Into another route's amount: in the amount's real units, by the source value itself.
             if r.target_kind == TGT_VALUE && r.mode == MODE_ADD && lv.is_amount[r.targets[0] as usize] {
-                let x = self.source_value(i, r, y, s);
-                let d = m(x);
-                for &t in &r.targets[..r.n_targets as usize] {
-                    self.amt_add[t as usize] += d;
+                let d = m(self.source_value(i, r, y, s));
+                if d != 0.0 {
+                    for &t in &r.targets[..r.n_targets as usize] {
+                        self.mark(lv, t as usize);
+                        self.amt_add[t as usize] += d;
+                    }
                 }
                 continue;
             }
             let d = m(c);
+            // A route that moves nothing this tick leaves the value exactly as the layer has it.
+            if d == 0.0 {
+                continue;
+            }
             match (r.target_kind, r.mode) {
                 (TGT_PITCH, _) => pitch += d,
                 (_, MODE_SCALE) => {
                     for &t in &r.targets[..r.n_targets as usize] {
+                        self.mark(lv, t as usize);
                         self.scale[t as usize] *= 1.0 + d;
                     }
                 }
                 (TGT_BANDS, _) => {
                     let t0 = r.targets[0] as usize;
                     for b in 0..N_BANDS {
+                        self.mark(lv, t0 + b);
                         self.nv[t0 + b] += d;
                     }
                 }
                 (TGT_OCTAVES, _) => {
                     for &t in &r.targets[..r.n_targets as usize] {
+                        self.mark(lv, t as usize);
                         self.oct[t as usize] += d;
                     }
                 }
                 _ => {
                     for &t in &r.targets[..r.n_targets as usize] {
+                        self.mark(lv, t as usize);
                         self.nv[t as usize] += d;
                     }
                 }
             }
         }
-        for &t in lv.touched {
-            let t = t as usize;
+        for x in 0..self.n_dirty {
+            let t = self.dirty[x] as usize;
             self.nv[t] = self.nv[t].clamp(0.0, 1.0);
         }
-        for (i, r) in vp.routes().iter().enumerate() {
+        for x in 0..self.n_act {
+            let i = self.act[x] as usize;
+            let r = &vp.routes[i];
             if r.mode != MODE_PULL || (!mods && r.source == SRC_MOD) {
                 continue;
             }
@@ -745,21 +796,23 @@ impl Voice {
                 for b in 0..N_BANDS {
                     let v = f[frame::BANDS + b];
                     if v.is_finite() {
+                        self.mark(lv, t0 + b);
                         let y = P::to_norm(lv.descs[t0 + b] as usize, v.clamp(-30.0, 30.0));
                         self.nv[t0 + b] += k * (y - self.nv[t0 + b]);
                     }
                 }
                 continue;
             }
-            let Some((y, _)) = self.route_c(i, r, vp, s, frame, first, dt) else { continue };
-            if !k.is_finite() {
+            if !k.is_finite() || (k == 0.0 && !r.latch) {
                 continue;
             }
+            let Some((y, _)) = self.route_c(i, r, vp, s, frame, first, dt) else { continue };
             // The target moves in its own units toward the source value.
             let yr = self.source_value(i, r, y, s);
             for (j, &t) in r.targets[..r.n_targets as usize].iter().enumerate() {
                 let t = t as usize;
                 let d = lv.descs[t] as usize;
+                self.mark(lv, t);
                 // A latched pull keeps what it set at note start.
                 let next = if r.latch && !self.holding {
                     self.held[i][j]
@@ -784,8 +837,10 @@ impl Voice {
             }
             let depth = lv.real[vp.voicing as usize];
             let m = if depth == 1.0 { self.vmix } else { 1.0 - depth * (1.0 - self.vmix) };
-            if let (Some(p), Some((nb, _))) = (vp.find(P::T_PARTIALS), vp.noise) {
-                let (hi, ni) = (vp.modules[p].base as usize + P::partials::LEVEL, nb as usize + P::shaped_noise::LEVEL);
+            if let (Some(p), Some((nb, _))) = (vp.partials, vp.noise) {
+                let (hi, ni) = (vp.modules[p as usize].base as usize + P::partials::LEVEL, nb as usize + P::shaped_noise::LEVEL);
+                self.mark(lv, hi);
+                self.mark(lv, ni);
                 let (h, n) = (self.nv[hi].clamp(0.0, 1.0), self.nv[ni].clamp(0.0, 1.0));
                 self.nv[hi] = h * m;
                 self.nv[ni] = n * m + h.max(n) * (1.0 - m);
@@ -793,8 +848,8 @@ impl Voice {
                 self.pulled[ni] = f32::NAN;
             }
         }
-        for &t in lv.touched {
-            let t = t as usize;
+        for x in 0..self.n_dirty {
+            let t = self.dirty[x] as usize;
             let n = self.nv[t].clamp(0.0, 1.0);
             self.nv[t] = n;
             let mut r = if self.pulled[t].is_nan() { P::to_real(lv.descs[t] as usize, n) } else { self.pulled[t] };
@@ -860,7 +915,8 @@ impl Voice {
         let gate = self.gate;
         let env1 = self.mod_val[0];
         let rv = &self.rv[..];
-        let val = |i: usize| lv.val(rv, i);
+        let moved = &self.moved[..];
+        let val = |i: usize| val_of(moved, rv, lv.real, i);
         let vol = if s.voice[1].is_finite() { (1.0 - lv.depth[0]) + lv.depth[0] * s.voice[1] } else { 1.0 };
         self.loud = env1 * cl(vol * gate, 0.0, 8.0) * cl(self.note.velocity, 0.0, 2.0);
         self.noise_lvl = match vp.noise {
@@ -1009,9 +1065,11 @@ impl Voice {
         self.keep_click = false;
     }
 
-    /// Run the program over `m` samples into the module buffers.
+    /// Run the program over `m` samples into the module buffers. A processor that is off and has
+    /// one input passes that input's buffer on instead of copying it.
     fn run_program(&mut self, vp: &VoicePatch, m: usize) {
         for k in 0..vp.n_modules {
+            self.buf_of[k] = k as u8;
             match self.inst[k] {
                 Inst::Partials => self.partials.render(&mut self.bufs[k][..m]),
                 Inst::Click => {
@@ -1023,26 +1081,45 @@ impl Voice {
                 }
                 inst => {
                     if self.alias[k] as usize != k {
+                        self.buf_of[k] = self.buf_of[self.alias[k] as usize];
                         continue;
                     }
+                    let on = match inst {
+                        Inst::Amp(_) => true,
+                        Inst::Clang => self.clang.on,
+                        Inst::Fold => self.fold.on,
+                        Inst::Comb => self.comb.on,
+                        Inst::Filter(fi) => self.filters[fi as usize].on,
+                        _ => false,
+                    };
                     // Sum the cables into this module.
                     let mut n_in = 0;
+                    let mut only = 0usize;
                     for c in &vp.cables[..vp.n_cables] {
                         if c.to as usize != k {
                             continue;
                         }
-                        let src = self.alias[c.from as usize] as usize;
+                        let src = self.buf_of[c.from as usize] as usize;
                         if n_in == 0 {
-                            self.inb[..m].copy_from_slice(&self.bufs[src][..m]);
+                            only = src;
                         } else {
+                            if n_in == 1 {
+                                self.inb[..m].copy_from_slice(&self.bufs[only][..m]);
+                            }
                             for i in 0..m {
                                 self.inb[i] += self.bufs[src][i];
                             }
                         }
                         n_in += 1;
                     }
+                    if !on && n_in == 1 {
+                        self.buf_of[k] = only as u8;
+                        continue;
+                    }
                     if n_in == 0 {
                         self.inb[..m].fill(0.0);
+                    } else if n_in == 1 {
+                        self.inb[..m].copy_from_slice(&self.bufs[only][..m]);
                     }
                     let (x, y) = (&self.inb, &mut self.bufs[k]);
                     match inst {
@@ -1093,7 +1170,7 @@ impl Voice {
             let mut x = 0.0;
             if !dead {
                 for (j, &o) in vp.out[..vp.n_out].iter().enumerate() {
-                    let b = self.bufs[self.alias[o as usize] as usize][i];
+                    let b = self.bufs[self.buf_of[o as usize] as usize][i];
                     x = if j == 0 { b } else { x + b };
                 }
             }

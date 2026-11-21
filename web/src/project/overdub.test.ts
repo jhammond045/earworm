@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import * as pr from '../m1/protocol';
+import { classicPatch } from '../synth/classic';
 import { clockMark, placeTake, positionAt, type ClockMark } from './overdub';
 import type { BeatClip, Layer, MelodyClip, Project, Section, Take } from './types';
 
 const shape = { attack: 0.002, burst: 0.5, cents: null, bend: 0, hold: 0.03, vowel: 0, tone: 0.5, endStop: 0, endClick: 0 };
 const tune = { snap: 1, speedMs: 0, slides: 0 as const, vibrato: 1, levelOut: 0, root: 0, scale: 0, refCents: 5700, octave: 0 };
 const layer = (id: string, kind: Layer['kind']): Layer => ({
-  id, name: id, kind, color: 0, level: 0, pan: 0, mute: false, states: [], tune, follow: 1, kit: [],
+  id, name: id, kind, color: 0, level: 0, pan: 0, mute: false, patch: classicPatch(kind), states: [], tune, follow: 1, kit: [],
   depth: { loud: 1, open: 0.5, hard: 0.5, breath: 0.5, mouth: 1 },
 });
 const take: Take = { id: 'tk', audio: 'a', frames: 'f', rate: 48000, latencyMs: 0, frameCount: 100, kind: 'melody', refCents: 5700, root: 0, scale: 0, bpm: null };

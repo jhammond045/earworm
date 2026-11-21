@@ -6,6 +6,7 @@
 // or mutes anything.
 
 import { decodeBytes, MAX_SOURCE_S, loadSources, trimAndCap, type SavedSource } from '../influence/audio';
+import { stateVocab, vocabIndices } from '../synth/classic';
 import { LAYER_INFLUENCE_AMOUNT, LAYER_INFLUENCE_MASK, M_LAYER_PEAK, SET_INFLUENCE } from '../m1/protocol';
 import { liveMatch, type LiveMatch, type Match } from '../m4/match';
 import { commands, newId } from '../project/commands';
@@ -166,7 +167,7 @@ export function initInfluence(app: App): InfluencePanel {
     if (!host) return;
     const i = layerIdx(l.id);
     if (i < 0) return;
-    for (let k = 0; k < 96; k++) host.setParam(i, k, target[k], SET_INFLUENCE);
+    vocabIndices(l.kind).forEach((ix, k) => { for (const v of ix) host.setParam(i, v, target[k], SET_INFLUENCE); });
     host.setLayer(i, LAYER_INFLUENCE_AMOUNT, amount);
     host.setLayer(i, LAYER_INFLUENCE_MASK, mask);
     if (layerUsesStates(app.doc, l)) {
@@ -463,7 +464,7 @@ export function initInfluence(app: App): InfluencePanel {
   function refreshReadout(): void {
     const l = layer();
     if (!l) return;
-    const base = app.ui.editState(l).base;
+    const base = stateVocab(l, app.ui.editState(l));
     if (liveTarget) drawReadout(liveTarget, base, liveProvisional);
     else drawReadout(l.influence?.target ?? null, base, !!l.influence && lastProvisional);
   }

@@ -239,7 +239,9 @@ function randomEdit(store: Store, r: Rng, stats: EditStats): string {
 const median = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
 const pct = (a: number[], p: number) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : 0; };
 
-const KIND_NAME: Record<number, string> = { [pr.LOAD_TRACK]: 'track', [pr.LOAD_LAYER]: 'layer', [pr.LOAD_CURVE]: 'curve' };
+const KIND_NAME: Record<number, string> = {
+  [pr.LOAD_TRACK]: 'track', [pr.LOAD_LAYER]: 'layer', [pr.LOAD_CURVE]: 'curve', [pr.LOAD_PATCH]: 'patch', [pr.LOAD_STATES]: 'states', [pr.LOAD_SAMPLE]: 'sample',
+};
 const SECONDS = Number(process.env.GATE_SECONDS ?? 120);
 
 interface RunResult {
@@ -281,7 +283,7 @@ function runEngine(withEdits: boolean): RunResult {
       const st = ex.ew_load(e, u.slot, u.kind, t.staging, u.blob.byteLength);
       const us = (performance.now() - t0) * 1000;
       if (st !== pr.LOAD_OK) res.loadFailures.push(`${u.what}: status ${st}`);
-      res.loadUs[KIND_NAME[u.kind]].push(us);
+      (res.loadUs[KIND_NAME[u.kind]] ??= []).push(us);
       if (u.kind === pr.LOAD_TRACK) res.maxTrackBytes = Math.max(res.maxTrackBytes, u.blob.byteLength);
       lastBlob.set(`${u.kind}:${u.slot}`, u.blob);
     }

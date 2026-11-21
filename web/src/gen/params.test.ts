@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { generate } from '../../../tools/paramgen/paramgen';
+import { generate, generateModules } from '../../../tools/paramgen/paramgen';
 import { COUNT, DESCS, MACRO_NAMES, MACRO_W, N_MACROS, P, neutralSet, toNorm, toReal } from './params';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -15,6 +15,11 @@ describe('generated files', () => {
     expect(read('web/src/gen/params.ts')).toBe(g.ts);
     expect(read('web/src/gen/params.schema.json')).toBe(g.schema);
     expect(read('web/src/gen/params-dictionary.md')).toBe(g.dictionary);
+  });
+  it('module table files are up to date with modules.toml (run pnpm gen:params)', () => {
+    const m = generateModules(toml, read('crates/params/modules.toml'));
+    expect(read('crates/params/src/modules.rs')).toBe(m.rust);
+    expect(read('web/src/gen/modules.ts')).toBe(m.ts);
   });
   it('schema is strict and complete', () => {
     const s = JSON.parse(g.schema);

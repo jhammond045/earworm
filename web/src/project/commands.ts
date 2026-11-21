@@ -8,6 +8,7 @@ import { soundToSet } from '../m1/layer';
 import type { Sound } from '../m1/layer';
 import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
 import type { Op, Path } from './patch';
+import { classicPatch, valuesFromVocab, vocabFromValues, withVocab } from '../synth/classic';
 import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro } from './types';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MorphShape, Note, Project, Section, State, Take, Tune } from './types';
@@ -59,20 +60,20 @@ const defaultDepth = (): GestureDepth => ({ loud: 1, open: 0.5, hard: 0.5, breat
 const set96 = (s: Sound | undefined): number[] => Array.from(soundToSet(s));
 
 function makeLayer(kind: LayerKind, name: string, soundIndex: number, colorIndex: number): Layer {
-  let base: number[];
+  let values: Record<string, number>;
   let kit: KitSlot[] = [];
   if (kind === 'beat') {
     const k = BEAT_KITS[soundIndex] ?? fail(`unknown kit preset ${soundIndex}`);
-    base = set96(k.base);
-    kit = Array.from({ length: KIT_SLOTS }, (_, i) => ({ params: set96(k.kit[i]), cents: k.kitCents[i] }));
+    values = valuesFromVocab(kind, set96(k.base), k.kit.map(set96));
+    kit = Array.from({ length: KIT_SLOTS }, (_, i) => ({ cents: k.kitCents[i] }));
   } else {
     const m = MELODY_SOUNDS[soundIndex] ?? fail(`unknown sound preset ${soundIndex}`);
-    base = set96(m.sound);
+    values = valuesFromVocab(kind, set96(m.sound));
   }
   return {
     id: newId('lay'), name, kind, color: LAYER_COLORS[colorIndex % LAYER_COLORS.length],
-    level: 0, pan: 0, mute: false,
-    states: [{ id: newId('st'), name: 'Base', base, macros: new Array(N_MACROS).fill(0.5), influenceAmount: 0 }],
+    level: 0, pan: 0, mute: false, patch: classicPatch(kind),
+    states: [{ id: newId('st'), name: 'Base', values, macros: new Array(N_MACROS).fill(0.5), influenceAmount: 0 }],
     tune: defaultTune(), depth: defaultDepth(), follow: 1, kit,
   };
 }
@@ -461,21 +462,25 @@ export const commands = {
     return ops;
   },
 
-  /** `base` replaces state 0's 96 values; `kit` replaces the four kit slots (beat layers only). */
-  setLayerSound(doc: Project, a: { id: string; base?: number[]; kit?: KitSlot[] }): Op[] {
+  /** `base` (96 values of the old parameters) replaces state 0's sound; `kit` replaces the four kit
+   *  slots' sounds in every state and their pitches (beat layers only). */
+  setLayerSound(doc: Project, a: { id: string; base?: number[]; kit?: { params: number[]; cents: number }[] }): Op[] {
     const i = layIdx(doc, a.id);
     const l = doc.layers[i];
     const ops: Op[] = [];
+    const states = l.states.map((s) => s.values);
     if (a.base !== undefined) {
       checkParams(a.base, 'base sound');
-      ops.push({ op: 'set', path: ['layers', i, 'states', 0, 'base'], value: a.base });
+      states[0] = withVocab(l.kind, states[0], 0, a.base);
     }
     if (a.kit !== undefined) {
       if (l.kind !== 'beat') fail(`layer "${l.name}" is not a beat layer and has no kit`);
       if (!Array.isArray(a.kit) || a.kit.length !== KIT_SLOTS) fail(`kit must have ${KIT_SLOTS} slots`);
       for (const s of a.kit) { checkParams(s.params, 'kit slot sound'); inRange(s.cents, 'kit slot cents', 0, MAX_CENTS); }
-      ops.push({ op: 'set', path: ['layers', i, 'kit'], value: a.kit });
+      for (let si = 0; si < states.length; si++) a.kit.forEach((k, slot) => { states[si] = withVocab(l.kind, states[si], slot + 1, k.params); });
+      ops.push({ op: 'set', path: ['layers', i, 'kit'], value: a.kit.map((k) => ({ cents: k.cents })) });
     }
+    states.forEach((v, si) => { if (v !== l.states[si].values) ops.push({ op: 'set', path: ['layers', i, 'states', si, 'values'], value: v }); });
     return ops;
   },
 
@@ -680,8 +685,9 @@ export const commands = {
     const infl = l.influence ?? fail('this layer has no Influence');
     const si = stateIdx(l, a.state);
     const st = l.states[si];
+    const blended = blendInfluence(vocabFromValues(l.kind, st.values), infl.target, infl.mask, st.influenceAmount);
     return [
-      { op: 'set', path: ['layers', i, 'states', si, 'base'], value: blendInfluence(st.base, infl.target, infl.mask, st.influenceAmount) },
+      { op: 'set', path: ['layers', i, 'states', si, 'values'], value: withVocab(l.kind, st.values, 0, blended) },
       { op: 'set', path: ['layers', i, 'states', si, 'influenceAmount'], value: 0 },
       { op: 'set', path: ['layers', i, 'influence'], value: undefined },
     ];
@@ -696,18 +702,20 @@ export const commands = {
     const id = a.id !== undefined ? str(a.id, 'state id') : newId('st');
     if (l.states.some((s) => s.id === id)) fail(`state id "${id}" already exists`);
     const name = a.name !== undefined ? str(a.name, 'state name') : `State ${l.states.length + 1}`;
-    const st: State = { id, name, base: src.base.slice(), macros: src.macros.slice(), influenceAmount: src.influenceAmount };
+    const st: State = { id, name, values: { ...src.values }, macros: src.macros.slice(), influenceAmount: src.influenceAmount };
     return [{ op: 'ins', path: ['layers', i, 'states', l.states.length], value: st }];
   },
 
+  /** `base`: 96 values of the old parameters for the state's own sound (kit slots keep theirs). */
   setState(doc: Project, a: { layer: string; id: string; name?: string; base?: number[]; macros?: number[]; influenceAmount?: number }): Op[] {
     const i = layIdx(doc, a.layer);
-    const si = stateIdx(doc.layers[i], a.id);
-    const st = doc.layers[i].states[si];
+    const l = doc.layers[i];
+    const si = stateIdx(l, a.id);
+    const st = l.states[si];
     const ops: Op[] = [];
     const put = (k: keyof State, value: unknown) => { if (value !== st[k]) ops.push({ op: 'set', path: ['layers', i, 'states', si, k], value }); };
     if (a.name !== undefined) put('name', str(a.name, 'state name'));
-    if (a.base !== undefined) put('base', unitArray(a.base, PARAMS, 'state base'));
+    if (a.base !== undefined) put('values', withVocab(l.kind, st.values, 0, unitArray(a.base, PARAMS, 'state base')));
     if (a.macros !== undefined) put('macros', unitArray(a.macros, N_MACROS, 'state macros'));
     if (a.influenceAmount !== undefined) put('influenceAmount', inRange(a.influenceAmount, 'influence amount', 0, 1));
     return ops;
@@ -780,9 +788,13 @@ export const commands = {
     if (!Number.isInteger(a.slot) || a.slot < 0 || a.slot >= KIT_SLOTS) fail(`slot must be a whole number from 0 to ${KIT_SLOTS - 1}`);
     unitArray(a.params, PARAMS, 'kit slot sound');
     inRange(a.cents, 'kit slot cents', 0, MAX_CENTS);
-    const old = l.kit[a.slot];
-    if (old && old.cents === a.cents && old.params.length === PARAMS && old.params.every((v, k) => v === a.params[k])) return [];
-    return [{ op: 'set', path: ['layers', i, 'kit', a.slot], value: { params: a.params, cents: a.cents } }];
+    const ops: Op[] = [];
+    if (l.kit[a.slot]?.cents !== a.cents) ops.push({ op: 'set', path: ['layers', i, 'kit', a.slot], value: { cents: a.cents } });
+    l.states.forEach((st, si) => {
+      const next = withVocab(l.kind, st.values, a.slot + 1, a.params);
+      if (Object.keys(next).some((k) => next[k] !== st.values[k])) ops.push({ op: 'set', path: ['layers', i, 'states', si, 'values'], value: next });
+    });
+    return ops;
   },
 
   /** Switch to an older take in the clip's stack. The caller rebuilds notes/hits (setClip). */

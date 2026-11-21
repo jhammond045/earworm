@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { exportProject, importProject, zipStore, unzip } from './archive';
 import { newProject } from './commands';
-import type { Project } from './types';
 
 describe('project zip', () => {
   it('round-trips a document and its blobs, and migrates an older document on the way in', async () => {
@@ -21,12 +20,25 @@ describe('project zip', () => {
     expect(Array.from(back.blobs.get('audio-t1')!)).toEqual([0.25, -0.5, 0.125]);
     expect(Array.from(back.blobs.get('frames-t1')!)).toEqual([1, 2, 3, 4]);
 
-    const old = { ...doc, schema: 1 } as Project;
+    expect(back.savedSchema).toBe(doc.schema);
+
+    // A schema 1 document: no morph lanes, no metronome, 96-value states and kit slot sets.
+    const old = JSON.parse(JSON.stringify(doc)) as Record<string, any>;
+    old.schema = 1;
     for (const s of old.sections) for (const c of Object.values(s.clips)) delete (c as { morph?: unknown }).morph;
+    delete old.metro;
+    for (const l of old.layers) {
+      delete l.patch;
+      for (const st of l.states) { st.base = new Array(96).fill(0.5); delete st.values; }
+      l.kit = l.kit.map((k: { cents: number }) => ({ cents: k.cents, params: new Array(96).fill(0.5) }));
+    }
     const packed = zipStore([{ name: 'project.json', data: new TextEncoder().encode(JSON.stringify(old)) }]);
     const migrated = await importProject(packed);
-    expect(migrated.doc.schema).toBe(3);
+    expect(migrated.savedSchema).toBe(1);
+    expect(migrated.doc.schema).toBe(4);
     expect(migrated.doc.metro?.bar).toBe(4);
+    expect(migrated.doc.layers[0].patch.voices.length).toBe(1);
+    expect(migrated.doc.layers[0].states[0].values['partials1.tilt']).toBe(0.5);
   });
 
   it('rejects a path that leaves the archive', async () => {

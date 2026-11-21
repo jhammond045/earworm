@@ -3,8 +3,9 @@
 // crates/klont/tests/m4.rs on the native side.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { P } from '../gen/params';
-import { encodeGrain, encodeStates } from './blobs';
+import { classicPatch } from '../synth/classic';
+import { layoutOf } from '../synth/patch';
+import { encodeSample, encodeStates } from './blobs';
 import { encodeLayer } from './layer';
 import * as pr from './protocol';
 import { Core } from './render-core';
@@ -47,9 +48,10 @@ function noteTrack(morph?: TrackMorph[]) {
 function grainRender(mix: number, source: Float32Array | null): Float32Array {
   const core = makeCore();
   try {
-    const layer = encodeLayer({ kind: 'melody', base: { 'src.harm_mix': 0, 'src.noise_mix': 0, 'src.grain_mix': mix } });
-    expect(core.load(pr.LOAD_LAYER, 0, layer)).toBe(pr.LOAD_OK);
-    if (source) expect(core.load(pr.LOAD_GRAIN, 0, encodeGrain(SR, A4, source))).toBe(pr.LOAD_OK);
+    const layer = encodeLayer({ kind: 'melody', base: { 'src.harm_mix': 0, 'src.noise_mix': 0, 'src.grain_mix': mix } }, 0);
+    expect(core.load(pr.LOAD_PATCH, 0, layer.patch)).toBe(pr.LOAD_OK);
+    expect(core.load(pr.LOAD_LAYER, 0, layer.layer)).toBe(pr.LOAD_OK);
+    if (source) expect(core.load(pr.LOAD_SAMPLE, 0, encodeSample(SR, A4, source))).toBe(pr.LOAD_OK);
     render(core, SR / 2); // let the 15 ms parameter glides settle
     expect(core.load(pr.LOAD_TRACK, 0, noteTrack())).toBe(pr.LOAD_OK);
     core.send([[pr.MSG_PLAY, 0, 0, 0, 0]]);
@@ -83,24 +85,28 @@ describe('klont grain cloud (wasm)', () => {
     expect(grainRender(1, src)).toEqual(grainRender(1, src));
   });
 
-  it('rejects bad grain blobs and takes the largest source', () => {
+  it('rejects bad sample blobs and takes a long source', () => {
     const core = makeCore();
-    const good = encodeGrain(SR, A4, sine(440, 0.1, 0.5));
-    expect(core.load(pr.LOAD_GRAIN, 8, good)).toBe(pr.LOAD_BAD_SLOT);
-    expect(core.load(pr.LOAD_GRAIN, 0, good.slice(0, good.byteLength - 4))).toBe(pr.LOAD_MALFORMED);
-    expect(core.load(pr.LOAD_GRAIN, 0, new ArrayBuffer(16))).toBe(pr.LOAD_BAD_MAGIC);
-    expect(core.load(pr.LOAD_GRAIN, 0, encodeGrain(SR, A4, new Float32Array(pr.GRAIN_MAX_SAMPLES)))).toBe(pr.LOAD_OK);
+    const good = encodeSample(SR, A4, sine(440, 0.1, 0.5));
+    expect(core.load(pr.LOAD_SAMPLE, pr.MAX_SAMPLES, good)).toBe(pr.LOAD_BAD_SLOT);
+    expect(core.load(pr.LOAD_SAMPLE, 0, good.slice(0, good.byteLength - 4))).toBe(pr.LOAD_MALFORMED);
+    expect(core.load(pr.LOAD_SAMPLE, 0, new ArrayBuffer(16))).toBe(pr.LOAD_BAD_MAGIC);
+    expect(core.load(pr.LOAD_SAMPLE, 0, encodeSample(SR, A4, new Float32Array(1_000_000)))).toBe(pr.LOAD_OK);
     core.free();
   });
 });
 
 describe('klont states and morph (wasm)', () => {
+  // Every engine layer starts on the classic melody patch.
+  const lay = layoutOf(classicPatch('melody'));
+  const CUT = lay.index.get('filter1.cutoff')!;
   function states(cutoffs: number[]) {
     return encodeStates(
+      lay.keys.length,
       cutoffs.map((c) => {
-        const base = new Float32Array(96).fill(0.5);
-        base[P['filt.cutoff']] = c;
-        return { base, macros: new Array(8).fill(0.5), influenceAmount: 0 };
+        const values = lay.init.slice();
+        values[CUT] = c;
+        return { values, macros: new Array(8).fill(0.5), influenceAmount: 0 };
       }),
     );
   }
@@ -108,7 +114,7 @@ describe('klont states and morph (wasm)', () => {
   it('loads a states blob and a v2 track, and the stored cutoff follows the lane', () => {
     const core = makeCore();
     try {
-      expect(core.load(pr.LOAD_LAYER, 0, encodeLayer({ kind: 'melody' }))).toBe(pr.LOAD_OK);
+      expect(core.load(pr.LOAD_LAYER, 0, encodeLayer({ kind: 'melody' }).layer)).toBe(pr.LOAD_OK);
       expect(core.load(pr.LOAD_STATES, 0, states([0.2, 0.8]))).toBe(pr.LOAD_OK);
       const markers: TrackMorph[] = [
         { t: 0, state: 0, lenMs: 0, shape: MORPH_LINE },
@@ -122,7 +128,7 @@ describe('klont states and morph (wasm)', () => {
       const cutoff: number[] = [];
       for (let i = 0; i < 190; i++) {
         core.render(BLOCK);
-        cutoff.push(core.meter()[pr.M_STORED + P['filt.cutoff']]);
+        cutoff.push(core.meter()[pr.M_STORED + CUT]);
       }
       expect(Math.abs(cutoff[60] - 0.2)).toBeLessThan(1e-4);
       expect(cutoff[125]).toBeGreaterThan(0.4);
@@ -149,7 +155,7 @@ describe('klont states and morph (wasm)', () => {
       const cutoff: number[] = [];
       for (let i = 0; i < 150; i++) {
         core.render(BLOCK);
-        cutoff.push(core.meter()[pr.M_STORED + P['filt.cutoff']]);
+        cutoff.push(core.meter()[pr.M_STORED + CUT]);
       }
       expect(Math.abs(cutoff[98] - 0.2)).toBeLessThan(1e-4);
       expect(cutoff[105]).toBeGreaterThan(0.7);

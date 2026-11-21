@@ -4,7 +4,7 @@
 // chunks, which is where a worker sees cancel messages.
 
 import { P, toNorm } from '../gen/params';
-import { BUDGET_MAX, CONTROL_CAP, LAYER_LEVEL, LOAD_CURVE, LOAD_GRAIN, LOAD_LAYER, LOAD_OK, LOAD_STATES, LOAD_TOO_BIG, LOAD_TRACK, MAX_LAYERS, MSG_BYTES,
+import { BUDGET_MAX, CONTROL_CAP, LAYER_LEVEL, LOAD_CURVE, LOAD_LAYER, LOAD_OK, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TOO_BIG, LOAD_TRACK, MAX_LAYERS, MSG_BYTES,
   MSG_NOTE_ON, MSG_PLAY, MSG_SET_BUDGET, MSG_SET_LAYER, MSG_SET_PARAM, M_ACTIVE_PARTIALS, M_PEAK_L, M_PEAK_R, M_PLAYING,
   METER_LEN, SET_BASE, VOICES_PER_LAYER, encodeMessage, readBufferTable, type BufferTable, type EngineExports, type Msg } from './protocol';
 
@@ -17,10 +17,13 @@ const TAIL_S = 10;
 export interface SongBlobs {
   track: ArrayBuffer;
   /** Layer blobs by layer index; missing or null entries are skipped. */
+  /** LOAD_PATCH blobs by layer index, loaded before the layers (a slot without one keeps the
+   *  engine's classic melody patch). */
+  patches?: (ArrayBuffer | null | undefined)[];
   layers: (ArrayBuffer | null | undefined)[];
   curves?: { slot: number; buf: ArrayBuffer }[];
-  /** LOAD_GRAIN blobs by layer slot, loaded after the layers. */
-  grains?: { slot: number; buf: ArrayBuffer }[];
+  /** LOAD_SAMPLE blobs by sample id (layer i's grains read sample i), loaded after the layers. */
+  samples?: { slot: number; buf: ArrayBuffer }[];
   /** LOAD_STATES blobs, so a morph lane is in the file and not only state 0. */
   states?: { slot: number; buf: ArrayBuffer }[];
 }
@@ -108,10 +111,11 @@ export async function renderSong(ex: EngineExports, song: SongBlobs, opts: Rende
   const sr = opts.sampleRate ?? RENDER_RATE;
   const core = new Core(ex, sr, CHUNK);
   try {
+    song.patches?.forEach((b, i) => { if (b) check(`patch ${i}`, core.load(LOAD_PATCH, i, b)); });
     song.layers.forEach((b, i) => { if (b) check(`layer ${i}`, core.load(LOAD_LAYER, i, b)); });
     for (const s of song.states ?? []) check(`states ${s.slot}`, core.load(LOAD_STATES, s.slot, s.buf));
     for (const c of song.curves ?? []) check(`curve ${c.slot}`, core.load(LOAD_CURVE, c.slot, c.buf));
-    for (const g of song.grains ?? []) check(`grain ${g.slot}`, core.load(LOAD_GRAIN, g.slot, g.buf));
+    for (const g of song.samples ?? []) check(`sample ${g.slot}`, core.load(LOAD_SAMPLE, g.slot, g.buf));
     let track = song.track;
     if (opts.once ?? true) {
       track = track.slice(0);
