@@ -1304,3 +1304,38 @@ impl Voice {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intensity_reads_the_documented_bands() {
+        let mut c = [0.0f32; frame::MAX_BANDS];
+        dsp::bands::band_centres(N_BANDS, &mut c);
+        for i in INTENSITY_LO {
+            assert!((250.0..850.0).contains(&c[i]), "low band {i} at {} Hz", c[i]);
+        }
+        for i in INTENSITY_HI {
+            assert!((2000.0..6500.0).contains(&c[i]), "high band {i} at {} Hz", c[i]);
+        }
+    }
+
+    #[test]
+    fn intensity_maps_the_tilt_to_0_1() {
+        let mut b = [0.0f32; N_BANDS];
+        assert_eq!(intensity(&b), 0.5, "the singer's usual tilt");
+        for i in INTENSITY_HI {
+            b[i] = 5.0;
+        }
+        assert!((intensity(&b) - 0.75).abs() < 1e-6, "5 dB brighter");
+        for i in INTENSITY_LO {
+            b[i] = 20.0;
+        }
+        assert_eq!(intensity(&b), 0.0, "clamped");
+        b[0] = f32::NAN;
+        assert_eq!(intensity(&b), 0.0, "bands outside both ranges do not count");
+        b[INTENSITY_HI.start().to_owned()] = f32::NAN;
+        assert!(intensity(&b).is_nan());
+    }
+}

@@ -9,6 +9,9 @@ import type { Sound } from '../m1/layer';
 import { BEAT_KITS, MELODY_SOUNDS } from '../m2/sounds';
 import type { Op, Path } from './patch';
 import { classicPatch, valuesFromVocab, vocabFromValues, withVocab } from '../synth/classic';
+import { isLayerSource, layoutOf, patchBlob, type Patch, type Route } from '../synth/patch';
+import { amountKey, amountNorm, checkRoute, defaultAmount, findRoute, makeRoute, nextRouteId, withRoute, withRouteFields, withoutRoute,
+  type RouteFields, type Scope } from '../synth/routes';
 import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro } from './types';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MorphShape, Note, Project, Section, State, Take, Tune } from './types';
@@ -797,6 +800,85 @@ export const commands = {
     return ops;
   },
 
+  /** Set values of a state by key (normalized 0..1): the knobs of the Patch view. */
+  setValues(doc: Project, a: { layer: string; state: string; values: Record<string, number> }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const si = stateIdx(l, a.state);
+    const st = l.states[si];
+    const lay = layoutOf(l.patch);
+    const next = { ...st.values };
+    let changed = false;
+    for (const [k, v] of Object.entries(a.values)) {
+      if (!lay.index.has(k)) fail(`layer "${l.name}" has no value ${k}`);
+      const x = inRange(v, k, 0, 1);
+      if (next[k] !== x) { next[k] = x; changed = true; }
+    }
+    return changed ? [{ op: 'set', path: ['layers', i, 'states', si, 'values'], value: next }] : [];
+  },
+
+  /** Add a modulation route (docs/synth.md "Modulation"). A per-layer source makes a layer route
+   *  whose target is a full key; any other source makes a route of voice patch `slot` (0 unless a
+   *  beat layer's kit slot) whose target is that patch's key with or without its kit prefix.
+   *  `amount` (real, -1..1) goes into every state. A route from a layer LFO the patch lacks adds it. */
+  addRoute(doc: Project, a: { layer: string; slot?: number; route: RouteFields & { source: string; target: string; id?: string }; amount?: number }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const p = l.patch;
+    const slot = a.slot ?? 0;
+    if (!Number.isInteger(slot) || slot < 0 || slot >= p.voices.length) fail(`slot must be a whole number from 0 to ${p.voices.length - 1}`);
+    const scope: Scope = isLayerSourceName(a.route.source) ? 'layer' : slot;
+    const id = a.route.id ?? nextRouteId(p);
+    if (findRoute(p, scope, id)) fail(`route id "${id}" already exists`);
+    const pre = typeof scope === 'number' && p.voices.length > 1 ? `k${scope + 1}.` : '';
+    let target = str(a.route.target, 'route target');
+    if (pre && target.startsWith(pre)) target = target.slice(pre.length);
+    const mods = typeof scope === 'number' ? p.voices[scope].mods : [];
+    const r: Route = makeRoute(id, str(a.route.source, 'route source'), target, { ...a.route, id, target } as RouteFields, mods);
+    const cap = scope === 'layer' ? 64 : 48;
+    if ((scope === 'layer' ? p.routes : p.voices[scope].routes).length >= cap) fail(`a ${scope === 'layer' ? 'layer' : 'voice patch'} has at most ${cap} routes`);
+    checkRoute(p, r, scope);
+    const next = withRoute(p, r, scope);
+    compiles(next);
+    const amount = amountNorm(inRange(a.amount ?? defaultAmount(r.target), 'route amount', -1, 1));
+    const key = amountKey(next, scope, id);
+    return [
+      { op: 'set', path: ['layers', i, 'patch'], value: next },
+      ...l.states.map((st, si) => ({ op: 'set' as const, path: ['layers', i, 'states', si, 'values'], value: { ...st.values, [key]: amount } })),
+    ];
+  },
+
+  /** Change a route's shaper (range, curve, points, smoothing, latch, polarity, mode, group, via). */
+  setRoute(doc: Project, a: { layer: string; scope: Scope; id: string; fields: RouteFields }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const old = findRoute(l.patch, a.scope, a.id) ?? fail(`no route ${a.id}`);
+    if ('source' in a.fields || 'target' in a.fields) fail('a route keeps its source and target; remove it and add another');
+    const r: Route = { ...old, ...a.fields, id: a.id };
+    if (JSON.stringify(r) === JSON.stringify(old)) return [];
+    checkRoute(l.patch, r, a.scope);
+    const next = withRouteFields(l.patch, a.scope, a.id, a.fields);
+    compiles(next);
+    return [{ op: 'set', path: ['layers', i, 'patch'], value: next }];
+  },
+
+  /** Remove a route and its amount from every state. */
+  removeRoute(doc: Project, a: { layer: string; scope: Scope; id: string }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    if (!findRoute(l.patch, a.scope, a.id)) fail(`no route ${a.id}`);
+    const next = withoutRoute(l.patch, a.scope, a.id);
+    compiles(next);
+    const key = amountKey(l.patch, a.scope, a.id);
+    return [
+      { op: 'set', path: ['layers', i, 'patch'], value: next },
+      ...l.states.map((st, si) => {
+        const { [key]: _gone, ...values } = st.values;
+        return { op: 'set' as const, path: ['layers', i, 'states', si, 'values'], value: values };
+      }),
+    ];
+  },
+
   /** Switch to an older take in the clip's stack. The caller rebuilds notes/hits (setClip). */
   selectTake(doc: Project, a: { section: string; layer: string; take: string }): Op[] {
     const w = where(doc, a.section, a.layer);
@@ -805,6 +887,17 @@ export const commands = {
     return c.take === a.take ? [] : [{ op: 'set', path: [...w.clipPath, 'take'], value: a.take }];
   },
 };
+
+/** The patch compiles (the compiler's own checks: known sources, targets, caps on route targets). */
+function compiles(p: Patch): void {
+  try {
+    patchBlob(p, 0);
+  } catch (e) {
+    fail(e instanceof Error ? e.message.replace(/^patch: /, '') : String(e));
+  }
+}
+
+const isLayerSourceName = (s: string) => isLayerSource(s);
 
 export type CommandName = keyof typeof commands;
 export type CommandArgs<K extends CommandName> = Parameters<(typeof commands)[K]>[1];

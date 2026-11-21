@@ -265,7 +265,7 @@ pub struct Layer {
     held_pitch: f32,
     /// Steps 1 to 3 (before the layer routes).
     pre: Box<[f32; MAX_VALUES]>,
-    /// Some layer route's source moves by itself, so step 4 runs every tick.
+    /// Some layer route's source moves by itself (or is smoothed), so step 4 runs every tick.
     lr_dynamic: bool,
     /// Some layer route reads the layer's features.
     lr_features: bool,
@@ -497,7 +497,8 @@ impl Layer {
                 }
             }
             let moves = |s: u16| s != SRC_NONE && s != SRC_MACRO;
-            self.lr_dynamic |= moves(r.source) || moves(r.via);
+            // A smoothed route keeps moving after its source steps.
+            self.lr_dynamic |= moves(r.source) || moves(r.via) || r.smoothed();
             self.lr_features |= is_feature_source(r.source) || is_feature_source(r.via);
         }
         self.lr_smooth = [f32::NAN; MAX_LAYER_ROUTES];
