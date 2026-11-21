@@ -50,6 +50,7 @@ import { tuneFromTake } from './tune';
 import { factoryPresets, parsePreset, presetFileName, presetFromLayer, presetMatches, presetText, type PresetFile } from '../presets/presets';
 import { Ribbon } from '../live/ribbon';
 import { SynthPanel } from './synth-ui';
+import { PerformPanel } from './perform';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SHAPE: HitShape = { attack: 0.004, burst: 0.4, cents: null, bend: 0, hold: 0.05, vowel: 0.4, tone: 0.6, endStop: 0, endClick: 0 };
@@ -121,7 +122,10 @@ async function main(): Promise<void> {
   }
   const synth = new SynthPanel(app, () => layer(), (k) => acted(k), {
     patch: $('soundPatch'), mod: $('soundMod'), pick: $<HTMLSelectElement>('modPick'), pickBox: $('modPickBox'),
-    views: [...document.querySelectorAll<HTMLButtonElement>('[data-view]')], simple: $('soundSimple'),
+    views: [...document.querySelectorAll<HTMLButtonElement>('[data-view]')], simple: $('soundSimple'), perform: $('soundPerform'),
+  });
+  synth.perform = new PerformPanel(app, $('soundPerform'), {
+    layer: () => layer(), listening: (id) => synth.listening(id), toggleListen: (id) => synth.toggleListen(id), kv,
   });
 
   function paintTour(): void {

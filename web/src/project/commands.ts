@@ -15,9 +15,9 @@ import { amountKey, amountNorm, checkRoute, defaultAmount, findRoute, makeRoute,
 import * as S from '../synth/structure';
 import type { ChannelFxType, Port, VoiceModuleType } from '../synth/patch';
 import { parsePreset, type PresetFile } from '../presets/presets';
-import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro } from './types';
+import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
-  MorphShape, Note, Project, Section, State, Take, Tune } from './types';
+  MidiMapping, MorphShape, Note, Perform, PerfTarget, Project, Section, State, Take, Tune } from './types';
 
 const PARAMS = 96;
 const MAX_CENTS = 12000;
@@ -227,7 +227,7 @@ function idSet(ids: string[], have: { id: string }[], what: string): Set<string>
 export interface SectionFields { name: string; feel: Feel; beats: number; seconds: number; bpm: number; repeats: number; rampMs: number }
 export interface LayerFields {
   name: string; level: number; pan: number; mute: boolean; color: number; follow: number;
-  depth: Partial<GestureDepth>; tune: Partial<Tune>;
+  depth: Partial<GestureDepth>; tune: Partial<Tune>; sceneMs: number;
 }
 type WithId<T> = { id?: string } & Omit<T, 'id'>;
 
@@ -349,6 +349,44 @@ export const commands = {
     return ops;
   },
 
+  /** Learn: control change `cc` on `channel` of input `device` sets `target` from now on. It
+   *  replaces whatever that controller set before. */
+  learnMidi(doc: Project, a: MidiMapping): Op[] {
+    const m = checkMapping(doc, a);
+    const pf = doc.perform ?? defaultPerform();
+    const same = (x: MidiMapping) => x.device === m.device && x.channel === m.channel && x.cc === m.cc;
+    const old = pf.map.find(same);
+    if (old && old.target.layer === m.target.layer && old.target.key === m.target.key) return [];
+    return [{ op: 'set', path: ['perform'], value: { ...pf, map: [...pf.map.filter((x) => !same(x)), m] } }];
+  },
+
+  /** Forget what a controller sets. */
+  forgetMidi(doc: Project, a: { device: string; channel: number; cc: number }): Op[] {
+    const pf = doc.perform;
+    if (!pf) return [];
+    const map = pf.map.filter((x) => !(x.device === a.device && x.channel === a.channel && x.cc === a.cc));
+    return map.length === pf.map.length ? [] : [{ op: 'set', path: ['perform'], value: { ...pf, map } }];
+  },
+
+  /** Which layer a MIDI channel plays ('' for the selected layer), and what the XY pad moves. */
+  setPerform(doc: Project, a: { channel?: number; layer?: string; xy?: [PerfTarget | null, PerfTarget | null] }): Op[] {
+    const pf = doc.perform ?? defaultPerform();
+    let next: Perform = pf;
+    if (a.channel !== undefined) {
+      const ch = whole(a.channel, 'MIDI channel', 0, MIDI_CHANNELS - 1);
+      const layer = str(a.layer ?? '', 'layer');
+      if (layer) layIdx(doc, layer);
+      const channels = Array.from({ length: MIDI_CHANNELS }, (_, i) => pf.channels[i] ?? '');
+      channels[ch] = layer;
+      next = { ...next, channels };
+    }
+    if (a.xy !== undefined) {
+      if (!Array.isArray(a.xy) || a.xy.length !== 2) fail('the XY pad needs two targets');
+      next = { ...next, xy: [a.xy[0] && checkTarget(doc, a.xy[0]), a.xy[1] && checkTarget(doc, a.xy[1])] };
+    }
+    return JSON.stringify(next) === JSON.stringify(doc.perform) ? [] : [{ op: 'set', path: ['perform'], value: next }];
+  },
+
   /** Drop take records nothing in the document still uses. The caller deletes the blobs. */
   forgetTakes(doc: Project, a: { ids: string[] }): Op[] {
     if (!Array.isArray(a.ids) || a.ids.length === 0) return [];
@@ -440,6 +478,16 @@ export const commands = {
   removeLayer(doc: Project, a: { id: string }): Op[] {
     const i = layIdx(doc, a.id);
     const ops: Op[] = [{ op: 'rm', path: ['layers', i] }];
+    const pf = doc.perform;
+    if (pf) {
+      const keep = (t: PerfTarget | null) => (t && t.layer === a.id ? null : t);
+      const next: Perform = {
+        map: pf.map.filter((m) => m.target.layer !== a.id),
+        channels: pf.channels.map((c) => (c === a.id ? '' : c)),
+        xy: [keep(pf.xy[0]), keep(pf.xy[1])],
+      };
+      if (JSON.stringify(next) !== JSON.stringify(pf)) ops.push({ op: 'set', path: ['perform'], value: next });
+    }
     doc.sections.forEach((s, si) => {
       if (hasClip(s, a.id)) ops.push({ op: 'set', path: ['sections', si, 'clips', a.id], value: undefined });
     });
@@ -457,6 +505,7 @@ export const commands = {
     if (a.mute !== undefined) put(['mute'], typeof a.mute === 'boolean' ? a.mute : fail('mute must be true or false'), l.mute);
     if (a.color !== undefined) put(['color'], Number.isInteger(a.color) && a.color >= 0 && a.color <= 0xffffff ? a.color : fail('color must be 0xRRGGBB'), l.color);
     if (a.follow !== undefined) put(['follow'], inRange(a.follow, 'follow', 0, 1), l.follow);
+    if (a.sceneMs !== undefined) put(['sceneMs'], inRange(a.sceneMs, 'scene time', 0, 60000), l.sceneMs);
     for (const [k, v] of Object.entries(a.depth ?? {})) {
       if (!(k in l.depth)) fail(`unknown depth field "${k}"`);
       put(['depth', k], inRange(v, `depth ${k}`, 0, 1), l.depth[k as keyof GestureDepth]);
@@ -966,6 +1015,24 @@ export const commands = {
     return c.take === a.take ? [] : [{ op: 'set', path: [...w.clipPath, 'take'], value: a.take }];
   },
 };
+
+/** A target that names a layer of `doc` and a value of its patch or one of its macros. */
+function checkTarget(doc: Project, t: PerfTarget): PerfTarget {
+  if (!t || typeof t !== 'object') fail('a target needs a layer and a key');
+  const l = doc.layers[layIdx(doc, str(t.layer, 'target layer'))];
+  const key = str(t.key, 'target key');
+  if (!/^macro[1-8]$/.test(key) && !layoutOf(l.patch).index.has(key)) fail(`layer "${l.name}" has no value "${key}"`);
+  return { layer: t.layer, key };
+}
+
+function checkMapping(doc: Project, a: MidiMapping): MidiMapping {
+  return {
+    device: str(a.device, 'MIDI device'),
+    channel: whole(a.channel, 'MIDI channel', 0, MIDI_CHANNELS - 1),
+    cc: whole(a.cc, 'controller number', 0, 127),
+    target: checkTarget(doc, a.target),
+  };
+}
 
 /** A structure edit to layer `layerId`: the new patch, and every state's values for it (new keys at
  *  their starting values, keys that went dropped). [] when nothing changed. */

@@ -26,7 +26,7 @@ import { allRoutes, amountKey, amountNorm, findRoute, kitPrefix, routesInto, typ
 import { toNorm, toReal } from '../synth/values';
 import type { Advance } from './tutorials';
 
-export type SoundView = 'simple' | 'patch' | 'mod';
+export type SoundView = 'simple' | 'patch' | 'mod' | 'perform';
 
 const FEATURE_NAMES: Record<string, string> = {
   pitch: 'pitch', volume: 'volume', openness: 'openness', breath: 'breath', hardness: 'hardness', onset: 'onset',
@@ -72,12 +72,18 @@ function readout(desc: number, norm: number): string {
 }
 
 /** "env1.attack" -> "attack"; "k2.filter1.cutoff" -> "filter1 cutoff". */
-function keyLabel(key: string): string {
+export function keyLabel(key: string): string {
   return key.replace(/^k\d\./, '').replace(/^route\./, 'amount of ').replace(/\./g, ' ').replace(/_/g, ' ');
 }
 
 const SCOPE_METER = (scope: Scope, i: number) => (scope === 'layer' ? 192 + i : scope * 48 + i);
 const LS_FEATURE = 8 + 3 + 2;
+
+/** The selected layer's sung feature `name` from the meter block (intensity sits where the vowel would). */
+export function layerFeature(m: Float32Array, name: string): number {
+  const f = FEATURES.indexOf(name as (typeof FEATURES)[number]);
+  return m[M_LAYER_SRC + LS_FEATURE + (f === 8 ? 7 : f)];
+}
 
 /** A card of the Patch view; `module`, `mod` and `fx` name what its structure controls edit. */
 interface Card { title: string; keys: string[]; env?: string; module?: string; mod?: string; fx?: string }
@@ -115,7 +121,7 @@ export class SynthPanel {
     private app: App,
     private layer: () => Layer | undefined,
     private acted: (k: Advance) => void,
-    private els: { patch: HTMLElement; mod: HTMLElement; pick: HTMLSelectElement; pickBox: HTMLElement; views: HTMLButtonElement[]; simple: HTMLElement },
+    private els: { patch: HTMLElement; mod: HTMLElement; pick: HTMLSelectElement; pickBox: HTMLElement; views: HTMLButtonElement[]; simple: HTMLElement; perform: HTMLElement },
   ) {
     els.views.forEach((b) => b.addEventListener('click', () => this.setView(b.dataset.view as SoundView)));
     els.pick.addEventListener('change', () => {
@@ -132,7 +138,8 @@ export class SynthPanel {
     this.els.simple.hidden = v !== 'simple';
     this.els.patch.hidden = v !== 'patch';
     this.els.mod.hidden = v !== 'mod';
-    this.els.pickBox.hidden = v === 'simple';
+    this.els.perform.hidden = v !== 'perform';
+    this.els.pickBox.hidden = v === 'simple' || v === 'perform';
     this.render();
     if (v !== 'simple') this.acted('view');
   }
@@ -146,6 +153,18 @@ export class SynthPanel {
     if (this.slot >= l.patch.voices.length) this.slot = 0;
     if (this.view === 'patch') this.renderPatch(l);
     if (this.view === 'mod') this.renderMod(l);
+    if (this.view === 'perform') this.perform?.render();
+  }
+
+  /** The Perform view (perform.ts), set by the page. */
+  perform: { render(): void; frame(m: Float32Array | null): void } | null = null;
+
+  /** Listen is a session setting, like Arm: not saved with the project. */
+  listening(id: string): boolean { return this.listen.get(id) ?? false; }
+  toggleListen(id: string): void {
+    this.listen.set(id, !this.listening(id));
+    this.modBuilt = null;
+    this.render();
   }
 
   // ---- engine messages that are not in the document: the selected layer (meters) and Listen
@@ -583,11 +602,7 @@ export class SynthPanel {
     b.setAttribute('aria-pressed', String(on));
     b.textContent = on ? 'Listening' : 'Listen';
     b.title = 'The mic drives this layer\'s sung features while its notes come from elsewhere.';
-    b.addEventListener('click', () => {
-      this.listen.set(l.id, !(this.listen.get(l.id) ?? false));
-      this.modBuilt = null;
-      this.render();
-    });
+    b.addEventListener('click', () => this.toggleListen(l.id));
     row.append(b);
     const meters = document.createElement('div');
     meters.className = 'meters feat';
@@ -941,6 +956,7 @@ export class SynthPanel {
 
   /** Live parts, every animation frame or so: thumbs, route outputs, feature meters. */
   frame(m: Float32Array | null): void {
+    if (this.view === 'perform') { this.perform?.frame(m); return; }
     if (!m || this.view === 'simple') return;
     const l = this.layer();
     if (!l) return;
@@ -960,9 +976,7 @@ export class SynthPanel {
         r.bar.style.width = Number.isFinite(y) ? `${clamp01(y) * 100}%` : '0';
       }
       this.els.mod.querySelectorAll<HTMLElement>('.feat .meter').forEach((el) => {
-        const f = FEATURES.indexOf(el.dataset.feature as (typeof FEATURES)[number]);
-        const slot = f === 8 ? 7 : f;
-        const x = m[M_LAYER_SRC + LS_FEATURE + slot];
+        const x = layerFeature(m, el.dataset.feature!);
         const fill = el.querySelector<HTMLElement>('.fill')!;
         const num = el.querySelector<HTMLElement>('.num')!;
         if (el.dataset.feature === 'pitch') {
@@ -990,7 +1004,7 @@ export class SynthPanel {
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const fmt = (x: number) => (Math.abs(x) >= 100 ? x.toFixed(0) : Math.abs(x) >= 1 ? x.toFixed(1) : x.toFixed(2));
 
-function noteName(cents: number): string {
+export function noteName(cents: number): string {
   const n = Math.round(cents / 100);
   return `${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][((n % 12) + 12) % 12]}${Math.floor(n / 12)}`;
 }

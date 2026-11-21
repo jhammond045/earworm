@@ -63,7 +63,30 @@ export interface Project {
   loop: boolean;
   /** Click settings. Missing on a document that has not been migrated yet. */
   metro?: Metro;
+  /** Live play (docs/synth.md "Live use"): the MIDI controller map, which layer each MIDI
+   *  channel plays, and what the XY pad moves. Missing means none of them is set. */
+  perform?: Perform;
 }
+
+/** What a MIDI controller or the XY pad sets: a value of a layer's patch by key, or one of the
+ *  layer's macros ("macro1" to "macro8"), in the state being edited. */
+export interface PerfTarget { layer: string; key: string }
+
+/** One learned controller: control change `cc` on MIDI `channel` (0..15) of the input named `device`. */
+export interface MidiMapping { device: string; channel: number; cc: number; target: PerfTarget }
+
+export interface Perform {
+  map: MidiMapping[];
+  /** Layer id each MIDI channel (index 0..15) plays; '' or missing: the selected layer. */
+  channels: string[];
+  /** The XY pad's two values, across and up. */
+  xy: [PerfTarget | null, PerfTarget | null];
+}
+
+export const MIDI_CHANNELS = 16;
+export const defaultPerform = (): Perform => ({ map: [], channels: [], xy: [null, null] });
+/** Scene time when a layer has none, ms. */
+export const SCENE_MS = 400;
 
 export interface Section {
   id: string;
@@ -150,6 +173,8 @@ export interface Layer {
   kit: KitSlot[];
   /** Set while a match is applied and not yet committed. */
   influence?: Influence;
+  /** How long a scene takes to morph to this layer's state, ms. Missing: SCENE_MS. */
+  sceneMs?: number;
 }
 
 export interface Note {
