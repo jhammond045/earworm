@@ -1,6 +1,6 @@
 # Synth engine: patches and modulation
 
-Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page. Stage S3 is built; [S3.md](S3.md) does the same for it.
+Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page. Stage S3 is built; [S3.md](S3.md) does the same for it. Stage S4 is built; [S4.md](S4.md) does the same for it.
 
 Today a layer's sound is one fixed chain, the Klont voice, set by 96 numbers, and the app offers a short list of presets to pick from plus eight macros. This page turns that into an open patch: a small graph of modules the user can add, remove and wire, and one modulation system in which every envelope, LFO, knob and sung feature (pitch, intensity, volume, hardness) can drive any synth or channel-effect parameter. The aim is a tool that works as a real-time DAW and as an instrument for improvising.
 
@@ -458,7 +458,7 @@ The LLM `/api/sound` endpoint is not built. When it is, its schema is generated 
   - **MIDI keys** play the selected layer, or a layer chosen per MIDI channel. On a beat layer, notes 36, 38, 42 and 46 (the General MIDI kick, snare, closed and open hat, which match the slot names) play kit slots 1 to 4. MIDI export, when built, should use the same four.
   - **MIDI controllers** are mapped to values with Learn: press Learn, touch a control on screen, move the controller. A controller sets the value outright, like turning the on-screen knob, and is committed to the document as one undo step after it rests for 500 ms.
   - **Mod wheel, pitch bend and pressure** are sources, routed with amounts like any other source, because they are expression rather than settings.
-  - **On-screen** keys, an XY pad (two values chosen by the user) and the macro knobs stand in where there is no MIDI device. Web MIDI needs a permission prompt and is missing in Safari; check current support before stage S4. Without it, the on-screen controls still work.
+  - **On-screen** keys, an XY pad (two values chosen by the user) and the macro knobs stand in where there is no MIDI device. Web MIDI needs a permission prompt. Checked for stage S4 (Nov 2026): Chrome, Edge and Firefox have it; Safari still does not, on macOS or iOS (only a third-party extension adds it). Without it, the on-screen controls still work.
 - **Scenes.** The layer's states, shown as buttons. Tapping one morphs to it over the layer's scene time. When the transport plays a clip that has morph markers, the lane wins; scenes act when it has none or the transport is stopped.
 - **Gesture mapping.** The sung features are sources, so mapping a gesture is adding a route. Pick a source in the matrix, then click any knob; the route starts with a sensible range and amount.
 
@@ -478,10 +478,10 @@ There is no mode switch. Both run at once: a layer can play its clip while anoth
 
 ## Interface sketch
 
-The Sound panel keeps today's simple view and gains three more: Patch, Mod and Channel. A Perform view joins the main views.
+The Sound panel keeps today's simple view and gains Patch and Mod; the channel's cards sit in the Patch view after the voice's (stage S3). A Perform view joins the main views.
 
 ```text
-┌ Sound ── [Simple] [Patch] [Mod] [Channel] ───────────────────────────────┐
+┌ Sound ── [Simple] [Patch] [Mod] ─────────────────────────────────────────┐
 │ Simple: Preset ▾  Level  Pan  Mute · States · Macros · Gestures · Tune ·  │
 │         Influence — as today. Gestures sliders are the five group depths. │
 └───────────────────────────────────────────────────────────────────────────┘
@@ -529,7 +529,7 @@ The Sound panel keeps today's simple view and gains three more: Patch, Mod and C
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The Channel view is the effect chain left to right, with add, remove, reorder and bypass on each card, then width, level and pan.
+The channel cards in the Patch view are the effect chain in order, with add, remove, earlier, later and bypass on each card, then width. Level and pan stay in the Simple view.
 
 ## Existing projects and presets
 

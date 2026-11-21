@@ -8,7 +8,10 @@
 //!    each control tick which two states its clip's morph lane blends and how
 //!    far (`set_morph`); the blend of their values, macros and Influence
 //!    amount replaces the layer's own. A steady blend marks nothing dirty.
-//!    Without a marker (or clip) the engine asks for state 0. A layer that
+//!    A scene (MSG_MORPH_TO, `morph_to`) blends from where the layer was to
+//!    one state over a time, and is used instead when the clip has no marker
+//!    or the transport is stopped. Without a marker (or clip) and without a
+//!    scene the engine asks for state 0. A layer that
 //!    never got states keeps what `LOAD_LAYER` and live messages set. A new
 //!    patch starts every value at the patch's starting value.
 //! 2. Automation: arrives with recording (stage S5).

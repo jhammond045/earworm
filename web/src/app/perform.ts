@@ -707,9 +707,10 @@ export class PerformPanel {
     });
     const i = this.app.doc.layers.indexOf(l);
     this.els.listen?.classList.toggle('down', ((m[M_LISTEN] >>> 0) & (1 << i)) !== 0);
-    if (performance.now() - this.lastPaint > 250) {
+    // Values a controller is moving, the pad's dot and the timing, a few times a second.
+    if (performance.now() - this.lastPaint > 100) {
       this.lastPaint = performance.now();
-      this.paintTiming();
+      this.paintValues(l);
     }
   }
 }
