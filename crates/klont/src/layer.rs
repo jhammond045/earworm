@@ -235,6 +235,8 @@ pub struct Layer {
     age: u64,
     /// Normalized values after step 6 for the loudest voice (meters).
     pub live: Box<[f32; MAX_VALUES]>,
+    /// The meter block shows this layer, so `live` is kept up to date.
+    pub metered: bool,
     /// Live follow: the frame record the live voice reads each tick, and the
     /// gate envelope that scales its amplitude.
     follow_rec: [f32; CURVE_STRIDE],
@@ -308,6 +310,7 @@ impl Layer {
             max_partials: [crate::voice::MAX_PARTIALS; VOICES_PER_LAYER],
             age: 0,
             live: Box::new([0.0; MAX_VALUES]),
+            metered: index == 0,
             follow_rec: [0.0; CURVE_STRIDE],
             follow_gain: 0.0,
         };
@@ -891,10 +894,12 @@ impl Layer {
                 loudest = (l, v);
             }
         }
-        // Meters: the loudest voice's values over the layer's.
+        // Meters (the selected layer only): the loudest voice's values over the layer's.
         let n = self.patch.n_values;
-        self.live[..n].copy_from_slice(&self.norm[..n]);
-        if loudest.1 != usize::MAX {
+        if self.metered {
+            self.live[..n].copy_from_slice(&self.norm[..n]);
+        }
+        if self.metered && loudest.1 != usize::MAX {
             let v = loudest.1;
             let t = &self.touched[self.slots[v].vp];
             for &i in &t.list[..t.n] {

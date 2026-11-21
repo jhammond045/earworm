@@ -46,6 +46,8 @@ const OUT_LIMIT: f32 = 32.0;
 const VOICE_XFADE_S: f32 = 0.010;
 /// A stored hold at or below this counts as none, whatever routes add.
 const HOLD_OFF_S: f32 = 0.0006;
+/// `buf_of` mark for a module whose output is silent this span.
+const SILENT: u8 = u8::MAX;
 /// Seeds of the four LFOs' drift sequences: the third keeps the old chaos seed.
 const LFO_SALT: [u32; MAX_LFOS] = [0x1b87_3593, 0xcc9e_2d51, 0, 0x85eb_ca6b];
 
@@ -222,6 +224,7 @@ pub struct Voice {
     holding: bool,
 
     note: Note,
+    note_src: [f32; 10],
     note_t: f32,
     cents_now: f32,
     vmix: f32,
@@ -291,6 +294,7 @@ impl Voice {
             held: [[0.0; MAX_TARGETS]; MAX_ROUTES],
             holding: false,
             note: Note::default(),
+            note_src: [f32::NAN; 10],
             note_t: 0.0,
             cents_now: 5700.0,
             vmix: 1.0,
@@ -358,6 +362,7 @@ impl Voice {
             self.reset_all();
         }
         self.note = *note;
+        self.note_src = Self::note_sources(note);
         // A restart keeps phases and amplitudes; only a choke in progress is cancelled.
         self.cg_t = 1.0;
         self.click.end_post = false;
@@ -579,24 +584,7 @@ impl Voice {
 
     /// Raw values of the per-voice sources that are not mods.
     fn sources(&self, frame: Option<&[f32; CURVE_STRIDE]>) -> Sources {
-        let n = &self.note;
-        let ok = |x: f32| if x.is_finite() { x } else { f32::NAN };
-        let lg = |x: f32| if x.is_finite() && x > 0.0 { x.log2() } else { f32::NAN };
-        let mut s = Sources {
-            note: [
-                n.cents,
-                n.velocity,
-                if n.hard.is_finite() { n.hard.min(1.0) } else { f32::NAN },
-                ok(n.attack),
-                ok(n.burst),
-                ok(n.bend),
-                lg(n.hold),
-                ok(n.vowel),
-                ok(n.tone),
-                ok(n.end_click),
-            ],
-            voice: [f32::NAN; 7],
-        };
+        let mut s = Sources { note: self.note_src, voice: [f32::NAN; 7] };
         if let Some(f) = frame {
             let pitch = if f[TUNED].is_finite() { f[TUNED] } else { f[frame::PITCH] };
             s.voice = [
@@ -610,6 +598,24 @@ impl Voice {
             ];
         }
         s
+    }
+
+    /// The note's source values (SRC_NOTE_* order), fixed for the note.
+    fn note_sources(n: &Note) -> [f32; 10] {
+        let ok = |x: f32| if x.is_finite() { x } else { f32::NAN };
+        let lg = |x: f32| if x.is_finite() && x > 0.0 { x.log2() } else { f32::NAN };
+        [
+                n.cents,
+                n.velocity,
+                if n.hard.is_finite() { n.hard.min(1.0) } else { f32::NAN },
+                ok(n.attack),
+                ok(n.burst),
+                ok(n.bend),
+                lg(n.hold),
+                ok(n.vowel),
+                ok(n.tone),
+                ok(n.end_click),
+        ]
     }
 
     fn raw(&self, src: u16, arg: u16, s: &Sources) -> f32 {
@@ -1074,6 +1080,11 @@ impl Voice {
                 Inst::Partials => self.partials.render(&mut self.bufs[k][..m]),
                 Inst::Click => {
                     let post = self.click.end_post;
+                    // An idle click adds nothing and keeps its state: mark its output silent.
+                    if !self.click.s.active() && (post || !self.click.e.active()) {
+                        self.buf_of[k] = SILENT;
+                        continue;
+                    }
                     for y in self.bufs[k][..m].iter_mut() {
                         let s = self.click.s.process();
                         *y = if post { s } else { s + self.click.e.process() };
@@ -1100,6 +1111,9 @@ impl Voice {
                             continue;
                         }
                         let src = self.buf_of[c.from as usize] as usize;
+                        if src == SILENT as usize {
+                            continue;
+                        }
                         if n_in == 0 {
                             only = src;
                         } else {
@@ -1112,8 +1126,8 @@ impl Voice {
                         }
                         n_in += 1;
                     }
-                    if !on && n_in == 1 {
-                        self.buf_of[k] = only as u8;
+                    if !on && n_in <= 1 {
+                        self.buf_of[k] = if n_in == 1 { only as u8 } else { SILENT };
                         continue;
                     }
                     if n_in == 0 {
@@ -1169,9 +1183,15 @@ impl Voice {
         for i in 0..m {
             let mut x = 0.0;
             if !dead {
-                for (j, &o) in vp.out[..vp.n_out].iter().enumerate() {
-                    let b = self.bufs[self.buf_of[o as usize] as usize][i];
-                    x = if j == 0 { b } else { x + b };
+                let mut first = true;
+                for &o in &vp.out[..vp.n_out] {
+                    let src = self.buf_of[o as usize];
+                    if src == SILENT {
+                        continue;
+                    }
+                    let b = self.bufs[src as usize][i];
+                    x = if first { b } else { x + b };
+                    first = false;
                 }
             }
             if self.cg != self.cg_t {

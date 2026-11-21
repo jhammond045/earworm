@@ -448,7 +448,11 @@ impl Engine {
                     self.budget_fixed = (value.max(0.0) as u32)
                         .min(MAX_LAYERS as u32 * VOICES_PER_LAYER as u32 * MAX_PARTIALS as u32);
                 }
-                MSG_SELECT_LAYER if lay => self.selected = layer,
+                MSG_SELECT_LAYER if lay => {
+                    self.layers[self.selected].metered = false;
+                    self.selected = layer;
+                    self.layers[layer].metered = true;
+                }
                 MSG_PANIC => {
                     for l in self.layers.iter_mut() {
                         l.panic();
