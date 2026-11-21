@@ -6,7 +6,7 @@
 //! length). A span is split again at every sequencer event, live trigger and
 //! note off, so all of them land on their exact sample.
 
-use crate::curve::CurvePool;
+use crate::curve::{self, CurvePool, CURVE_STRIDE};
 use crate::layer::Layer;
 use crate::live::{Action, LiveCapture};
 use crate::metro::Metro;
@@ -382,6 +382,14 @@ impl Engine {
                 MSG_SET_PARAM if lay => self.layers[layer].set_param(index, param as usize, value),
                 MSG_SET_MACRO if lay => self.layers[layer].set_macro(index as usize, value),
                 MSG_SET_LAYER if lay => self.layers[layer].set_field(param, value),
+                MSG_SET_PERF if lay || layer == ALL_LAYERS as usize => {
+                    for (i, l) in self.layers.iter_mut().enumerate() {
+                        if i == layer || layer == ALL_LAYERS as usize {
+                            l.set_perf(index as usize, value);
+                        }
+                    }
+                }
+                MSG_LISTEN if lay => self.layers[layer].listen = value > 0.5,
                 MSG_NOTE_ON | MSG_NOTE_OFF if lay => {
                     let velocity = if param == 0 {
                         1.0
@@ -812,8 +820,22 @@ impl Engine {
     /// Control tick: resolution and budget for every layer, then every voice.
     fn tick(&mut self) {
         self.update_morph();
-        for l in self.layers.iter_mut() {
-            l.control_tick();
+        // Each layer's sung features: the mic while it listens (live only), else its clip's take
+        // at the transport position while the transport plays.
+        let mic = if self.live_on && self.layers.iter().any(|l| l.listen) { Some(self.capture.listen_record()) } else { None };
+        let playing = self.transport.playing();
+        let (section, pos) = (self.transport.section(), self.transport.pos());
+        for (li, l) in self.layers.iter_mut().enumerate() {
+            let mut rec = [0.0f32; CURVE_STRIDE];
+            let have = if !l.wants_features() {
+                false
+            } else if let (true, Some(m)) = (l.listen, mic.as_ref()) {
+                rec = *m;
+                true
+            } else {
+                playing && take_frame(&self.track, &self.curves, section, pos, li, &mut rec)
+            };
+            l.control_tick(have.then_some(&rec));
         }
         if self.live_on {
             self.capture.advance_tick();
@@ -992,10 +1014,28 @@ impl Engine {
         m[M_N_VALUES] = n as f32;
         m[M_STORED..M_STORED + n].copy_from_slice(l.stored());
         m[M_LIVE..M_LIVE + n].copy_from_slice(&l.live[..n]);
+        m[M_LAYER_SRC..M_LAYER_SRC + crate::patch::N_LAYER_SOURCES].copy_from_slice(l.layer_sources());
+        l.route_meters(&mut m[M_ROUTES..M_ROUTES + N_ROUTE_METERS]);
+        m[M_LISTEN] = self.layers.iter().enumerate().map(|(i, l)| if l.listen { 1u32 << i } else { 0 }).sum::<u32>() as f32;
         let mut u = [0.0f32; N_MACROS];
         l.macros_live(&mut u);
         m[M_MACRO_LIVE..M_MACRO_LIVE + N_MACROS].copy_from_slice(&u);
     }
+}
+
+/// The frame of layer `li`'s clip take in `section` at transport position `pos` (section
+/// units), looping with the clip. False when the clip has no take curve.
+fn take_frame(track: &Track, curves: &CurvePool, section: usize, pos: f64, li: usize, out: &mut [f32; CURVE_STRIDE]) -> bool {
+    let Some(ci) = track.clip_index_for(section, li) else { return false };
+    let clip = track.clip(ci);
+    if clip.curve < 0 || !(clip.loop_len > 0.0) {
+        return false;
+    }
+    let sec = track.section(clip.section as usize);
+    let slope = if sec.feel == crate::seq::FEEL_FREE { 1.0 } else { 60.0 / (sec.bpm.max(1.0) * crate::seq::PPQ) };
+    let t = pos - (pos / clip.loop_len).floor() * clip.loop_len;
+    let take_sec = curve::warp_to_take(track.warp(clip), t, slope);
+    curves.read(clip.curve as usize, take_sec, out)
 }
 
 fn word(b: &[u8], i: usize) -> u32 {

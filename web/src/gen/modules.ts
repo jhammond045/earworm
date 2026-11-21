@@ -7,7 +7,7 @@ import { COUNT, DESCS, type Desc } from './params';
 export const EXTRA_DESCS: readonly Desc[] = [
   { id: "amp.gain", group: 'tone', scale: 'lin', min: 0.0, max: 2.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "Gain of an amp module. 1 leaves the level as it is." },
   { id: "env.mode", group: 'shape', scale: 'lin', min: 0.0, max: 2.0, neutral: 0.0, unit: "", smoothMs: 0.0, doc: "0 ADSR: note-off starts the release. 1 decay: starts at full, falls with decay, and note-off adds the release. 2 one-shot: starts at full, falls with decay, ignores note-off." },
-  { id: "lfo.wave", group: 'motion', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "0 sine, 1 drift (smoothed random). The other shapes arrive with the modulation matrix." },
+  { id: "lfo.wave", group: 'motion', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "Wave of an LFO, in steps of 0.2: sine, triangle, saw, square, random steps, drift (smoothed random). 0 and 1 are the two waves of the old fixed LFOs." },
   { id: "lfo.level", group: 'motion', scale: 'lin', min: 0.0, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "Output level of an LFO." },
   { id: "route.amount", group: 'motion', scale: 'bipolar', min: -1.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "Amount of a modulation route. 1 moves the target across its whole range; for pitch, 1 is 48 semitones." },
   { id: "voicing.depth", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "How far unvoiced sung frames swap the pitched sources for noise." },
@@ -22,7 +22,7 @@ export const N_DESCS = 104;
 /** Descriptor id by descriptor name. */
 export const DESC_ID: Readonly<Record<string, number>> = Object.fromEntries(ALL_DESCS.map((d, i) => [d.id, i]));
 
-export const STEPS: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 0, 0, 0, 7, 0];
+export const STEPS: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0];
 export const SCALABLE: readonly boolean[] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false];
 
 export type ModKind = 'voice' | 'source' | 'layer' | 'channel';

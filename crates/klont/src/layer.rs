@@ -14,23 +14,32 @@
 //! 2. Automation: arrives with recording (stage S5).
 //! 3. Influence: each value whose group bit is in the mask moves toward the
 //!    target by the amount.
-//! 4. Layer routes (the macros): added, then clamped. Steps 3 and 4 run when
-//!    a stored value changes; every value is then smoothed per control tick
-//!    with its descriptor's `smooth_ms`, in the normalized domain, and mapped
-//!    to real units. Channel values are finished here.
+//! 4. Layer routes: sources that are one per layer (macros, the mod wheel,
+//!    bend and pressure, the layer LFOs, the layer's sung features) move any
+//!    value of the layer, voice values included; then clamp. Step 3 runs when
+//!    a stored value changes; step 4 also runs every tick while a route's
+//!    source can move by itself (anything but a macro). Every value is then
+//!    smoothed per control tick with its descriptor's `smooth_ms`, in the
+//!    normalized domain, and mapped to real units. Channel values are
+//!    finished here.
 //! 5 to 7 run per voice (`voice.rs`).
+//!
+//! The layer's sung features come from the mic while the layer listens
+//! (`listen`), else from its clip's take at the transport position while the
+//! transport plays; the engine hands them to `control_tick`.
 //!
 //! The channel is the patch's effect chain: the effects before the first
 //! stereo one run on the mono sum of the voices, level and pan then spread it
 //! to stereo, the stereo effects follow, and width is last (today's order).
 
 use crate::curve::{self, CurvePool, CURVE_STRIDE};
+use crate::modules::LfoSrc;
 use crate::grain::{GrainCloud, VoiceGrain};
 use crate::patch::*;
 use crate::protocol::*;
 use crate::samples::SamplePool;
 use crate::seq::{Clip, Event, Track};
-use crate::voice::{LayerView, Note, Voice, N_BANDS, TICK};
+use crate::voice::{features, via_value, LayerView, Note, Voice, N_BANDS, TICK};
 use dsp::bands::{band_centres, band_q};
 use dsp::filters::Svf;
 use dsp::frame;
@@ -241,7 +250,38 @@ pub struct Layer {
     /// gate envelope that scales its amplitude.
     follow_rec: [f32; CURVE_STRIDE],
     follow_gain: f32,
+
+    /// Listening (MSG_LISTEN): the layer's features come from the mic.
+    pub listen: bool,
+    /// Mod wheel (0..1), pitch bend (-1..1), channel pressure (0..1): MSG_SET_PERF.
+    pub perf: [f32; 3],
+    lfos: [LfoSrc; MAX_LAYER_LFOS],
+    /// The layer's source values this tick (macros, perf, layer LFOs, features).
+    lsrc: [f32; N_LAYER_SOURCES],
+    /// This tick's feature frame, for routes from the sung vowel.
+    feat: [f32; CURVE_STRIDE],
+    has_feat: bool,
+    /// The sung pitch holds through unvoiced frames.
+    held_pitch: f32,
+    /// Steps 1 to 3 (before the layer routes).
+    pre: Box<[f32; MAX_VALUES]>,
+    /// Some layer route's source moves by itself, so step 4 runs every tick.
+    lr_dynamic: bool,
+    /// Some layer route reads the layer's features.
+    lr_features: bool,
+    /// Values a layer route writes.
+    lr_list: Box<[u16; MAX_VALUES]>,
+    lr_n: usize,
+    lr_smooth: [f32; MAX_LAYER_ROUTES],
+    lr_fresh: bool,
+    /// Each layer route's shaped output this tick, NaN without a value (meters).
+    lr_out: [f32; MAX_LAYER_ROUTES],
+    /// The voice the meters show (the loudest), or usize::MAX.
+    meter_voice: usize,
 }
+
+/// Salt of the layer LFOs' random sequences.
+const LAYER_LFO_SALT: [u32; MAX_LAYER_LFOS] = [0x6c07_8965, 0x9d2c_5680];
 
 fn bank_seed(layer_seed: u32, k: usize) -> u32 {
     layer_seed ^ 0x5bd1_e995u32.wrapping_mul(k as u32 + 1)
@@ -313,6 +353,22 @@ impl Layer {
             metered: index == 0,
             follow_rec: [0.0; CURVE_STRIDE],
             follow_gain: 0.0,
+            listen: false,
+            perf: [0.0; 3],
+            lfos: std::array::from_fn(|k| LfoSrc::new(seed ^ LAYER_LFO_SALT[k])),
+            lsrc: [f32::NAN; N_LAYER_SOURCES],
+            feat: [f32::NAN; CURVE_STRIDE],
+            has_feat: false,
+            held_pitch: f32::NAN,
+            pre: Box::new([0.0; MAX_VALUES]),
+            lr_dynamic: false,
+            lr_features: false,
+            lr_list: Box::new([0; MAX_VALUES]),
+            lr_n: 0,
+            lr_smooth: [f32::NAN; MAX_LAYER_ROUTES],
+            lr_fresh: true,
+            lr_out: [f32::NAN; MAX_LAYER_ROUTES],
+            meter_voice: usize::MAX,
         };
         let classic = crate::classic::patch_blob(KIND_MELODY, index as u32);
         let mut p = Patch::new_boxed();
@@ -338,6 +394,13 @@ impl Layer {
         if *self.patch == *p {
             return;
         }
+        // Only the routes' shapers changed: keep the voices and the values.
+        if self.patch.same_structure(p) {
+            (*self.patch).clone_from(p);
+            self.index_routes();
+            self.dirty = true;
+            return;
+        }
         (*self.patch).clone_from(p);
         for v in 0..VOICES_PER_LAYER {
             self.voices[v].kill();
@@ -354,6 +417,31 @@ impl Layer {
             let ms = P::desc(d).smooth_ms;
             self.smooth[i] = if ms > 0.0 { 1.0 - (-dt * 1000.0 / ms).exp() } else { 1.0 };
         }
+        self.index_routes();
+        for l in self.lfos.iter_mut() {
+            l.start();
+        }
+        self.held_pitch = f32::NAN;
+        for v in 0..VOICES_PER_LAYER {
+            self.voices[v].bind(&p.voices[0], 0);
+            self.voices[v].kill();
+        }
+        self.reset_noise();
+        self.n_states = 0;
+        self.morph_applied = None;
+        self.grain.clear_grains();
+        self.chan.delay.reset();
+        self.chan.reverb.reset();
+        self.resolve();
+        self.norm[..n].copy_from_slice(&self.target[..n]);
+        self.map_all();
+        self.settled = true;
+    }
+
+    /// What the patch's routes write: per voice patch the values its voice routes and voicing
+    /// swap touch, and the values the layer routes write.
+    fn index_routes(&mut self) {
+        let p = &*self.patch;
         for (k, vp) in p.voices().iter().enumerate() {
             let t = &mut self.touched[k];
             t.is = [false; MAX_VALUES];
@@ -392,20 +480,28 @@ impl Layer {
                 t.from_real[nb as usize + P::shaped_noise::LEVEL] = false;
             }
         }
-        for v in 0..VOICES_PER_LAYER {
-            self.voices[v].bind(&p.voices[0], 0);
-            self.voices[v].kill();
+        let mut seen = [false; MAX_VALUES];
+        self.lr_n = 0;
+        self.lr_dynamic = false;
+        self.lr_features = false;
+        for r in p.layer_routes() {
+            let n = if r.target_kind == TGT_BANDS { N_BANDS } else { 1 };
+            for &t in &r.targets[..r.n_targets as usize] {
+                for b in 0..n {
+                    let i = t as usize + b;
+                    if !seen[i] {
+                        seen[i] = true;
+                        self.lr_list[self.lr_n] = i as u16;
+                        self.lr_n += 1;
+                    }
+                }
+            }
+            let moves = |s: u16| s != SRC_NONE && s != SRC_MACRO;
+            self.lr_dynamic |= moves(r.source) || moves(r.via);
+            self.lr_features |= is_feature_source(r.source) || is_feature_source(r.via);
         }
-        self.reset_noise();
-        self.n_states = 0;
-        self.morph_applied = None;
-        self.grain.clear_grains();
-        self.chan.delay.reset();
-        self.chan.reverb.reset();
-        self.resolve();
-        self.norm[..n].copy_from_slice(&self.target[..n]);
-        self.map_all();
-        self.settled = true;
+        self.lr_smooth = [f32::NAN; MAX_LAYER_ROUTES];
+        self.lr_fresh = true;
     }
 
     /// Grain sample id of the patch (its first voice patch with grains), if any.
@@ -538,40 +634,153 @@ impl Layer {
         self.dirty = true;
     }
 
-    /// Steps 3 and 4.
+    /// Steps 3 and 4 for every value.
     fn resolve(&mut self) {
         let n = self.patch.n_values;
         let a = if self.infl_amount.is_nan() { 0.0 } else { self.infl_amount.clamp(0.0, 1.0) };
         let fz = |x: f32| if x.is_finite() { x } else { 0.0 };
         for i in 0..n {
             let b = fz(self.base[i]);
-            self.target[i] = if self.groups[i] & self.infl_mask != 0 {
+            self.pre[i] = if self.groups[i] & self.infl_mask != 0 {
                 ((1.0 - a) * b + a * fz(self.influence[i])).clamp(0.0, 1.0)
             } else {
                 b.clamp(0.0, 1.0)
             };
         }
+        self.target[..n].copy_from_slice(&self.pre[..n]);
+        self.layer_routes(true);
+        self.settled = false;
+        self.dirty = false;
+    }
+
+    /// The layer's sources for this tick: macros, perf, the layer LFOs (advanced one tick with
+    /// their values as they stand), and the sung features of `frame`.
+    fn update_sources(&mut self, frame: Option<&[f32; CURVE_STRIDE]>) {
+        for k in 0..N_MACROS {
+            self.lsrc[LS_MACRO + k] = if self.macros[k].is_nan() { 0.5 } else { self.macros[k] };
+        }
+        self.lsrc[LS_PERF..LS_PERF + 3].copy_from_slice(&self.perf);
+        let dt = TICK as f32 / self.sr;
         let p = &*self.patch;
-        for r in p.layer_routes() {
-            let u = if self.macros[r.arg as usize].is_nan() { 0.5 } else { self.macros[r.arg as usize] };
-            let c = r.polar(r.shape(u));
-            let amt = P::to_real(p.descs[r.amount as usize] as usize, self.base[r.amount as usize]);
-            let via = if r.via == SRC_NONE { 1.0 } else { self.macros[r.via_arg as usize].clamp(0.0, 1.0) };
-            let k = amt * r.unit * via;
-            for &t in &r.targets[..r.n_targets as usize] {
-                let t = t as usize;
-                if r.mode == MODE_SCALE {
-                    self.target[t] *= 1.0 + k * c;
+        for k in 0..MAX_LAYER_LFOS {
+            self.lsrc[LS_LFO + k] = match p.layer_lfos().get(k) {
+                Some(m) => {
+                    let b = m.base as usize;
+                    let r = &self.real;
+                    let x = self.lfos[k].tick(r[b + P::lfo::RATE], r[b + P::lfo::WAVE], dt);
+                    let level = r[b + P::lfo::LEVEL];
+                    if level == 1.0 { x } else { x * level }
+                }
+                None => f32::NAN,
+            };
+        }
+        match frame {
+            Some(f) if self.lr_features => {
+                let mut x = features(f);
+                if x[0].is_finite() {
+                    self.held_pitch = x[0];
                 } else {
-                    self.target[t] += k * c;
+                    x[0] = self.held_pitch;
+                }
+                self.lsrc[LS_FEATURE..LS_FEATURE + N_FEATURES].copy_from_slice(&x);
+                self.feat = *f;
+                self.has_feat = true;
+            }
+            _ => {
+                self.lsrc[LS_FEATURE..LS_FEATURE + N_FEATURES].fill(f32::NAN);
+                self.has_feat = false;
+            }
+        }
+    }
+
+    /// Step 4: the layer routes onto `target`. `full`: every value was just set from `pre`;
+    /// otherwise only the values the routes write are put back first.
+    fn layer_routes(&mut self, full: bool) {
+        let n = self.patch.n_values;
+        if !full {
+            for &t in &self.lr_list[..self.lr_n] {
+                self.target[t as usize] = self.pre[t as usize];
+            }
+        }
+        let dt = TICK as f32 / self.sr;
+        let fresh = std::mem::replace(&mut self.lr_fresh, false);
+        let dep = depths(&self.depth, self.follow);
+        let p = &*self.patch;
+        for (j, r) in p.layer_routes().iter().enumerate() {
+            self.lr_out[j] = f32::NAN;
+            let src = |s: u16, a: u16| layer_source_index(s, a).map_or(f32::NAN, |i| self.lsrc[i]);
+            let a = r.amount as usize;
+            // An amount another layer route moves is read as it stands now (those routes come first).
+            let amt = P::to_real(p.descs[a] as usize, self.target[a].clamp(0.0, 1.0));
+            let via = if r.via == SRC_NONE { 1.0 } else { via_value(r.via, r.via_arg, src(r.via, r.via_arg)) };
+            let depth = if r.group == GROUP_NONE { 1.0 } else { dep[r.group as usize - 1] };
+            let k = amt * r.unit * via * depth;
+            if !k.is_finite() {
+                continue;
+            }
+            if r.source == SRC_LAYER_VOWEL {
+                // Each band moves toward the sung vowel shape.
+                if !self.has_feat {
+                    continue;
+                }
+                self.lr_out[j] = 1.0;
+                let t0 = r.targets[0] as usize;
+                for b in 0..N_BANDS {
+                    let v = self.feat[frame::BANDS + b];
+                    if v.is_finite() {
+                        let y = P::to_norm(p.descs[t0 + b] as usize, v.clamp(-30.0, 30.0));
+                        self.target[t0 + b] += k * (y - self.target[t0 + b]);
+                    }
+                }
+                continue;
+            }
+            let raw = src(r.source, r.arg);
+            let x = if r.bipolar(&[]) { (raw + 1.0) * 0.5 } else { raw };
+            if !x.is_finite() {
+                continue;
+            }
+            let mut y = r.shape(x);
+            if r.smoothed() {
+                let s = &mut self.lr_smooth[j];
+                if fresh || !s.is_finite() {
+                    *s = y;
+                } else {
+                    let ms = if y > *s { r.rise_ms } else { r.fall_ms };
+                    *s += if ms > 0.0 { 1.0 - (-dt * 1000.0 / ms).exp() } else { 1.0 } * (y - *s);
+                }
+                y = *s;
+            }
+            self.lr_out[j] = y;
+            let c = r.polar(y);
+            // A pull moves its target in its own units toward the source value.
+            let toward = if r.bend == 0.0 && r.n_points < 2 { raw.clamp(r.in_lo.min(r.in_hi), r.in_lo.max(r.in_hi)) } else { r.in_lo + y * (r.in_hi - r.in_lo) };
+            let width = if r.target_kind == TGT_BANDS { N_BANDS } else { 1 };
+            for &t in &r.targets[..r.n_targets as usize] {
+                for b in 0..width {
+                    let t = t as usize + b;
+                    match r.mode {
+                        MODE_SCALE => self.target[t] *= 1.0 + k * c,
+                        MODE_PULL => {
+                            let d = p.descs[t] as usize;
+                            let cur = P::to_real(d, self.target[t].clamp(0.0, 1.0));
+                            let next = (cur + k * (toward - cur)).clamp(P::desc(d).min, P::desc(d).max);
+                            self.target[t] = P::to_norm(d, next);
+                        }
+                        _ => self.target[t] += k * c,
+                    }
                 }
             }
         }
-        for v in self.target[..n].iter_mut() {
-            *v = v.clamp(0.0, 1.0);
+        if full {
+            for v in self.target[..n].iter_mut() {
+                *v = v.clamp(0.0, 1.0);
+            }
+        } else {
+            for &t in &self.lr_list[..self.lr_n] {
+                let t = t as usize;
+                self.target[t] = self.target[t].clamp(0.0, 1.0);
+            }
         }
-        self.settled = false;
-        self.dirty = false;
     }
 
     fn map_all(&mut self) {
@@ -770,8 +979,9 @@ impl Layer {
         self.noise_banks = std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, if single { k } else { k + 1 })));
     }
 
-    fn view<'a>(norm: &'a [f32], real: &'a [f32], descs: &'a [u16], t: &'a Touched, depth: [f32; 6], max_partials: usize, follow_gain: f32) -> LayerView<'a> {
-        LayerView { norm, real, descs, touched: &t.list[..t.n], is_touched: &t.is, is_amount: &t.amount, from_real: &t.from_real, depth, max_partials, follow_gain }
+    #[allow(clippy::too_many_arguments)]
+    fn view<'a>(norm: &'a [f32], real: &'a [f32], descs: &'a [u16], t: &'a Touched, depth: [f32; 6], max_partials: usize, follow_gain: f32, lsrc: &'a [f32; N_LAYER_SOURCES]) -> LayerView<'a> {
+        LayerView { norm, real, descs, touched: &t.list[..t.n], is_touched: &t.is, is_amount: &t.amount, from_real: &t.from_real, depth, max_partials, follow_gain, lsrc }
     }
 
     fn start_voice(&mut self, slot: Slot, note: &Note, track: &Track, curves: &CurvePool, len: usize) {
@@ -784,7 +994,7 @@ impl Layer {
         if self.voices[v].vp != k {
             self.voices[v].bind(&self.patch.voices[k], k);
         }
-        let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], depths(&self.depth, self.follow), self.max_partials[v], self.follow_gain);
+        let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], depths(&self.depth, self.follow), self.max_partials[v], self.follow_gain, &self.lsrc);
         self.voices[v].start(&self.patch.voices[k], &lv, note, frame.then_some(&nf), len);
         self.grain.voice_start(v);
         self.voice_on[v] = true;
@@ -793,10 +1003,15 @@ impl Layer {
 
     // ------------------------------------------------------------ control rate
 
-    /// Per tick, before the voices: steps 3-4 when dirty, then smoothing and the channel.
-    pub fn control_tick(&mut self) {
+    /// Per tick, before the voices: the layer's sources, steps 3-4 when dirty (step 4 every
+    /// tick while a layer route's source moves by itself), then smoothing and the channel.
+    /// `frame`: the layer's sung features this tick, if it has any.
+    pub fn control_tick(&mut self, frame: Option<&[f32; CURVE_STRIDE]>) {
+        self.update_sources(frame);
         if self.dirty {
             self.resolve();
+        } else if self.lr_dynamic {
+            self.layer_routes(false);
         }
         let n = self.patch.n_values;
         if !self.settled {
@@ -812,6 +1027,18 @@ impl Layer {
             }
             self.map_all();
             self.settled = !moving;
+        } else if self.lr_dynamic {
+            // Settled apart from what the layer routes move: smooth and map only those.
+            for x in 0..self.lr_n {
+                let i = self.lr_list[x] as usize;
+                let d = self.target[i] - self.norm[i];
+                if d.abs() > 1e-6 {
+                    self.norm[i] += self.smooth[i] * d;
+                } else {
+                    self.norm[i] = self.target[i];
+                }
+                self.real[i] = P::to_real(self.patch.descs[i] as usize, self.norm[i]);
+            }
         }
         let p = &*self.patch;
         let r = &self.real;
@@ -885,7 +1112,7 @@ impl Layer {
             }
             let frame = self.read_frame(v, track, curves, &mut nf);
             let k = self.slots[v].vp;
-            let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], dep, self.max_partials[v], self.follow_gain);
+            let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], dep, self.max_partials[v], self.follow_gain, &self.lsrc);
             self.voices[v].control(&self.patch.voices[k], &lv, frame.then_some(&nf), TICK);
             self.slots[v].clip_t += units_per_sample * TICK as f64;
             noise_lvl[k] += self.voices[v].noise_level();
@@ -895,6 +1122,7 @@ impl Layer {
             }
         }
         // Meters (the selected layer only): the loudest voice's values over the layer's.
+        self.meter_voice = loudest.1;
         let n = self.patch.n_values;
         if self.metered {
             self.live[..n].copy_from_slice(&self.norm[..n]);
@@ -1031,6 +1259,38 @@ impl Layer {
             r[i] += b;
         }
         self.peak = self.peak.max(peak);
+    }
+
+    /// The layer's source values this tick (macros, perf, layer LFOs, features; patch.rs LS_*).
+    pub fn layer_sources(&self) -> &[f32; N_LAYER_SOURCES] {
+        &self.lsrc
+    }
+
+    /// Wants its sung features each tick (a layer route reads them).
+    pub fn wants_features(&self) -> bool {
+        self.lr_features
+    }
+
+    /// Route outputs for the meters: voice patch k's route i at k * MAX_ROUTES + i (from the
+    /// loudest sounding voice), then the layer routes. NaN where a route had no value.
+    pub fn route_meters(&self, out: &mut [f32]) {
+        out.fill(f32::NAN);
+        let v = self.meter_voice;
+        if v < VOICES_PER_LAYER && self.voices[v].active() {
+            let k = self.slots[v].vp;
+            for i in 0..self.patch.voices[k].n_routes {
+                out[k * MAX_ROUTES + i] = self.voices[v].route_out(i);
+            }
+        }
+        let n = self.patch.n_layer_routes;
+        out[KIT_SLOTS * MAX_ROUTES..KIT_SLOTS * MAX_ROUTES + n].copy_from_slice(&self.lr_out[..n]);
+    }
+
+    /// MSG_SET_PERF: 0 mod wheel (0..1), 1 pitch bend (-1..1), 2 channel pressure (0..1).
+    pub fn set_perf(&mut self, k: usize, v: f32) {
+        if k < 3 && v.is_finite() {
+            self.perf[k] = if k == 1 { v.clamp(-1.0, 1.0) } else { v.clamp(0.0, 1.0) };
+        }
     }
 
     pub fn sounding(&self) -> usize {

@@ -18,7 +18,8 @@
 //! 0  magic PATCH_MAGIC          1  n_values (1..=MAX_VALUES)
 //! 2  n_voice_patches (1..=4)    3  n_channel (0..=MAX_CHANNEL)
 //! 4  n_layer_routes             5  width value index
-//! 6  n_values descriptor ids
+//! 6  n_layer_lfos (0..=MAX_LAYER_LFOS)
+//! 7  n_values descriptor ids
 //!    n_values f starting values (normalized): where the values sit when the
 //!    patch loads, before a layer blob sets them (a route's default amount)
 //! per voice patch:
@@ -29,9 +30,11 @@
 //!    modules  n_modules x [type code, value base]
 //!    cables   n_cables  x [from module, to module, port]
 //!    out      n_out     x [module]
-//!    mods     n_mods    x [type code, value base]       (mods[0] is the envelope that ends the voice)
+//!    mods     n_mods    x [type code, value base]       (mods[0] is the envelope that ends the voice;
+//!             an envelope's type code + MOD_ONSET restarts it at each sung onset)
 //!    routes   n_routes  x ROUTE_WORDS
 //! channel   n_channel x [type code, value base]
+//! layer LFOs n_layer_lfos x [type code (lfo), value base]  (outside every voice patch's values)
 //! layer routes n_layer_routes x ROUTE_WORDS
 //! ```
 //! A route (ROUTE_WORDS words):
@@ -46,7 +49,7 @@ pub use crate::protocol::MAX_VALUES;
 use crate::protocol::{KIT_SLOTS, N_MACROS};
 use params as P;
 
-pub const PATCH_MAGIC: u32 = 0x3150_5745; // "EWP1"
+pub const PATCH_MAGIC: u32 = 0x3250_5745; // "EWP2"
 pub const MAX_MODULES: usize = 16;
 pub const MAX_CABLES: usize = 32;
 pub const MAX_MODS: usize = 8;
@@ -55,6 +58,10 @@ pub const MAX_LFOS: usize = 4;
 pub const MAX_ROUTES: usize = 48;
 pub const MAX_LAYER_ROUTES: usize = 64;
 pub const MAX_CHANNEL: usize = 8;
+pub const MAX_LAYER_LFOS: usize = 2;
+/// Added to an envelope's type code in a voice patch's mods: the envelope
+/// also restarts at each sung onset of the voice's frame.
+pub const MOD_ONSET: u32 = 1 << 16;
 pub const MAX_TARGETS: usize = 4;
 pub const MAX_POINTS: usize = 8;
 pub use crate::protocol::MAX_SAMPLES;
@@ -71,7 +78,9 @@ fn voice_cap(code: u32) -> usize {
     }
 }
 
-// Route sources. Per voice: MOD, NOTE_*, VOICE_*. Per layer: MACRO.
+// Route sources. Per voice: MOD, NOTE_*, VOICE_*. Per layer: MACRO, PERF,
+// LAYER_LFO, LAYER_* (the layer's sung features). A voice route may use a
+// layer source as its via.
 pub const SRC_NONE: u16 = 0;
 /// arg = index into the voice patch's mods.
 pub const SRC_MOD: u16 = 1;
@@ -98,8 +107,66 @@ pub const SRC_VOICE_ONSET: u16 = 35;
 pub const SRC_VOICE_VOICING: u16 = 36;
 /// 16 band levels in dB; only for pull routes into a 16-band shape.
 pub const SRC_VOICE_VOWEL: u16 = 37;
+/// Vocal effort, derived from the bands (`intensity`, voice.rs).
+pub const SRC_VOICE_INTENSITY: u16 = 38;
 /// arg = macro 0..7.
 pub const SRC_MACRO: u16 = 50;
+/// arg 0 mod wheel (0..1), 1 pitch bend (-1..1), 2 channel pressure (0..1).
+pub const SRC_PERF: u16 = 51;
+/// arg = layer LFO 0..1 (bipolar).
+pub const SRC_LAYER_LFO: u16 = 52;
+/// The layer's own sung features, SRC_VOICE_* + LAYER_FEATURE_OFFSET.
+pub const SRC_LAYER_PITCH: u16 = 60;
+pub const SRC_LAYER_VOLUME: u16 = 61;
+pub const SRC_LAYER_OPENNESS: u16 = 62;
+pub const SRC_LAYER_BREATH: u16 = 63;
+pub const SRC_LAYER_HARDNESS: u16 = 64;
+pub const SRC_LAYER_ONSET: u16 = 65;
+pub const SRC_LAYER_VOICING: u16 = 66;
+pub const SRC_LAYER_VOWEL: u16 = 67;
+pub const SRC_LAYER_INTENSITY: u16 = 68;
+pub const LAYER_FEATURE_OFFSET: u16 = SRC_LAYER_PITCH - SRC_VOICE_PITCH;
+
+/// Sung features in SRC_VOICE_* order without the vowel: pitch, volume,
+/// openness, breath, hardness, onset, voicing, intensity.
+pub const N_FEATURES: usize = 8;
+/// Index of a sung feature source (voice or layer) among the N_FEATURES, or None (the vowel).
+pub fn feature_index(src: u16) -> Option<usize> {
+    let s = if src >= SRC_LAYER_PITCH { src - LAYER_FEATURE_OFFSET } else { src };
+    match s {
+        SRC_VOICE_PITCH..=SRC_VOICE_VOICING => Some((s - SRC_VOICE_PITCH) as usize),
+        SRC_VOICE_INTENSITY => Some(N_FEATURES - 1),
+        _ => None,
+    }
+}
+
+/// Layer source values, in this order: macros, perf, layer LFOs, features.
+pub const LS_MACRO: usize = 0;
+pub const LS_PERF: usize = LS_MACRO + N_MACROS;
+pub const LS_LFO: usize = LS_PERF + 3;
+pub const LS_FEATURE: usize = LS_LFO + MAX_LAYER_LFOS;
+pub const N_LAYER_SOURCES: usize = LS_FEATURE + N_FEATURES;
+
+/// Where a layer source (not the vowel) sits among the layer source values.
+pub fn layer_source_index(src: u16, arg: u16) -> Option<usize> {
+    match src {
+        SRC_MACRO if (arg as usize) < N_MACROS => Some(LS_MACRO + arg as usize),
+        SRC_PERF if arg < 3 => Some(LS_PERF + arg as usize),
+        SRC_LAYER_LFO if (arg as usize) < MAX_LAYER_LFOS => Some(LS_LFO + arg as usize),
+        SRC_LAYER_PITCH..=SRC_LAYER_INTENSITY if src != SRC_LAYER_VOWEL => feature_index(src).map(|f| LS_FEATURE + f),
+        _ => None,
+    }
+}
+
+/// Per-voice sources (not the vowel).
+pub fn is_voice_source(src: u16) -> bool {
+    matches!(src, SRC_MOD | SRC_NOTE_PITCH..=SRC_NOTE_END_CLICK | SRC_VOICE_PITCH..=SRC_VOICE_VOICING | SRC_VOICE_INTENSITY)
+}
+
+/// Sources read from a sung feature frame (voice or layer).
+pub fn is_feature_source(src: u16) -> bool {
+    matches!(src, SRC_VOICE_PITCH..=SRC_VOICE_INTENSITY | SRC_LAYER_PITCH..=SRC_LAYER_INTENSITY)
+}
 
 pub const TGT_VALUE: u8 = 0;
 /// The voice pitch, in cents (unit converts the amount).
@@ -179,9 +246,9 @@ impl Route {
         identity: true,
     };
 
-    /// The source is bipolar (-1..1 enters the shaper as 0..1).
+    /// The source is bipolar (-1..1 enters the shaper as 0..1): an LFO or the pitch bend.
     pub fn bipolar(&self, mods: &[Mod]) -> bool {
-        self.source == SRC_MOD && mods[self.arg as usize].code == P::T_LFO
+        (self.source == SRC_MOD && mods[self.arg as usize].code == P::T_LFO) || self.source == SRC_LAYER_LFO || (self.source == SRC_PERF && self.arg == 1)
     }
 
     /// The shaper: a raw source value (0..1, or a bipolar value mapped to
@@ -241,6 +308,8 @@ pub struct Cable {
 pub struct Mod {
     pub code: u32,
     pub base: u16,
+    /// An envelope that also restarts at each sung onset.
+    pub onset: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -279,7 +348,7 @@ impl VoicePatch {
         n_out: 0,
         out: [0; MAX_MODULES],
         n_mods: 0,
-        mods: [Mod { code: 0, base: 0 }; MAX_MODS],
+        mods: [Mod { code: 0, base: 0, onset: false }; MAX_MODS],
         n_routes: 0,
         routes: [Route::EMPTY; MAX_ROUTES],
         lo: 0,
@@ -324,6 +393,8 @@ pub struct Patch {
     pub width: u16,
     pub n_layer_routes: usize,
     pub layer_routes: [Route; MAX_LAYER_ROUTES],
+    pub n_layer_lfos: usize,
+    pub layer_lfos: [Mod; MAX_LAYER_LFOS],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,6 +442,8 @@ impl Patch {
             width: 0,
             n_layer_routes: 0,
             layer_routes: [Route::EMPTY; MAX_LAYER_ROUTES],
+            n_layer_lfos: 0,
+            layer_lfos: [Mod::default(); MAX_LAYER_LFOS],
         })
     }
 
@@ -382,6 +455,44 @@ impl Patch {
     }
     pub fn layer_routes(&self) -> &[Route] {
         &self.layer_routes[..self.n_layer_routes]
+    }
+    pub fn layer_lfos(&self) -> &[Mod] {
+        &self.layer_lfos[..self.n_layer_lfos]
+    }
+
+    /// Value `i` is a parameter of an envelope or an LFO (voice or layer).
+    pub fn is_mod_value(&self, i: usize) -> bool {
+        let inside = |m: &Mod| {
+            let n = P::module_type(m.code).map_or(0, |t| t.n_values);
+            i >= m.base as usize && i < m.base as usize + n
+        };
+        self.voices().iter().any(|vp| vp.mods().iter().any(inside)) || self.layer_lfos().iter().any(inside)
+    }
+
+    /// The same patch apart from the routes' shaper fields (range, curve,
+    /// smoothing, latch, polarity, mode, group, unit, via): such an edit can
+    /// be taken without silencing the layer.
+    pub fn same_structure(&self, o: &Patch) -> bool {
+        let route_eq = |a: &Route, b: &Route| a.source == b.source && a.arg == b.arg && a.target_kind == b.target_kind && a.n_targets == b.n_targets && a.targets == b.targets && a.amount == b.amount;
+        let vp_eq = |a: &VoicePatch, b: &VoicePatch| {
+            a.n_routes == b.n_routes
+                && a.routes().iter().zip(b.routes()).all(|(x, y)| route_eq(x, y))
+                && a.modules() == b.modules()
+                && a.cables[..a.n_cables] == b.cables[..b.n_cables]
+                && a.out[..a.n_out] == b.out[..b.n_out]
+                && a.mods() == b.mods()
+                && (a.lo, a.hi, a.voicing, a.noise, a.grains) == (b.lo, b.hi, b.voicing, b.noise, b.grains)
+        };
+        self.n_values == o.n_values
+            && self.descs[..self.n_values] == o.descs[..o.n_values]
+            && self.init[..self.n_values] == o.init[..o.n_values]
+            && self.n_voices == o.n_voices
+            && self.voices().iter().zip(o.voices()).all(|(a, b)| vp_eq(a, b))
+            && self.channel() == o.channel()
+            && self.width == o.width
+            && self.layer_lfos() == o.layer_lfos()
+            && self.n_layer_routes == o.n_layer_routes
+            && self.layer_routes().iter().zip(o.layer_routes()).all(|(x, y)| route_eq(x, y))
     }
 
     /// Parse and check a LOAD_PATCH blob into `self`. On error `self` is left
@@ -397,6 +508,7 @@ impl Patch {
         let n_layer_routes = w.small(MAX_LAYER_ROUTES)?;
         let width = w.u()? as usize;
         check(width < n_values)?;
+        let n_layer_lfos = w.small(MAX_LAYER_LFOS)?;
         self.n_values = n_values;
         self.n_voices = n_voices;
         self.n_channel = n_channel;
@@ -412,7 +524,7 @@ impl Patch {
         }
         for k in 0..n_voices {
             let mut vp = VoicePatch::EMPTY;
-            parse_voice(&mut w, &mut vp, n_values)?;
+            parse_voice(&mut w, &mut vp, n_values, n_layer_lfos)?;
             self.voices[k] = vp;
         }
         // Voice patches own disjoint value ranges.
@@ -444,12 +556,33 @@ impl Patch {
             self.channel[c] = ChannelFx { code, base: base as u16 };
         }
         check(delays <= 1 && reverbs <= 1)?;
+        self.n_layer_lfos = n_layer_lfos;
+        for k in 0..n_layer_lfos {
+            let code = w.u()?;
+            let base = w.u()? as usize;
+            check(code == P::T_LFO && base + P::lfo::N <= n_values)?;
+            // Layer LFO values belong to no voice patch.
+            check(self.voices().iter().all(|vp| base + P::lfo::N <= vp.lo || base >= vp.hi))?;
+            self.layer_lfos[k] = Mod { code, base: base as u16, onset: false };
+        }
         for r in 0..n_layer_routes {
-            let route = parse_layer_route(&mut w, n_values)?;
+            let route = parse_layer_route(&mut w, n_values, n_layer_lfos)?;
             self.layer_routes[r] = route;
         }
         check(order_ok(self.layer_routes()))?;
         check(w.at * 4 == bytes.len())?;
+        // No source modulates itself: envelopes and LFOs (voice or layer) cannot move any
+        // envelope or LFO value. Other sources may (a macro setting an LFO's rate).
+        for r in self.layer_routes() {
+            if r.source == SRC_LAYER_LFO && r.target_kind != TGT_PITCH {
+                let n = if r.target_kind == TGT_BANDS { N_BANDS_SHAPE } else { 1 };
+                for &t in &r.targets[..r.n_targets as usize] {
+                    for b in 0..n {
+                        check(!self.is_mod_value(t as usize + b))?;
+                    }
+                }
+            }
+        }
         // Scale routes may only multiply scalable values.
         for vp in self.voices() {
             for r in vp.routes().iter().chain(self.layer_routes()) {
@@ -476,7 +609,7 @@ fn order_ok(routes: &[Route]) -> bool {
     })
 }
 
-fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize) -> Result<(), Malformed> {
+fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize, n_lfos: usize) -> Result<(), Malformed> {
     vp.n_modules = w.small(MAX_MODULES)?;
     vp.n_cables = w.small(MAX_CABLES)?;
     vp.n_out = w.small(MAX_MODULES)?;
@@ -520,16 +653,18 @@ fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize) -> Result<()
     }
     let (mut envs, mut lfos) = (0, 0);
     for k in 0..vp.n_mods {
-        let code = w.u()?;
+        let word = w.u()?;
+        let (code, onset) = (word & !MOD_ONSET, word & MOD_ONSET != 0);
         let base = w.u()? as usize;
         let t = P::module_type(code).ok_or(Malformed)?;
         check(t.kind == P::ModKind::Source && in_range(base, t.n_values))?;
+        check(!onset || code == P::T_ENV)?;
         if code == P::T_ENV {
             envs += 1;
         } else {
             lfos += 1;
         }
-        vp.mods[k] = Mod { code, base: base as u16 };
+        vp.mods[k] = Mod { code, base: base as u16, onset };
     }
     check(vp.n_mods > 0 && vp.mods[0].code == P::T_ENV && envs <= MAX_ENVS && lfos <= MAX_LFOS)?;
     let drive = |d: u32| (d as usize) < vp.n_mods && vp.mods[d as usize].code == P::T_ENV;
@@ -546,7 +681,7 @@ fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize) -> Result<()
         Some((gb as u16, gd as u8, gs as u8))
     };
     for r in 0..vp.n_routes {
-        let route = parse_route_voice(w, vp, n_values)?;
+        let route = parse_route_voice(w, vp, n_values, n_lfos)?;
         vp.routes[r] = route;
     }
     check(order_ok(vp.routes()))?;
@@ -567,52 +702,58 @@ fn fused_amp(vp: &VoicePatch) -> Option<u8> {
     (vp.modules[a].code == P::T_AMP && only_input).then_some(a as u8)
 }
 
-fn parse_route_voice(w: &mut Words, vp: &VoicePatch, n_values: usize) -> Result<Route, Malformed> {
+fn parse_route_voice(w: &mut Words, vp: &VoicePatch, n_values: usize, n_lfos: usize) -> Result<Route, Malformed> {
     let r = read_route(w, n_values)?;
-    let voice_src = |s: u16, a: u16| match s {
-        SRC_MOD => (a as usize) < vp.n_mods,
-        SRC_NOTE_PITCH..=SRC_NOTE_END_CLICK => true,
-        SRC_VOICE_PITCH..=SRC_VOICE_VOICING => true,
-        _ => false,
-    };
+    let voice_src = |s: u16, a: u16| is_voice_source(s) && (s != SRC_MOD || (a as usize) < vp.n_mods);
     let vowel = r.source == SRC_VOICE_VOWEL;
     check(voice_src(r.source, r.arg) || vowel)?;
-    check(r.via == SRC_NONE || voice_src(r.via, r.via_arg))?;
+    // A via may also be a layer source (the mod wheel deciding how deep a voice LFO goes).
+    // Layer LFOs are checked against the patch's count once it is known.
+    let layer_via = layer_source_index(r.via, r.via_arg).is_some() && (r.via != SRC_LAYER_LFO || (r.via_arg as usize) < n_lfos);
+    check(r.via == SRC_NONE || voice_src(r.via, r.via_arg) || layer_via)?;
     check(!vowel || (r.target_kind == TGT_BANDS && r.mode == MODE_PULL))?;
     let in_voice = |t: usize, n: usize| t >= vp.lo && t + n <= vp.hi;
+    let mod_value = |t: usize| {
+        vp.mods().iter().any(|m| {
+            let n = P::module_type(m.code).map_or(0, |t| t.n_values);
+            t >= m.base as usize && t < m.base as usize + n
+        })
+    };
     match r.target_kind {
         TGT_PITCH => check(r.mode == MODE_ADD)?,
-        TGT_BANDS => check(r.n_targets == 1 && in_voice(r.targets[0] as usize, 16) && r.mode != MODE_SCALE)?,
-        TGT_OCTAVES => {
-            check(r.mode == MODE_ADD)?;
-            for &t in &r.targets[..r.n_targets as usize] {
-                check(in_voice(t as usize, 1))?;
-            }
-        }
+        TGT_BANDS => check(r.n_targets == 1 && in_voice(r.targets[0] as usize, N_BANDS_SHAPE) && r.mode != MODE_SCALE)?,
         _ => {
+            check(r.target_kind != TGT_OCTAVES || r.mode == MODE_ADD)?;
             for &t in &r.targets[..r.n_targets as usize] {
                 check(in_voice(t as usize, 1))?;
-                // Envelopes and LFOs cannot modulate envelope or LFO values.
-                if r.source == SRC_MOD {
-                    for m in vp.mods() {
-                        let n = P::module_type(m.code).map_or(0, |t| t.n_values);
-                        check(!(t >= m.base && (t as usize) < m.base as usize + n))?;
-                    }
-                }
+                // Envelopes and LFOs cannot modulate envelope or LFO values, so no source can
+                // depend on itself.
+                check(r.source != SRC_MOD || !mod_value(t as usize))?;
             }
         }
     }
     Ok(r)
 }
 
-fn parse_layer_route(w: &mut Words, n_values: usize) -> Result<Route, Malformed> {
+fn parse_layer_route(w: &mut Words, n_values: usize, n_lfos: usize) -> Result<Route, Malformed> {
     let r = read_route(w, n_values)?;
-    // Layer routes: macros only in this stage (layer LFOs, MIDI and layer features come with the matrix).
-    check(r.source == SRC_MACRO && (r.arg as usize) < N_MACROS)?;
-    check(r.via == SRC_NONE || (r.via == SRC_MACRO && (r.via_arg as usize) < N_MACROS))?;
-    check(r.target_kind == TGT_VALUE && r.mode != MODE_PULL && !r.latch)?;
+    let layer_src = |s: u16, a: u16| layer_source_index(s, a).is_some() && (s != SRC_LAYER_LFO || (a as usize) < n_lfos);
+    let vowel = r.source == SRC_LAYER_VOWEL;
+    check(layer_src(r.source, r.arg) || vowel)?;
+    check(r.via == SRC_NONE || layer_src(r.via, r.via_arg))?;
+    // No note to latch to, and no single pitch: pitch routes are per voice.
+    check(!r.latch && r.target_kind != TGT_PITCH)?;
+    check(!vowel || (r.target_kind == TGT_BANDS && r.mode == MODE_PULL))?;
+    // Octave moves happen after a voice maps its values; a layer route moves the value itself.
+    check(r.target_kind != TGT_OCTAVES)?;
+    if r.target_kind == TGT_BANDS {
+        check(r.n_targets == 1 && r.targets[0] as usize + N_BANDS_SHAPE <= n_values && r.mode != MODE_SCALE)?;
+    }
     Ok(r)
 }
+
+/// Values in a band shape.
+pub const N_BANDS_SHAPE: usize = 16;
 
 fn read_route(w: &mut Words, n_values: usize) -> Result<Route, Malformed> {
     let mut r = Route::EMPTY;

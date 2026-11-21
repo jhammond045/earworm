@@ -51,6 +51,26 @@ const SILENT: u8 = u8::MAX;
 /// Seeds of the four LFOs' drift sequences: the third keeps the old chaos seed.
 const LFO_SALT: [u32; MAX_LFOS] = [0x1b87_3593, 0xcc9e_2d51, 0, 0x85eb_ca6b];
 
+/// Intensity bands (of the 16 from 80 Hz to 12 kHz): about 300 to 800 Hz
+/// (centres 304, 425, 594 Hz) and about 2 to 6 kHz (2.3, 3.2, 4.4, 6.2 kHz).
+const INTENSITY_LO: std::ops::RangeInclusive<usize> = 4..=6;
+const INTENSITY_HI: std::ops::RangeInclusive<usize> = 10..=13;
+/// The tilt difference that spans the whole 0..1 range, in dB either side of 0.5.
+const INTENSITY_DB: f32 = 10.0;
+
+/// Vocal effort from a frame's bands (docs/synth.md "The sung features"):
+/// the mean level of the 2 to 6 kHz bands minus that of the 300 to 800 Hz
+/// bands, -10..+10 dB mapped to 0..1. The bands already have the singer's
+/// average removed, so 0.5 is the singer's usual tilt. NaN without bands.
+pub fn intensity(bands: &[f32]) -> f32 {
+    let mean = |r: std::ops::RangeInclusive<usize>| {
+        let n = (r.end() - r.start() + 1) as f32;
+        r.map(|i| bands[i]).sum::<f32>() / n
+    };
+    let d = mean(INTENSITY_HI) - mean(INTENSITY_LO);
+    if d.is_finite() { (0.5 + d / (2.0 * INTENSITY_DB)).clamp(0.0, 1.0) } else { f32::NAN }
+}
+
 /// The note a voice plays, fixed for its life. Hit-shape fields are NaN when
 /// the note has none (melody notes, live notes).
 #[derive(Clone, Copy, Debug)]
@@ -110,6 +130,8 @@ pub struct LayerView<'a> {
     pub max_partials: usize,
     /// Live follow gate gain for the follow voice.
     pub follow_gain: f32,
+    /// The layer's source values this tick (macros, perf, layer LFOs, layer features), for vias.
+    pub lsrc: &'a [f32; N_LAYER_SOURCES],
 }
 
 /// Value `i` in real units for a voice: its own when a route moved it this tick, else the layer's.
@@ -163,11 +185,12 @@ enum Inst {
     Comb,
 }
 
-/// Raw per-voice source values: note fields (SRC_NOTE_* order) and sung
-/// features (SRC_VOICE_* order); NaN when absent.
+/// Raw per-voice source values: note fields (SRC_NOTE_* order), sung
+/// features (`feature_index` order) and the layer's sources (vias only); NaN when absent.
 struct Sources {
     note: [f32; 10],
-    voice: [f32; 7],
+    voice: [f32; N_FEATURES],
+    layer: [f32; N_LAYER_SOURCES],
 }
 
 pub struct Voice {
@@ -222,6 +245,10 @@ pub struct Voice {
     held: [[f32; MAX_TARGETS]; MAX_ROUTES],
     /// Set while `start` resolves: latched pulls record what they set.
     holding: bool,
+    /// Each route's shaped output y (0..1) this tick, NaN when it had no value (meters).
+    out: [f32; MAX_ROUTES],
+    /// The frame's onset at the last tick (onset-triggered envelopes restart on a rising one).
+    onset_prev: f32,
 
     note: Note,
     note_src: [f32; 10],
@@ -246,6 +273,36 @@ pub struct Voice {
 #[inline]
 fn fin01(x: f32) -> f32 {
     if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }
+}
+
+/// The sung features of a frame record, in `feature_index` order: pitch
+/// (tuned, else raw; cents), volume, openness, breath, hardness, onset,
+/// voicing, intensity.
+pub fn features(f: &[f32; CURVE_STRIDE]) -> [f32; N_FEATURES] {
+    let pitch = if f[TUNED].is_finite() { f[TUNED] } else { f[frame::PITCH] };
+    [
+        pitch,
+        fin01(f[frame::LOUDNESS]),
+        fin01(f[frame::OPENNESS]),
+        fin01(f[frame::BREATHINESS]),
+        fin01(f[frame::HARDNESS]),
+        fin01(f[frame::ONSET]),
+        f[frame::VOICING],
+        intensity(&f[frame::BANDS..frame::BANDS + N_BANDS]),
+    ]
+}
+
+/// A via scales an amount by its source in 0..1 (a bipolar source by its distance from centre).
+#[inline]
+pub fn via_value(src: u16, arg: u16, x: f32) -> f32 {
+    let bipolar = src == SRC_LAYER_LFO || (src == SRC_PERF && arg == 1);
+    if !x.is_finite() {
+        0.0
+    } else if bipolar {
+        x.abs().min(1.0)
+    } else {
+        x
+    }
 }
 
 impl Voice {
@@ -293,6 +350,8 @@ impl Voice {
             latched_raw: [0.0; MAX_ROUTES],
             held: [[0.0; MAX_TARGETS]; MAX_ROUTES],
             holding: false,
+            out: [f32::NAN; MAX_ROUTES],
+            onset_prev: 0.0,
             note: Note::default(),
             note_src: [f32::NAN; 10],
             note_t: 0.0,
@@ -381,7 +440,8 @@ impl Voice {
             self.partials.note_start();
         }
         // Latched routes take their source now; smoothing starts at it.
-        let src = self.sources(frame);
+        let src = self.sources(frame, lv);
+        self.onset_prev = frame.map_or(0.0, |f| fin01(f[frame::ONSET]));
         self.n_act = 0;
         for (i, r) in vp.routes().iter().enumerate() {
             let y = self.shaped(r, vp, &src, frame);
@@ -536,6 +596,11 @@ impl Voice {
         self.moved[i].then(|| self.nv[i])
     }
 
+    /// Route `i`'s shaped output (0..1) at the last tick, NaN when its source had no value.
+    pub fn route_out(&self, i: usize) -> f32 {
+        self.out[i]
+    }
+
     // ------------------------------------------------------------ state
 
     fn reset_all(&mut self) {
@@ -582,20 +647,11 @@ impl Voice {
 
     // ------------------------------------------------------------ routes
 
-    /// Raw values of the per-voice sources that are not mods.
-    fn sources(&self, frame: Option<&[f32; CURVE_STRIDE]>) -> Sources {
-        let mut s = Sources { note: self.note_src, voice: [f32::NAN; 7] };
+    /// Raw values of the per-voice sources that are not mods, and the layer's sources.
+    fn sources(&self, frame: Option<&[f32; CURVE_STRIDE]>, lv: &LayerView) -> Sources {
+        let mut s = Sources { note: self.note_src, voice: [f32::NAN; N_FEATURES], layer: *lv.lsrc };
         if let Some(f) = frame {
-            let pitch = if f[TUNED].is_finite() { f[TUNED] } else { f[frame::PITCH] };
-            s.voice = [
-                pitch,
-                fin01(f[frame::LOUDNESS]),
-                fin01(f[frame::OPENNESS]),
-                fin01(f[frame::BREATHINESS]),
-                fin01(f[frame::HARDNESS]),
-                fin01(f[frame::ONSET]),
-                f[frame::VOICING],
-            ];
+            s.voice = features(f);
         }
         s
     }
@@ -622,8 +678,8 @@ impl Voice {
         match src {
             SRC_MOD => self.mod_val[arg as usize],
             SRC_NOTE_PITCH..=SRC_NOTE_END_CLICK => s.note[(src - SRC_NOTE_PITCH) as usize],
-            SRC_VOICE_PITCH..=SRC_VOICE_VOICING => s.voice[(src - SRC_VOICE_PITCH) as usize],
-            _ => f32::NAN,
+            SRC_VOICE_PITCH..=SRC_VOICE_VOICING | SRC_VOICE_INTENSITY => feature_index(src).map_or(f32::NAN, |i| s.voice[i]),
+            _ => layer_source_index(src, arg).map_or(f32::NAN, |i| s.layer[i]),
         }
     }
 
@@ -706,7 +762,7 @@ impl Voice {
             lv.real[a]
         };
         let depth = if r.group == GROUP_NONE { 1.0 } else { lv.depth[r.group as usize - 1] };
-        let via = if r.via == SRC_NONE { 1.0 } else { self.raw(r.via, r.via_arg, s) };
+        let via = if r.via == SRC_NONE { 1.0 } else { via_value(r.via, r.via_arg, self.raw(r.via, r.via_arg, s)) };
         (amount * r.unit, if via == 1.0 { depth } else { depth * via })
     }
 
@@ -720,13 +776,14 @@ impl Voice {
             self.moved[t as usize] = false;
         }
         self.n_dirty = 0;
+        self.out[..vp.n_routes].fill(f32::NAN);
         let mut pitch = base;
         let dt = TICK as f32 / self.sr;
         // Add and scale routes; pull routes come after the clamp.
         for x in 0..self.n_act {
             let i = self.act[x] as usize;
             let r = &vp.routes[i];
-            if (!mods && r.source == SRC_MOD) || r.mode == MODE_PULL || (frame.is_none() && r.source >= SRC_VOICE_PITCH) {
+            if (!mods && r.source == SRC_MOD) || r.mode == MODE_PULL || (frame.is_none() && is_feature_source(r.source)) {
                 continue;
             }
             let (ku, dv) = self.k(r, lv, s);
@@ -734,6 +791,7 @@ impl Voice {
                 continue;
             }
             let Some((y, c)) = self.route_c(i, r, vp, s, frame, first, dt) else { continue };
+            self.out[i] = y;
             let m = |x: f32| ku * if dv == 1.0 { x } else { x * dv };
             // Into another route's amount: in the amount's real units, by the source value itself.
             if r.target_kind == TGT_VALUE && r.mode == MODE_ADD && lv.is_amount[r.targets[0] as usize] {
@@ -795,6 +853,7 @@ impl Voice {
             if r.source == SRC_VOICE_VOWEL {
                 // Mouth: each band moves toward the sung vowel shape.
                 let Some(f) = frame else { continue };
+                self.out[i] = 1.0;
                 if !(k > 0.0) {
                     continue;
                 }
@@ -813,6 +872,7 @@ impl Voice {
                 continue;
             }
             let Some((y, _)) = self.route_c(i, r, vp, s, frame, first, dt) else { continue };
+            self.out[i] = y;
             // The target moves in its own units toward the source value.
             let yr = self.source_value(i, r, y, s);
             for (j, &t) in r.targets[..r.n_targets as usize].iter().enumerate() {
@@ -876,7 +936,11 @@ impl Voice {
         if !first {
             self.note_t += dt;
         }
-        let s = self.sources(frame);
+        let s = self.sources(frame, lv);
+        // Onset-triggered envelopes restart on a rising sung onset.
+        let onset = frame.map_or(0.0, |f| fin01(f[frame::ONSET]));
+        let retrigger = !first && onset > 0.0 && self.onset_prev <= 0.0;
+        self.onset_prev = onset;
         // Sources first: the first envelope, then the others (the decay mode
         // reads the first one's stage), the LFOs with the layer's values.
         let end_stop = self.note.end_stop;
@@ -885,6 +949,10 @@ impl Voice {
         for (k, m) in vp.mods().iter().enumerate() {
             let slot = self.mod_slot[k] as usize;
             if m.code == P::T_ENV {
+                if retrigger && m.onset {
+                    let t = self.envs[slot].t;
+                    self.envs[slot].start(t);
+                }
                 let ev = self.envs[slot].tick(dt, end_stop && k == 0, first_rel, self.note_t);
                 if k == 0 {
                     event = ev;

@@ -77,6 +77,16 @@ pub const MSG_SET_METRO: u16 = 16;
 /// while the transport is already playing. When the bar ends, the transport
 /// starts on the next sample.
 pub const MSG_COUNT_IN: u16 = 17;
+/// Performance sources (docs/synth.md "Live use"). layer (255: every layer),
+/// index 0 mod wheel (0..1), 1 pitch bend (-1..1), 2 channel pressure (0..1),
+/// value. Routes read them as sources; nothing else does.
+pub const MSG_SET_PERF: u16 = 18;
+/// layer, value 1 = listen (the layer's sung features come from the mic,
+/// while its notes come from elsewhere), 0 = stop. Any number of layers may
+/// listen; the live tier runs once whatever the number.
+pub const MSG_LISTEN: u16 = 19;
+/// MSG_SET_PERF layer meaning every layer.
+pub const ALL_LAYERS: u8 = 255;
 
 /// MSG_SET_METRO fields (the `param` field).
 pub const METRO_ON: u16 = 0; // 0 or 1
@@ -237,6 +247,14 @@ pub const M_LAYER_PEAK: usize = 16; // 8 slots, per-layer peak (max of L and R)
 pub const M_LAYER_VOICES: usize = 24; // 8 slots, sounding voices per layer
 /// Value count of the selected layer's patch: the length of M_STORED and M_LIVE.
 pub const M_N_VALUES: usize = 32;
+/// Live intensity of the mic (docs/synth.md "The sung features"), 0..1, NaN when unknown.
+pub const M_INTENSITY: usize = 33;
+/// Bit per layer: listening (MSG_LISTEN).
+pub const M_LISTEN: usize = 34;
+/// The selected layer's sources this tick, patch.rs LS_* order (21 slots): macros (8),
+/// wheel, bend, pressure, layer LFOs (2), sung features (pitch in cents, volume, openness,
+/// breath, hardness, onset, voicing, intensity; NaN when the layer has none).
+pub const M_LAYER_SRC: usize = 40;
 /// Macro values with the gesture projected back onto each macro through its
 /// layer routes (TDD "What the sliders show"), 8 values.
 pub const M_MACRO_LIVE: usize = 224;
@@ -283,7 +301,12 @@ pub const M_STORED: usize = 280;
 /// Selected layer after step 6 (with its loudest sounding voice's routes
 /// applied, or the stored values when none sounds), MAX_VALUES values.
 pub const M_LIVE: usize = M_STORED + MAX_VALUES;
-pub const METER_LEN: usize = M_LIVE + MAX_VALUES;
+/// Selected layer's route outputs (the shaped source, 0..1; NaN when a route has no value):
+/// voice patch k's route i at M_ROUTES + k * 48 + i from its loudest sounding voice, then the
+/// layer routes from M_ROUTES + 192.
+pub const M_ROUTES: usize = M_LIVE + MAX_VALUES;
+pub const N_ROUTE_METERS: usize = KIT_SLOTS * 48 + 64;
+pub const METER_LEN: usize = M_ROUTES + N_ROUTE_METERS;
 
 // ---------------------------------------------------------------- buffer table
 

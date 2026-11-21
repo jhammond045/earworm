@@ -388,6 +388,7 @@ pub fn patch_blob(kind: u32, sample: u32) -> Vec<u8> {
     b.u(CHANNEL.len() as u32);
     b.u(l.macro_routes.len() as u32);
     b.u(l.width as u32);
+    b.u(0); // no layer LFOs
     for v in &l.vals {
         b.u(v.desc as u32);
     }

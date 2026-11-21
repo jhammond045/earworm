@@ -683,29 +683,109 @@ impl Default for Env {
 
 // ------------------------------------------------------------------ LFO
 
-/// An LFO: sine, or drift (smoothed random, today's chaos). Bipolar, times its level.
+/// An LFO, bipolar, times its level. Wave (stepped, 0..1 in steps of 0.2):
+/// sine, triangle, saw, square, random steps, drift (smoothed random, the
+/// old chaos). Sine and drift are the old LFOs' code, unchanged.
 pub struct LfoSrc {
     sine: Lfo,
     drift: Chaos,
+    /// Phase of the triangle, saw, square and random-step waves.
+    phase: f32,
+    step: f32,
+    rng: Noise,
     seed: u32,
     pub value: f32,
 }
 
+pub const LFO_WAVES: f32 = 5.0;
+
 impl LfoSrc {
     pub fn new(seed: u32) -> Self {
-        LfoSrc { sine: Lfo::new(), drift: Chaos::new(seed), seed, value: 0.0 }
+        let mut l = LfoSrc { sine: Lfo::new(), drift: Chaos::new(seed), phase: 0.0, step: 0.0, rng: Noise::new(seed ^ 0x2545_f491), seed, value: 0.0 };
+        l.start();
+        l
     }
 
-    /// Note start: phase 0, the drift sequence from the start, output 0.
+    /// Note start: phase 0, the random sequences from the start, output 0.
     pub fn start(&mut self) {
         self.sine.reset();
         self.drift.reset(self.seed);
+        self.phase = 0.0;
+        self.rng = Noise::new(self.seed ^ 0x2545_f491);
+        self.step = self.rng.next().clamp(-1.0, 1.0);
         self.value = 0.0;
     }
 
     /// Advance and return the raw (unit-level) value; the caller applies the level.
     pub fn tick(&mut self, rate: f32, wave: f32, dt: f32) -> f32 {
-        self.value = if wave >= 0.5 { self.drift.tick(rate, dt) } else { self.sine.tick(rate, dt) };
+        let w = (wave * LFO_WAVES).round() as i32;
+        self.value = match w {
+            i32::MIN..=0 => self.sine.tick(rate, dt),
+            5.. => self.drift.tick(rate, dt),
+            _ => {
+                let inc = rate * dt;
+                if inc.is_finite() && inc > 0.0 {
+                    self.phase += inc;
+                    if self.phase >= 1.0 {
+                        self.phase -= self.phase.floor();
+                        self.step = self.rng.next().clamp(-1.0, 1.0);
+                    }
+                }
+                let p = self.phase;
+                match w {
+                    // Triangle and saw start at 0 and rise, like the sine.
+                    1 => 1.0 - 4.0 * ((p + 0.25).fract() - 0.5).abs(),
+                    2 => 2.0 * (p + 0.5).fract() - 1.0,
+                    3 => {
+                        if p < 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    _ => self.step,
+                }
+            }
+        };
         self.value
+    }
+}
+
+#[cfg(test)]
+mod lfo_tests {
+    use super::*;
+
+    #[test]
+    fn waves_start_at_zero_or_a_step_and_stay_bipolar() {
+        for w in 0..=5 {
+            let mut l = LfoSrc::new(7);
+            let mut seen = (f32::MAX, f32::MIN);
+            for _ in 0..4000 {
+                let x = l.tick(3.0, w as f32 / LFO_WAVES, 1.0 / 1500.0);
+                assert!((-1.0..=1.0).contains(&x), "wave {w}: {x}");
+                seen = (seen.0.min(x), seen.1.max(x));
+            }
+            assert!(seen.1 - seen.0 > 0.5, "wave {w} moves: {seen:?}");
+        }
+        // Triangle and saw rise from 0 at the start.
+        for w in [1, 2] {
+            let mut l = LfoSrc::new(1);
+            let x = l.tick(1.0, w as f32 / LFO_WAVES, 0.01);
+            assert!(x > 0.0 && x < 0.1, "wave {w}: {x}");
+        }
+    }
+
+    #[test]
+    fn random_steps_hold_within_a_cycle_and_repeat_after_start() {
+        let run = |l: &mut LfoSrc| (0..300).map(|_| l.tick(10.0, 0.8, 1.0 / 1500.0)).collect::<Vec<_>>();
+        let mut l = LfoSrc::new(3);
+        let a = run(&mut l);
+        l.start();
+        let b = run(&mut l);
+        assert_eq!(a, b);
+        // 10 Hz at 1500 ticks a second: 150 ticks a step, so at most 3 distinct values in 300 ticks.
+        let mut d = a.clone();
+        d.dedup();
+        assert!(d.len() <= 3 && d.len() >= 2, "{d:?}");
     }
 }

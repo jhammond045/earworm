@@ -389,6 +389,16 @@ impl LiveCapture {
         (r, gain)
     }
 
+    /// The record a listening layer reads: the latest block's features with the
+    /// tier's own voicing, and the tuned pitch (octave applied) while voiced.
+    pub fn listen_record(&self) -> [f32; CURVE_STRIDE] {
+        let mut r = self.rec;
+        let g = self.tier.gesture();
+        r[frame::VOICING] = g.voicing;
+        r[TUNED] = if g.voicing < 0.5 { self.carrier() } else { f32::NAN };
+        r
+    }
+
     /// Tuned carrier pitch with the octave applied (meters), NaN unknown.
     pub fn carrier(&self) -> f32 {
         if self.tuned.is_finite() { self.tuned + self.octave() } else { f32::NAN }
@@ -415,5 +425,6 @@ impl LiveCapture {
         m[M_LIVE_SLOT] = self.last_slot as f32;
         m[M_LIVE_HITS] = self.hits as f32;
         m[M_VOWEL..M_VOWEL + N_BANDS].copy_from_slice(&g.bands_db[..N_BANDS]);
+        m[M_INTENSITY] = if g.gate { crate::voice::intensity(&g.bands_db[..N_BANDS]) } else { f32::NAN };
     }
 }

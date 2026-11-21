@@ -59,8 +59,8 @@ max       = 1.0
 neutral   = 0.0
 unit      = ""
 smooth_ms = 15
-steps     = 2
-doc       = "0 sine, 1 drift (smoothed random). The other shapes arrive with the modulation matrix."
+steps     = 6
+doc       = "Wave of an LFO, in steps of 0.2: sine, triangle, saw, square, random steps, drift (smoothed random). 0 and 1 are the two waves of the old fixed LFOs."
 
 [[desc]]
 id        = "lfo.level"

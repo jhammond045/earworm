@@ -377,7 +377,7 @@ fn bad_patches_are_refused_and_the_old_one_keeps_playing() {
     let put = |b: &mut Vec<u8>, i: usize, x: u32| b[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
     let n = w(&good, 1) as usize;
     // Word offset of the first voice patch's module list.
-    let vp = 6 + 2 * n;
+    let vp = 7 + 2 * n;
     let modules = vp + 13;
     let cables = modules + 2 * w(&good, vp) as usize;
     let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();

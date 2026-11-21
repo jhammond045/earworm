@@ -15,7 +15,7 @@ pub const D_PARTIALS_FINE: usize = 103;
 pub static EXTRA_DESCS: [crate::Desc; 8] = [
     crate::Desc { id: "amp.gain", group: crate::Group::Tone, scale: crate::Scale::Lin, min: 0.0, max: 2.0, neutral: 1.0, unit: "", smooth_ms: 15.0, doc: "Gain of an amp module. 1 leaves the level as it is." },
     crate::Desc { id: "env.mode", group: crate::Group::Shape, scale: crate::Scale::Lin, min: 0.0, max: 2.0, neutral: 0.0, unit: "", smooth_ms: 0.0, doc: "0 ADSR: note-off starts the release. 1 decay: starts at full, falls with decay, and note-off adds the release. 2 one-shot: starts at full, falls with decay, ignores note-off." },
-    crate::Desc { id: "lfo.wave", group: crate::Group::Motion, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 0.0, unit: "", smooth_ms: 15.0, doc: "0 sine, 1 drift (smoothed random). The other shapes arrive with the modulation matrix." },
+    crate::Desc { id: "lfo.wave", group: crate::Group::Motion, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 0.0, unit: "", smooth_ms: 15.0, doc: "Wave of an LFO, in steps of 0.2: sine, triangle, saw, square, random steps, drift (smoothed random). 0 and 1 are the two waves of the old fixed LFOs." },
     crate::Desc { id: "lfo.level", group: crate::Group::Motion, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 1.0, unit: "", smooth_ms: 15.0, doc: "Output level of an LFO." },
     crate::Desc { id: "route.amount", group: crate::Group::Motion, scale: crate::Scale::Bipolar, min: -1.0, max: 1.0, neutral: 0.0, unit: "", smooth_ms: 15.0, doc: "Amount of a modulation route. 1 moves the target across its whole range; for pitch, 1 is 48 semitones." },
     crate::Desc { id: "voicing.depth", group: crate::Group::Tone, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 1.0, unit: "", smooth_ms: 15.0, doc: "How far unvoiced sung frames swap the pitched sources for noise." },
@@ -24,7 +24,7 @@ pub static EXTRA_DESCS: [crate::Desc; 8] = [
 ];
 
 /// Steps of a stepped value (0: continuous).
-pub static STEPS: [u8; N_DESCS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 0, 0, 0, 7, 0];
+pub static STEPS: [u8; N_DESCS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0];
 /// Values a `scale` route may multiply.
 pub static SCALABLE: [bool; N_DESCS] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false];
 
