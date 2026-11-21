@@ -213,6 +213,8 @@ pub struct Route {
     pub in_lo: f32,
     pub in_hi: f32,
     pub bend: f32,
+    /// The curve's exponent, 2^(-2 bend).
+    pub gamma: f32,
     pub rise_ms: f32,
     pub fall_ms: f32,
     pub n_points: u8,
@@ -239,6 +241,7 @@ impl Route {
         in_lo: 0.0,
         in_hi: 1.0,
         bend: 0.0,
+        gamma: 1.0,
         rise_ms: 0.0,
         fall_ms: 0.0,
         n_points: 0,
@@ -247,12 +250,14 @@ impl Route {
     };
 
     /// The source is bipolar (-1..1 enters the shaper as 0..1): an LFO or the pitch bend.
+    #[inline]
     pub fn bipolar(&self, mods: &[Mod]) -> bool {
         (self.source == SRC_MOD && mods[self.arg as usize].code == P::T_LFO) || self.source == SRC_LAYER_LFO || (self.source == SRC_PERF && self.arg == 1)
     }
 
     /// The shaper: a raw source value (0..1, or a bipolar value mapped to
     /// 0..1 by the caller) to the curve output y in 0..1.
+    #[inline]
     pub fn shape(&self, x: f32) -> f32 {
         let u = if self.identity {
             x.clamp(0.0, 1.0)
@@ -274,10 +279,17 @@ impl Route {
             }
             return p[p.len() - 1][1];
         }
-        if self.bend == 0.0 { u } else { u.powf((-2.0 * self.bend).exp2()) }
+        if self.bend == 0.0 {
+            u
+        } else if u <= 0.0 {
+            0.0
+        } else {
+            dsp::fx::fast_exp2(self.gamma * dsp::fx::fast_log2(u))
+        }
     }
 
     /// Polarity: y (0..1) to the movement c.
+    #[inline]
     pub fn polar(&self, y: f32) -> f32 {
         match self.polarity {
             POL_UP => y,
@@ -287,6 +299,7 @@ impl Route {
     }
 
     /// Needs per-voice state (smoothing).
+    #[inline]
     pub fn smoothed(&self) -> bool {
         self.rise_ms > 0.0 || self.fall_ms > 0.0
     }
@@ -780,6 +793,7 @@ fn read_route(w: &mut Words, n_values: usize) -> Result<Route, Malformed> {
     r.in_lo = w.f()?;
     r.in_hi = w.f()?;
     r.bend = w.f()?.clamp(-1.0, 1.0);
+    r.gamma = (-2.0 * r.bend).exp2();
     r.rise_ms = w.f()?.max(0.0);
     r.fall_ms = w.f()?.max(0.0);
     r.n_points = w.small(MAX_POINTS)? as u8;

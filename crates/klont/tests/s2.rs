@@ -43,7 +43,7 @@ struct Trace {
 /// filter cutoff from `route`; the cutoff starts at `base` (normalized).
 fn run(route: Extra, base: f32, input: &[f32]) -> Trace {
     let mut e = Engine::new(SR, BLOCK);
-    let blob = classic::patch_blob_ext(KIND_MELODY, 0, &[], &[route], 0);
+    let blob = classic::patch_blob_ext(KIND_MELODY, 0, &[], &[route], 0, true);
     assert_eq!(e.load_bytes(0, LOAD_PATCH, &blob), LOAD_OK);
     let cut = classic::index(KIND_MELODY, P::FILT_CUTOFF)[0];
     e.push(MSG_SET_PARAM, 0, SET_BASE, cut as u16, base, 0);
@@ -125,4 +125,21 @@ fn a_pitch_route_follows_the_sung_pitch_one_tick_after_the_analysis() {
     );
     // The route adds at most one control tick (0.67 ms) to the analysis.
     assert!(onset - known <= 32.0 / SR * 1000.0 + 1e-3, "the route took {} ms after the pitch was known", onset - known);
+}
+
+#[test]
+fn the_benchmark_routes_all_run_every_tick() {
+    let mut e = Engine::new(SR, 128);
+    let blob = classic::patch_blob_ext(KIND_MELODY, 0, &classic::bench_routes(false), &[], 0, false);
+    assert_eq!(e.load_bytes(0, LOAD_PATCH, &blob), LOAD_OK);
+    e.push(MSG_NOTE_ON, 0, 0, 0, 4800.0, 0);
+    let mut seen = [false; 48];
+    for _ in 0..200 {
+        e.render(128);
+        for (i, s) in seen.iter_mut().enumerate() {
+            *s |= e.meter()[M_ROUTES + i].is_finite();
+        }
+    }
+    assert!(seen.iter().all(|&s| s), "{seen:?}");
+    assert!(e.meter()[M_PEAK_L] > 0.01);
 }

@@ -8,6 +8,13 @@
 //! rendered once per budget; each line gives the real-time factor (seconds
 //! of audio per second of CPU) and the cost per active partial per sample.
 //!
+//! Scene "routes" (stage S2): the worst case with 48 voice routes on every
+//! voice patch, all evaluated every tick (envelopes, LFOs and note fields into
+//! the partial bank's spectrum, the filter, the amp, the click and pitch; some
+//! bent, some with points, some smoothed; `classic::bench_routes`), at budget
+//! 4096, beside the classic worst case run alternately in the same session.
+//! "routes, heavy" also moves stretch, jitter and damp in every voice.
+//!
 //! Scene "demo": the 8-layer demo track from web/public/m1/demo (written by
 //! `pnpm gen:demo`), rendered at the automatic budget's ceiling.
 
@@ -24,7 +31,19 @@ fn set(e: &mut Engine, layer: u8, p: usize, real: f32) {
 }
 
 fn worst_case(budget: u32) -> Box<Engine> {
+    worst_case_with(budget, None)
+}
+
+/// The worst case; with `routes`, every voice patch carries the 48 bench routes (heavy or not)
+/// instead of the classic ones.
+fn worst_case_with(budget: u32, routes: Option<bool>) -> Box<Engine> {
     let mut e = Engine::new(SR, BLOCK);
+    if let Some(heavy) = routes {
+        let blob = klont::classic::patch_blob_ext(KIND_MELODY, 0, &klont::classic::bench_routes(heavy), &[], 0, false);
+        for l in 0..MAX_LAYERS as u32 {
+            assert_eq!(e.load_bytes(l, LOAD_PATCH, &blob), LOAD_OK, "bench routes patch");
+        }
+    }
     for l in 0..MAX_LAYERS as u8 {
         set(&mut e, l, P::SRC_TILT, -1.5);
         set(&mut e, l, P::SRC_NOISE_MIX, 0.1);
@@ -92,6 +111,20 @@ fn main() {
         ));
     }
 
+    // Stage S2: 48 voice routes per voice patch, against the classic worst case, alternately.
+    let (mut best_routes, mut best_heavy, mut best_classic) = (0.0f64, 0.0f64, 0.0f64);
+    for _ in 0..3 {
+        let mut e = worst_case_with(4096, Some(false));
+        best_routes = best_routes.max(time_render(&mut e, seconds).rt);
+        let mut e = worst_case_with(4096, Some(true));
+        best_heavy = best_heavy.max(time_render(&mut e, seconds).rt);
+        let mut e = worst_case(4096);
+        best_classic = best_classic.max(time_render(&mut e, seconds).rt);
+    }
+    println!(
+        "routes: 8 layers x 8 voices x 48 voice routes, budget 4096: {best_routes:.2}x realtime; heavy (also stretch, jitter, damp): {best_heavy:.2}x; classic worst case beside them: {best_classic:.2}x; best of 3"
+    );
+
     // Live tier: cost of `process` per block with a voiced input, disarmed
     // (tier only) and with a melody layer armed (tier plus a live voice).
     let hum: Vec<f32> = (0..(SR as usize)).map(|i| {
@@ -154,7 +187,7 @@ fn main() {
     }
     if json {
         println!(
-            "{{\"worst_case\":[{}],\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}}}}",
+            "{{\"worst_case\":[{}],\"routes48\":{{\"realtime\":{best_routes:.3},\"heavy\":{best_heavy:.3},\"classic\":{best_classic:.3}}},\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}}}}",
             rows.join(","),
             live_us[0],
             live_us[1]

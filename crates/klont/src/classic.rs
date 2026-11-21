@@ -389,6 +389,11 @@ pub struct Extra {
     pub unit: f32,
     pub in_lo: f32,
     pub in_hi: f32,
+    pub bend: f32,
+    pub rise_ms: f32,
+    pub fall_ms: f32,
+    /// Shaper points (up to three here), or none.
+    pub points: Option<[[f32; 2]; 3]>,
     pub via: (u16, u16),
 }
 
@@ -396,27 +401,48 @@ pub struct Extra {
 pub enum ExtraTarget {
     /// (module name, value offset) in the voice patch (kit slot 1's on a beat layer, for a layer route).
     V(&'static str, usize),
+    /// A log-scaled value moved in octaves.
+    Octaves(&'static str, usize),
+    /// A 16-band shape starting at the offset.
+    Bands(&'static str, usize),
     Pitch,
 }
 
 impl Extra {
     pub const fn new(src: u16, arg: u16, target: ExtraTarget, amount: f32) -> Extra {
-        Extra { src, arg, target, mode: MODE_ADD, pol: POL_UP, amount, unit: 1.0, in_lo: 0.0, in_hi: 1.0, via: (SRC_NONE, 0) }
+        Extra {
+            src,
+            arg,
+            target,
+            mode: MODE_ADD,
+            pol: POL_UP,
+            amount,
+            unit: 1.0,
+            in_lo: 0.0,
+            in_hi: 1.0,
+            bend: 0.0,
+            rise_ms: 0.0,
+            fall_ms: 0.0,
+            points: None,
+            via: (SRC_NONE, 0),
+        }
     }
 }
 
 /// The LOAD_PATCH blob of the classic patch for a layer kind. Its grains
 /// read sample `sample` (the app gives layer i sample i).
 pub fn patch_blob(kind: u32, sample: u32) -> Vec<u8> {
-    patch_blob_ext(kind, sample, &[], &[], 0)
+    patch_blob_ext(kind, sample, &[], &[], 0, true)
 }
 
 /// The classic patch with `voice` routes added to every voice patch, `layer`
 /// routes added to the layer, and `lfos` layer LFOs (sine, 1 Hz). The added
-/// routes' amounts and the LFOs' values follow the classic values.
-pub fn patch_blob_ext(kind: u32, sample: u32, voice: &[Extra], layer: &[Extra], lfos: usize) -> Vec<u8> {
+/// routes' amounts and the LFOs' values follow the classic values. Without
+/// `classic_routes` the voice patches have only the added routes (the
+/// classic amounts stay as unused values).
+pub fn patch_blob_ext(kind: u32, sample: u32, voice: &[Extra], layer: &[Extra], lfos: usize, classic_routes: bool) -> Vec<u8> {
     let l = layout(kind);
-    let rs = routes();
+    let rs = if classic_routes { routes() } else { Vec::new() };
     let n_vp = l.ranges.len();
     let classic_n = l.vals.len();
     let lfo_base = classic_n;
@@ -569,12 +595,73 @@ pub fn patch_blob_ext(kind: u32, sample: u32, voice: &[Extra], layer: &[Extra], 
     b.0
 }
 
+/// The benchmark's 48 voice routes (bench.rs "routes"), all moving every tick: the envelope gate,
+/// a vibrato, and 46 more from the envelopes, LFOs and note fields into the partial bank's
+/// spectrum (tilt, odd/even, formants, a band shape, fine tune), the filter, the amp and the click:
+/// the kinds of value the classic patch already moves every tick. With `heavy` they also move
+/// stretch, jitter and damp, which make the partial bank rebuild its frequency and ring tables every
+/// tick. Neither switches fold, clang or comb on: that is the cost of a heavier sound (stage S3's
+/// cost meter), not of modulation.
+pub fn bench_routes(heavy: bool) -> Vec<Extra> {
+    use ExtraTarget::*;
+    let mut v = vec![
+        Extra { mode: MODE_SCALE, pol: POL_DOWN, ..Extra::new(SRC_MOD, 0, V("amp1", P::amp::GAIN), 1.0) },
+        Extra { pol: POL_BOTH, unit: 100.0, ..Extra::new(SRC_MOD, 3, Pitch, 0.2) },
+    ];
+    let light = [
+        V("partials1", P::partials::TILT),
+        V("partials1", P::partials::ODDEVEN),
+        V("partials1", P::partials::F1_FREQ),
+        V("partials1", P::partials::F1_GAIN),
+        V("partials1", P::partials::F2_FREQ),
+        V("partials1", P::partials::F2_GAIN),
+        V("partials1", P::partials::FINE),
+        Bands("partials1", P::partials::TONE_BANDS),
+        V("filter1", P::filter::RES),
+        Octaves("filter1", P::filter::CUTOFF),
+        V("amp1", P::amp::GAIN),
+        V("click1", P::click::COLOUR),
+    ];
+    let table = [V("partials1", P::partials::STRETCH), V("partials1", P::partials::JITTER), V("partials1", P::partials::DAMP)];
+    let targets: Vec<ExtraTarget> = if heavy { light.iter().chain(table.iter()).copied().collect() } else { light.to_vec() };
+    // (source, arg): env1..env3, lfo1..lfo3, velocity, pitch.
+    let sources = [(SRC_MOD, 0), (SRC_MOD, 1), (SRC_MOD, 2), (SRC_MOD, 3), (SRC_MOD, 4), (SRC_MOD, 5), (SRC_NOTE_VELOCITY, 0), (SRC_NOTE_PITCH, 0)];
+    let mut i = 0;
+    while v.len() < 48 {
+        let (src, arg) = sources[i % sources.len()];
+        let mut x = Extra::new(src, arg, targets[i % targets.len()], 0.05);
+        if src == SRC_MOD && arg >= 3 {
+            x.pol = POL_BOTH;
+        }
+        if src == SRC_NOTE_PITCH {
+            (x.in_lo, x.in_hi) = (3600.0, 6000.0);
+        }
+        if i % 3 == 0 {
+            x.bend = 0.3;
+        }
+        if i % 4 == 1 {
+            x.points = Some([[0.0, 0.0], [0.5, 1.0], [1.0, 0.2]]);
+        }
+        if i % 5 == 2 {
+            (x.rise_ms, x.fall_ms) = (5.0, 50.0);
+        }
+        v.push(x);
+        i += 1;
+    }
+    v
+}
+
 fn extra_route(b: &mut Blob, x: &Extra, at: impl Fn(&'static str, usize) -> usize, amount: usize) {
     b.u(x.src as u32);
     b.u(x.arg as u32);
     match x.target {
-        ExtraTarget::V(m, off) => {
-            b.u(TGT_VALUE as u32);
+        ExtraTarget::V(m, off) | ExtraTarget::Octaves(m, off) | ExtraTarget::Bands(m, off) => {
+            let k = match x.target {
+                ExtraTarget::Octaves(..) => TGT_OCTAVES,
+                ExtraTarget::Bands(..) => TGT_BANDS,
+                _ => TGT_VALUE,
+            };
+            b.u(k as u32);
             b.u(1);
             b.u(at(m, off) as u32);
         }
@@ -597,12 +684,15 @@ fn extra_route(b: &mut Blob, x: &Extra, at: impl Fn(&'static str, usize) -> usiz
     b.f(x.unit);
     b.f(x.in_lo);
     b.f(x.in_hi);
-    b.f(0.0);
-    b.f(0.0);
-    b.f(0.0);
-    b.u(0);
-    for _ in 0..2 * MAX_POINTS {
-        b.f(0.0);
+    b.f(x.bend);
+    b.f(x.rise_ms);
+    b.f(x.fall_ms);
+    let pts: &[[f32; 2]] = x.points.as_ref().map_or(&[], |p| &p[..]);
+    b.u(pts.len() as u32);
+    for k in 0..MAX_POINTS {
+        let p = pts.get(k).copied().unwrap_or([0.0, 0.0]);
+        b.f(p[0]);
+        b.f(p[1]);
     }
 }
 

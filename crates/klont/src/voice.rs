@@ -674,6 +674,7 @@ impl Voice {
         ]
     }
 
+    #[inline]
     fn raw(&self, src: u16, arg: u16, s: &Sources) -> f32 {
         match src {
             SRC_MOD => self.mod_val[arg as usize],
@@ -684,6 +685,7 @@ impl Voice {
     }
 
     /// Source of route `r` through its shaper (latch and smoothing aside); NaN without a value.
+    #[inline]
     fn shaped(&self, r: &Route, vp: &VoicePatch, s: &Sources, frame: Option<&[f32; CURVE_STRIDE]>) -> f32 {
         if r.source == SRC_VOICE_VOWEL {
             return if frame.is_some() { 1.0 } else { f32::NAN };
@@ -711,6 +713,7 @@ impl Voice {
 
     /// y and the movement c of route `i` this tick, or None when its source has no value.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     fn route_c(&mut self, i: usize, r: &Route, vp: &VoicePatch, s: &Sources, frame: Option<&[f32; CURVE_STRIDE]>, first: bool, dt: f32) -> Option<(f32, f32)> {
         // A bipolar mod through an identity shaper with both polarities moves by its raw value.
         if r.source == SRC_MOD && r.identity && !r.latch && !r.smoothed() && r.polarity == POL_BOTH && r.bipolar(vp.mods()) {
@@ -751,6 +754,7 @@ impl Voice {
     /// (amount x unit, group depth x via): a route moves its target by
     /// `ku * (c * dv)`, the order the old fixed maps multiplied in. An amount
     /// another route moves is read from this voice's values as they stand.
+    #[inline]
     fn k(&self, r: &Route, lv: &LayerView, s: &Sources) -> (f32, f32) {
         let a = r.amount as usize;
         let amount = if self.moved[a] && lv.is_amount[a] {
