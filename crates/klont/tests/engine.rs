@@ -268,6 +268,10 @@ fn eight_layers_render_without_allocating() {
     let states = klont::classic::states_blob(kind, &[(P::neutral_set(), [0.5; N_MACROS], 0.0), (P::neutral_set(), [0.7; N_MACROS], 0.0)], &kit);
     let sample = klont::classic::sample_blob(SR, 4800.0, &vec![0.1; 48_000]);
     let melody = klont::classic::patch_blob(KIND_MELODY, 2);
+    // Stage S3: the heaviest patch (oscillators, noise, a sampler, a full channel) loaded onto a
+    // sounding layer, which fades and takes it, and the classic one back.
+    let heaviest = klont::build::heaviest_patch();
+    let classic3 = klont::classic::patch_blob(KIND_MELODY, 3);
     ALLOCS.store(0, Ordering::Relaxed);
     ARMED.with(|a| a.set(true));
     for i in 0..2000 {
@@ -276,6 +280,12 @@ fn eight_layers_render_without_allocating() {
             assert_eq!(e.load_bytes(2, LOAD_PATCH, &patch), LOAD_OK);
             assert_eq!(e.load_bytes(2, LOAD_LAYER, &layer), LOAD_OK);
             assert_eq!(e.load_bytes(2, LOAD_STATES, &states), LOAD_OK);
+        }
+        if i == 600 {
+            assert_eq!(e.load_bytes(3, LOAD_PATCH, &heaviest), LOAD_OK);
+        }
+        if i == 900 {
+            assert_eq!(e.load_bytes(3, LOAD_PATCH, &classic3), LOAD_OK);
         }
         if i == 1200 {
             assert_eq!(e.load_bytes(2, LOAD_PATCH, &melody), LOAD_OK);
