@@ -17,7 +17,18 @@
 //!
 //! Scene "demo": the 8-layer demo track from web/public/m1/demo (written by
 //! `pnpm gen:demo`), rendered at the automatic budget's ceiling.
+//!
+//! Scene "costs" (stage S3, `--costs`): what each module type, an envelope, an LFO, a voice
+//! route and a partial bank that rebuilds every tick cost per sample, measured as the difference
+//! between two 8 x 8 scenes that differ only in that part (best of 3). These are the `cost`
+//! figures of crates/params/modules.toml, which the engine and the app use to cap a layer's
+//! voices.
+//!
+//! Scene "worst allowed" (stage S3): 8 layers, each with the heaviest patch the caps allow (every
+//! voice module at its cap, all on, 48 routes moving the partial bank, a full channel), playing
+//! as many voices as its cost leaves room for, beside the classic worst case.
 
+use klont::build::{self, FxSpec, VoiceSpec, fullest_channel, heaviest_voice, voice};
 use klont::Engine;
 use klont::protocol::*;
 use params as P;
@@ -90,6 +101,122 @@ fn time_render(e: &mut Engine, seconds: f64) -> Run {
     Run { rt: audio / el, ns_per_partial: el * 1e9 / partial_samples.max(1.0), partials: partial_samples / (blocks * BLOCK) as f64 }
 }
 
+/// A second of a sine as sample 0 (for samplers and grains).
+fn load_sample(e: &mut Engine) {
+    let n = SR as usize;
+    let mut b: Vec<u8> = Vec::new();
+    for w in [SAMPLE_MAGIC, SR.to_bits(), 4800.0f32.to_bits(), n as u32] {
+        b.extend_from_slice(&w.to_le_bytes());
+    }
+    for i in 0..n {
+        let x = (std::f32::consts::TAU * 261.63 * i as f32 / SR).sin() * 0.5;
+        b.extend_from_slice(&x.to_le_bytes());
+    }
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &b), LOAD_OK);
+}
+
+/// 8 layers x 8 held voices of one patch (budget 4096, all partials), ready to time.
+fn scene(blob: &[u8]) -> Box<Engine> {
+    let mut e = Engine::new(SR, BLOCK);
+    load_sample(&mut e);
+    for l in 0..MAX_LAYERS as u8 {
+        assert_eq!(e.load_bytes(l as u32, LOAD_PATCH, blob), LOAD_OK);
+        e.push(MSG_SET_LAYER, l, 0, LAYER_LEVEL, -24.0, 0);
+    }
+    e.push(MSG_SET_BUDGET, 0, 0, 0, 4096.0, 0);
+    e.render(BLOCK);
+    for l in 0..MAX_LAYERS as u8 {
+        for v in 0..VOICES_PER_LAYER {
+            let cents = 3300.0 + 25.0 * (l as f32 * 2.0 + v as f32 * 5.0);
+            e.push(MSG_NOTE_ON, l, 0, 0, cents, 0);
+        }
+    }
+    e
+}
+
+#[repr(C)]
+struct Timespec {
+    sec: i64,
+    nsec: i64,
+}
+unsafe extern "C" {
+    fn clock_gettime(clock: u32, t: *mut Timespec) -> i32;
+}
+#[cfg(target_os = "macos")]
+const THREAD_CPU: u32 = 16;
+#[cfg(not(target_os = "macos"))]
+const THREAD_CPU: u32 = 3;
+
+/// This thread's CPU time in seconds: unlike wall time it leaves out the time other work on a
+/// loaded machine takes the core away.
+fn cpu_s() -> f64 {
+    let mut t = Timespec { sec: 0, nsec: 0 };
+    // SAFETY: clock_gettime writes one Timespec; the clock id is the platform's thread CPU clock.
+    unsafe { clock_gettime(THREAD_CPU, &mut t) };
+    t.sec as f64 + t.nsec as f64 * 1e-9
+}
+
+/// CPU nanoseconds per sample of the whole 8 x 8 scene for this patch, best of 5.
+fn scene_ns(blob: &[u8], seconds: f64) -> f64 {
+    let blocks = (seconds * SR as f64 / BLOCK as f64) as usize;
+    (0..5)
+        .map(|_| {
+            let mut e = scene(blob);
+            for _ in 0..200 {
+                e.render(BLOCK);
+            }
+            let t = cpu_s();
+            for _ in 0..blocks {
+                e.render(BLOCK);
+            }
+            (cpu_s() - t) * 1e9 / (blocks * BLOCK) as f64
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn costs(seconds: f64) {
+    let blob = |v: &VoiceSpec, ch: &[FxSpec], cs: &[(usize, usize, f32)]| build::patch(std::slice::from_ref(v), ch, cs);
+    let per_voice = |a: f64, b: f64| (a - b) / (MAX_LAYERS * VOICES_PER_LAYER) as f64;
+    let per_layer = |a: f64, b: f64| (a - b) / MAX_LAYERS as f64;
+    let osc = params::T_OSC;
+    let t = |v: &VoiceSpec| scene_ns(&blob(v, &[], &[]), seconds);
+    let base = t(&voice(&[], &[], 0, 0, 0, 0));
+    let with_osc = t(&voice(&[osc], &[], 0, 0, 0, P::osc::FINE));
+    println!("costs, ns per sample (voice parts per sounding voice, layer parts per layer); 8 x 8 scenes, best of 3:");
+    let mut rows: Vec<(&str, f64)> = Vec::new();
+    // As many copies as the caps allow, so the part measured is most of the difference.
+    for (name, code, n) in [("partials", params::T_PARTIALS, 1), ("osc", osc, 4), ("noise", params::T_NOISE, 2), ("sampler", params::T_SAMPLER, 1), ("click", params::T_CLICK, 1)] {
+        let c = per_voice(t(&voice(&vec![code; n], &[], 0, 0, 0, 0)), base) / n as f64;
+        rows.push((name, c));
+    }
+    for (name, code, n) in [("filter", params::T_FILTER, 2), ("amp", params::T_AMP, 3), ("fold", params::T_FOLD, 1), ("clang", params::T_CLANG, 1), ("comb", params::T_COMB, 1)] {
+        rows.push((name, per_voice(t(&voice(&[osc], &vec![code; n], 0, 0, 0, P::osc::FINE)), with_osc) / n as f64));
+    }
+    rows.push(("env", per_voice(t(&voice(&[osc], &[], 3, 0, 0, P::osc::FINE)), with_osc) / 3.0));
+    rows.push(("lfo", per_voice(t(&voice(&[osc], &[], 0, 4, 0, P::osc::FINE)), with_osc) / 3.0));
+    let routes = per_voice(t(&voice(&[osc], &[], 0, 0, 47, P::osc::FINE)), with_osc) / 47.0;
+    let part = |p: usize| t(&voice(&[params::T_PARTIALS], &[], 0, 0, 1, p));
+    let rebuild = per_voice(part(P::partials::TILT), part(P::partials::LEVEL));
+    // Layer parts.
+    let ov = voice(&[osc], &[], 0, 0, 0, P::osc::FINE);
+    let lt = |ch: &[FxSpec], cs: &[(usize, usize, f32)]| scene_ns(&blob(&ov, ch, cs), seconds);
+    let none = lt(&[], &[]);
+    let rev = lt(&[(params::T_REVERB, false)], &[(0, P::reverb::MIX, 0.3)]);
+    rows.push(("crush", per_layer(lt(&[(params::T_CRUSH, false)], &[(0, P::crush::BITS, 8.0)]), none)));
+    rows.push(("tape", per_layer(lt(&[(params::T_TAPE, false)], &[(0, P::tape::AMOUNT, 0.5)]), none)));
+    rows.push(("delay", per_layer(lt(&[(params::T_DELAY, false)], &[(0, P::delay::MIX, 0.3), (0, P::delay::FEEDBACK, 0.5)]), none)));
+    rows.push(("reverb", per_layer(rev, none)));
+    rows.push(("cfilter", per_layer(lt(&[(params::T_REVERB, false), (params::T_CFILTER, false)], &[(0, P::reverb::MIX, 0.3), (1, P::cfilter::CUTOFF, 2000.0)]), rev)));
+    let with_noise = VoiceSpec { noise: Some((0, 0.5)), ..ov.clone() };
+    rows.push(("shaped_noise", per_layer(scene_ns(&blob(&with_noise, &[], &[]), seconds), with_osc)));
+    let with_grains = VoiceSpec { grains: Some((0, 0, 0.5)), ..ov.clone() };
+    rows.push(("grains", per_layer(scene_ns(&blob(&with_grains, &[], &[]), seconds), with_osc)));
+    for (name, c) in &rows {
+        println!("  {name:>13} {c:7.2}");
+    }
+    println!("  {:>13} {routes:7.2}\n  {:>13} {rebuild:7.2}", "route", "rebuild");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
@@ -97,6 +224,10 @@ fn main() {
     let json = args.iter().any(|a| a == "--json");
     let demo = arg("--demo").unwrap_or_else(|| "web/public/m1/demo".into());
 
+    if args.iter().any(|a| a == "--costs") {
+        costs(seconds.min(2.0));
+        return;
+    }
     println!("Earworm M1 native benchmark, {SR} Hz, {BLOCK}-frame blocks, {seconds} s of audio per run");
     println!("worst case: 8 layers x 8 voices x 64 partials, vibrato, delay and reverb on every layer");
     println!("{:>8} {:>10} {:>10} {:>14} {:>12}", "budget", "partials", "x realtime", "ns/partial/s", "core load");
@@ -123,6 +254,31 @@ fn main() {
     }
     println!(
         "routes: 8 layers x 8 voices x 48 voice routes, budget 4096: {best_routes:.2}x realtime; heavy (also stretch, jitter, damp): {best_heavy:.2}x; classic worst case beside them: {best_classic:.2}x; best of 3"
+    );
+
+    // Stage S3: each layer's heaviest allowed patch at the voice count its cost allows.
+    let (ch, cs) = fullest_channel();
+    let worst = build::patch(&[heaviest_voice()], &ch, &cs);
+    let voices = {
+        let mut p = klont::patch::Patch::new_boxed();
+        p.parse(&worst).expect("the heaviest patch is valid");
+        p
+    };
+    let (mut best_worst, mut best_classic3) = (0.0f64, 0.0f64);
+    let mut allowed = 0.0;
+    for _ in 0..3 {
+        let mut e = scene(&worst);
+        let r = time_render(&mut e, seconds);
+        allowed = e.meter()[M_ACTIVE_VOICES];
+        best_worst = best_worst.max(r.rt);
+        let mut e = worst_case(4096);
+        best_classic3 = best_classic3.max(time_render(&mut e, seconds).rt);
+    }
+    println!(
+        "worst allowed: 8 layers x {} voices of the heaviest patch ({:.0} ns a voice, {:.0} ns a layer): {best_worst:.2}x realtime; classic worst case beside it: {best_classic3:.2}x; best of 3",
+        allowed as usize / MAX_LAYERS,
+        voices.max_voice_cost(),
+        voices.layer_cost()
     );
 
     // Live tier: cost of `process` per block with a voiced input, disarmed
@@ -187,7 +343,7 @@ fn main() {
     }
     if json {
         println!(
-            "{{\"worst_case\":[{}],\"routes48\":{{\"realtime\":{best_routes:.3},\"heavy\":{best_heavy:.3},\"classic\":{best_classic:.3}}},\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}}}}",
+            "{{\"worst_case\":[{}],\"routes48\":{{\"realtime\":{best_routes:.3},\"heavy\":{best_heavy:.3},\"classic\":{best_classic:.3}}},\"worst_allowed\":{{\"realtime\":{best_worst:.3},\"voices\":{allowed},\"classic\":{best_classic3:.3}}},\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}}}}",
             rows.join(","),
             live_us[0],
             live_us[1]

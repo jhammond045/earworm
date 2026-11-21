@@ -6,6 +6,7 @@
 //! quantum) and offline in a worker (`ew_render`, any length). All memory is
 //! allocated in `ew_init`; process and render calls never allocate.
 
+pub mod build;
 pub mod classic;
 pub mod curve;
 pub mod engine;

@@ -505,9 +505,75 @@ impl Partials {
 
 // ------------------------------------------------------------------ oscillator
 
-/// Two-sample polyBLEP: the residual of a unit step at phase 0, for phase `t` moving `dt` a sample.
+/// Four-sample polyBLEP from the cubic B-spline: twice the residual of a unit step at phase 0
+/// (a jump of 2), for phase `t` moving `dt` a sample. Against the two-sample polyBLEP it trades
+/// a little of the top octave (about 2.5 dB at 10 kHz, 10 dB at 20 kHz) for about 9 dB less
+/// aliasing (docs/S3.md, check 2). Needs dt below 1/4 (pitches below 12 kHz); above, the
+/// two-sample one takes over.
 #[inline]
 fn blep(t: f32, dt: f32) -> f32 {
+    if dt >= 0.25 {
+        return blep2(t, dt);
+    }
+    if t < 2.0 * dt {
+        let x = t / dt;
+        if x < 1.0 {
+            let x2 = x * x;
+            2.0 * (-0.5 + x * (2.0 / 3.0) - x2 * x * (1.0 / 3.0) + x2 * x2 * 0.125)
+        } else {
+            let y = 2.0 - x;
+            let y2 = y * y;
+            -y2 * y2 * (1.0 / 12.0)
+        }
+    } else if t > 1.0 - 2.0 * dt {
+        let x = (t - 1.0) / dt;
+        if x >= -1.0 {
+            let x2 = x * x;
+            2.0 * (0.5 + x * (2.0 / 3.0) - x2 * x * (1.0 / 3.0) - x2 * x2 * 0.125)
+        } else {
+            let y = 2.0 + x;
+            let y2 = y * y;
+            y2 * y2 * (1.0 / 12.0)
+        }
+    } else {
+        0.0
+    }
+}
+
+/// Its integral (the polyBLAMP), for a change of slope at phase 0.
+#[inline]
+fn blamp(t: f32, dt: f32) -> f32 {
+    if dt >= 0.25 {
+        return blamp2(t, dt);
+    }
+    if t < 2.0 * dt {
+        let x = t / dt;
+        if x < 1.0 {
+            let x2 = x * x;
+            2.0 * (7.0 / 30.0 - 0.5 * x + x2 * (1.0 / 3.0) - x2 * x2 * (1.0 / 12.0) + x2 * x2 * x * (1.0 / 40.0))
+        } else {
+            let y = 2.0 - x;
+            let y2 = y * y;
+            y2 * y2 * y * (1.0 / 60.0)
+        }
+    } else if t > 1.0 - 2.0 * dt {
+        let x = (t - 1.0) / dt;
+        if x >= -1.0 {
+            let x2 = x * x;
+            2.0 * (7.0 / 30.0 + 0.5 * x + x2 * (1.0 / 3.0) - x2 * x2 * (1.0 / 12.0) - x2 * x2 * x * (1.0 / 40.0))
+        } else {
+            let y = 2.0 + x;
+            let y2 = y * y;
+            y2 * y2 * y * (1.0 / 60.0)
+        }
+    } else {
+        0.0
+    }
+}
+
+/// Two-sample polyBLEP (linear B-spline), for pitches too high for the four-sample one.
+#[inline]
+fn blep2(t: f32, dt: f32) -> f32 {
     if t < dt {
         let x = t / dt;
         x + x - x * x - 1.0
@@ -519,9 +585,8 @@ fn blep(t: f32, dt: f32) -> f32 {
     }
 }
 
-/// Two-sample polyBLAMP: the integrated residual, for a change of slope at phase 0.
 #[inline]
-fn blamp(t: f32, dt: f32) -> f32 {
+fn blamp2(t: f32, dt: f32) -> f32 {
     if t < dt {
         let x = t / dt - 1.0;
         -1.0 / 3.0 * x * x * x
@@ -564,7 +629,7 @@ fn osc_wave(w: u8, t: f32, dt: f32, pw: f32) -> f32 {
     }
 }
 
-/// A band-limited oscillator (polyBLEP and polyBLAMP). The wave is a morph: sine at 0, triangle
+/// A band-limited oscillator (four-sample polyBLEP and polyBLAMP). The wave is a morph: sine at 0, triangle
 /// at 1/3, saw at 2/3, pulse at 1; between two waves it crossfades. A phase input (the `pm` port)
 /// moves the phase sample by sample, so one oscillator can frequency-modulate another.
 pub struct Osc {

@@ -19,8 +19,9 @@
 # steps: a stepped value takes that many evenly spaced real values; a morph
 # switches it at its midpoint.
 # scalable: a gain, level or mix, the only values a `scale` route may multiply.
-# cost: what one instance costs per sample, in nanoseconds on the build
-# machine (the benchmark's `costs` scene measures it). For a voice module it
+# cost: what one instance costs per sample, in nanoseconds of CPU time on the
+# build machine (`cargo run -p klont --release --bin bench -- --costs`
+# measures them; these are the measured figures rounded up, Nov 21, 2026). For a voice module it
 # is paid per sounding voice; for a layer source or a channel effect once per
 # layer. [cost] holds the same for routes. The engine and the app both work a
 # layer's voice count out of these (docs/synth.md "Rules for the graph").
@@ -30,10 +31,10 @@
 
 [cost]
 # One voice route evaluated every tick, per voice.
-route   = 0
+route   = 0.25
 # Once per voice patch when any route moves a partial-bank value that makes
 # the bank rebuild its tables every tick (its spectrum, ratios or ring).
-rebuild = 0
+rebuild = 11.0
 # A layer may spend what this many classic voices cost.
 voices  = 8
 
@@ -307,131 +308,131 @@ doc       = "How far the playback speed follows the voice pitch. 0 plays the sam
 type   = "partials"
 kind   = "voice"
 code   = 1
-cost   = 0
+cost   = 18.5
 params = ["level:src.harm_mix", "tilt:src.tilt", "oddeven:src.oddeven", "stretch:src.stretch", "jitter:src.jitter", "modal:src.modal", "damp:src.damp", "f1_freq:src.f1_freq", "f1_gain:src.f1_gain", "f2_freq:src.f2_freq", "f2_gain:src.f2_gain", "tone_bands:tone_bands.0*16", "octave:partials.octave", "fine:partials.fine"]
 
 [[module]]
 type   = "osc"
 kind   = "voice"
 code   = 2
-cost   = 0
+cost   = 2.5
 params = ["level:osc.level", "wave:osc.wave", "pw:osc.pw", "octave:pitch.octave", "semi:pitch.semi", "fine:pitch.fine", "pm:osc.pm"]
 
 [[module]]
 type   = "noise"
 kind   = "voice"
 code   = 3
-cost   = 0
+cost   = 2.0
 params = ["level:noise.level", "colour:noise.colour"]
 
 [[module]]
 type   = "sampler"
 kind   = "voice"
 code   = 4
-cost   = 0
+cost   = 3.5
 params = ["level:sampler.level", "start:sampler.start", "loop:sampler.loop", "loop_start:sampler.loop_start", "loop_len:sampler.loop_len", "follow:sampler.follow", "octave:pitch.octave", "fine:pitch.fine"]
 
 [[module]]
 type   = "click"
 kind   = "voice"
 code   = 5
-cost   = 0
+cost   = 0.5
 params = ["start:strike.click", "end:strike.end_click", "colour:strike.color"]
 
 [[module]]
 type   = "filter"
 kind   = "voice"
 code   = 6
-cost   = 0
+cost   = 5.0
 params = ["cutoff:filt.cutoff", "res:filt.res", "morph:filt.morph", "track:filt.track"]
 
 [[module]]
 type   = "amp"
 kind   = "voice"
 code   = 7
-cost   = 0
+cost   = 2.0
 params = ["gain:amp.gain"]
 
 [[module]]
 type   = "fold"
 kind   = "voice"
 code   = 8
-cost   = 0
+cost   = 17.0
 params = ["amount:fold.amt", "bias:fold.bias"]
 
 [[module]]
 type   = "clang"
 kind   = "voice"
 code   = 9
-cost   = 0
+cost   = 7.0
 params = ["amount:clang.amt", "ratio:clang.ratio"]
 
 [[module]]
 type   = "comb"
 kind   = "voice"
 code   = 10
-cost   = 0
+cost   = 3.5
 params = ["amount:comb.amt", "tune:comb.tune", "decay:comb.decay"]
 
 [[module]]
 type   = "env"
 kind   = "source"
 code   = 30
-cost   = 0
+cost   = 0.1
 params = ["mode:env.mode", "attack:env.attack", "hold:env.hold", "decay:env.decay", "sustain:env.sustain", "release:env.release"]
 
 [[module]]
 type   = "lfo"
 kind   = "source"
 code   = 31
-cost   = 0
+cost   = 0.1
 params = ["rate:lfo1.rate", "wave:lfo.wave", "level:lfo.level"]
 
 [[module]]
 type   = "shaped_noise"
 kind   = "layer"
 code   = 40
-cost   = 0
+cost   = 18.5
 params = ["level:src.noise_mix", "bands:noise_bands.0*16"]
 
 [[module]]
 type   = "grains"
 kind   = "layer"
 code   = 41
-cost   = 0
+cost   = 45.0
 params = ["level:src.grain_mix", "size:grain.size", "density:grain.density", "pos:grain.pos", "spray:grain.spray", "scatter:grain.scatter"]
 
 [[module]]
 type   = "crush"
 kind   = "channel"
 code   = 21
-cost   = 0
+cost   = 0.5
 params = ["bits:crush.bits", "rate:crush.rate"]
 
 [[module]]
 type   = "tape"
 kind   = "channel"
 code   = 22
-cost   = 0
+cost   = 10.5
 params = ["amount:tape.amt"]
 
 [[module]]
 type   = "delay"
 kind   = "channel"
 code   = 23
-cost   = 0
+cost   = 10.0
 params = ["time:delay.time", "feedback:delay.fb", "shift:delay.shift", "mix:delay.mix"]
 
 [[module]]
 type   = "reverb"
 kind   = "channel"
 code   = 24
-cost   = 0
+cost   = 29.5
 params = ["size:verb.size", "damp:verb.damp", "mix:verb.mix", "freeze:verb.freeze"]
 
 [[module]]
 type   = "cfilter"
 kind   = "channel"
 code   = 25
-cost   = 0
+cost   = 5.5
 params = ["cutoff:filt.cutoff", "res:filt.res", "morph:filt.morph"]
