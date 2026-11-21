@@ -20,7 +20,7 @@ const SR: f32 = 48_000.0;
 const BLOCK: usize = 128;
 
 fn set(e: &mut Engine, layer: u8, p: usize, real: f32) {
-    e.push(MSG_SET_PARAM, layer, SET_BASE, p as u16, P::to_norm(p, real), 0);
+    klont::classic::set_param(e, layer, KIND_MELODY, p, P::to_norm(p, real));
 }
 
 fn worst_case(budget: u32) -> Box<Engine> {
@@ -129,6 +129,9 @@ fn main() {
         Ok(track) => {
             let mut e = Engine::new(SR, 4096);
             for l in 0..MAX_LAYERS as u32 {
+                if let Ok(b) = read(&format!("patch{l}.bin")) {
+                    assert_eq!(e.load_bytes(l, LOAD_PATCH, &b), LOAD_OK, "patch{l}.bin");
+                }
                 if let Ok(b) = read(&format!("layer{l}.bin")) {
                     assert_eq!(e.load_bytes(l, LOAD_LAYER, &b), LOAD_OK, "layer{l}.bin");
                 }

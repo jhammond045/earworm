@@ -1,74 +1,51 @@
-//! One layer: its stored sound (base, macros, Influence target, kit slots),
-//! parameter resolution, up to eight voices, the shaped noise and the
-//! per-layer effects.
+//! One layer: its patch (`LOAD_PATCH`), its value vector (stored values,
+//! macros, Influence target), resolution steps 1 to 4, up to eight voices,
+//! its layer sources (shaped noise per voice patch, one grain cloud) and its
+//! channel.
 //!
-//! Resolution (TDD "Resolution order"), as built in M1:
-//! 1. Morph (M4): with states loaded (`load_states`), the engine tells the
-//!    layer each control tick which two states its clip's morph lane blends
-//!    and how far (`set_morph`); the blend of their base sets, macros and
-//!    Influence amount replaces the layer's own base, macros and amount. A
-//!    steady blend marks nothing dirty, so it costs nothing per tick. Without
-//!    a marker (or clip) the engine asks for state 0. A layer that never got
-//!    states keeps what `LOAD_LAYER` and live messages set. Live edits of
-//!    base, macros or amount on a layer with states last until the blend next
-//!    changes (the host reloads states to change them for good).
-//! 2. Influence: `params::influence_blend` on the layer's base set.
-//! 3. Macros: `params::apply_macros` on every set.
-//!    Steps 2 and 3 run when a stored value changes, then every set is
-//!    smoothed per control tick with each parameter's `smooth_ms`, in the
-//!    normalized domain, and mapped to real units.
-//! 4. Voice start: a voice reads the layer set (melody, texture) or its kit
-//!    slot's set (beat).
-//! 5. Gesture: a voice playing a clip with a curve reads the take's frame
-//!    each tick and offsets a few parameters through the fixed linear maps in
-//!    `gesture_offsets`; Mouth blends the band shapes toward the frame.
-//! 6. Hit shape: beat voices offset their slot's values by the hit's shape,
-//!    scaled by Follow (`hit_start`).
-//! 7. Modulators: inside the voice (LFOs, chaos).
-//! 8. Smooth and map: smoothing is on the layer sets (step 3's output), not
-//!    per voice; per-voice offsets come from 10 ms frames read with linear
-//!    interpolation or are fixed for the note, so they need none.
+//! Resolution (docs/synth.md "Order of evaluation"):
+//! 1. Morph: with states loaded (`load_states`), the engine tells the layer
+//!    each control tick which two states its clip's morph lane blends and how
+//!    far (`set_morph`); the blend of their values, macros and Influence
+//!    amount replaces the layer's own. A steady blend marks nothing dirty.
+//!    Without a marker (or clip) the engine asks for state 0. A layer that
+//!    never got states keeps what `LOAD_LAYER` and live messages set. A new
+//!    patch starts every value at the patch's starting value.
+//! 2. Automation: arrives with recording (stage S5).
+//! 3. Influence: each value whose group bit is in the mask moves toward the
+//!    target by the amount.
+//! 4. Layer routes (the macros): added, then clamped. Steps 3 and 4 run when
+//!    a stored value changes; every value is then smoothed per control tick
+//!    with its descriptor's `smooth_ms`, in the normalized domain, and mapped
+//!    to real units. Channel values are finished here.
+//! 5 to 7 run per voice (`voice.rs`).
 //!
-//! The grain cloud (`grain.rs`) is per layer and renders into the layer bus
-//! with the voices, before the per-layer effects.
-//!
-//! The space, crush and tape modules are per layer and always read the
-//! layer's base set, also on beat layers.
+//! The channel is the patch's effect chain: the effects before the first
+//! stereo one run on the mono sum of the voices, level and pan then spread it
+//! to stereo, the stereo effects follow, and width is last (today's order).
 
+use crate::curve::{self, CurvePool, CURVE_STRIDE};
 use crate::grain::{GrainCloud, VoiceGrain};
-use crate::curve::{self, CurvePool, CURVE_STRIDE, TUNED};
+use crate::patch::*;
 use crate::protocol::*;
+use crate::samples::SamplePool;
 use crate::seq::{Clip, Event, Track};
-use crate::voice::{NoteStart, Voice, VoiceControls, N_BANDS, TICK};
+use crate::voice::{LayerView, Note, Voice, N_BANDS, TICK};
 use dsp::bands::{band_centres, band_q};
 use dsp::filters::Svf;
 use dsp::frame;
 use dsp::layer_fx::{width, Crush, Reverb, StereoDelay, Tape};
 use dsp::noise::Noise;
 use params as P;
-use params::ParamSet;
 
-/// Sets per layer: the layer's own (index 0) and the four kit slots.
-pub const SETS: usize = 1 + KIT_SLOTS;
 /// Shaped-noise rms with flat bands before level, as in M0.
 const NOISE_RMS: f32 = 0.35;
-/// Voicing crossfade (TDD "Vowel shape: the vocoder path").
-const VOICE_XFADE_S: f32 = 0.010;
 
-/// One stored state: base set, macros and Influence amount (LOAD_STATES).
-#[derive(Clone, Copy)]
-struct State {
-    base: ParamSet,
-    macros: [f32; N_MACROS],
-    amount: f32,
-}
-
-/// What drives a voice besides its layer's set.
+/// What drives a voice besides its layer's values.
 #[derive(Clone, Copy, Debug)]
 struct Slot {
-    set: usize,
-    /// Pitch of the note in cents (hits: resolved slot or hit pitch).
-    cents: f32,
+    /// Voice patch (kit slot on a beat layer).
+    vp: usize,
     /// Live triggers: the cents value of the NOTE_ON, for NOTE_OFF matching.
     live_key: f32,
     /// Started by Live follow (the mic): melody and texture voices read the
@@ -78,7 +55,6 @@ struct Slot {
     left: u32,
     seq: bool,
     age: u64,
-    velocity: f32,
     /// Curve slot and the clip whose warp map reads it (-1: none).
     curve: i32,
     clip: u32,
@@ -87,38 +63,22 @@ struct Slot {
     clip_end: f64,
     /// Seconds of take time per clip unit with no anchors (free sections: 1).
     default_slope: f64,
-    /// Hit-shape and start offsets in the normalized domain, fixed for the note.
-    off: Offsets,
-    /// Voicing crossfade, 1 = partials, 0 = noise.
-    vmix: f32,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Offsets {
-    tilt: f32,
-    f1: f32,
-    harm: Option<f32>,
-    noise: Option<f32>,
 }
 
 impl Default for Slot {
     fn default() -> Self {
         Slot {
-            set: 0,
-            cents: 4800.0,
+            vp: 0,
             live_key: f32::NAN,
             follow: false,
             left: 0,
             seq: false,
             age: 0,
-            velocity: 1.0,
             curve: -1,
             clip: 0,
             clip_t: 0.0,
             clip_end: 0.0,
             default_slope: 1.0,
-            off: Offsets::default(),
-            vmix: 1.0,
         }
     }
 }
@@ -159,8 +119,8 @@ impl ShapedNoise {
         }
     }
 
-    /// Per tick: `level` is the summed noise level of the voices on this set,
-    /// `bands_db` the set's noise bands in dB.
+    /// Per tick: `level` is the summed noise level of the voices on this
+    /// bank, `bands_db` its noise bands in dB.
     fn control(&mut self, level: f32, bands_db: &[f32; N_BANDS], len: usize) {
         let mut any = false;
         let inv = 1.0 / len.max(1) as f32;
@@ -197,6 +157,24 @@ impl ShapedNoise {
     }
 }
 
+/// The channel's effect instances (the patch's chain uses at most one of each in this stage).
+struct Channel {
+    crush: Crush,
+    tape: Tape,
+    delay: StereoDelay,
+    reverb: Reverb,
+}
+
+/// Per voice patch: the values its voice routes and voicing swap write.
+struct Touched {
+    list: [u16; MAX_VALUES],
+    n: usize,
+    is: [bool; MAX_VALUES],
+    amount: [bool; MAX_VALUES],
+    /// Moved only by routes latched at note start: the voice starts it from its real value.
+    from_real: [bool; MAX_VALUES],
+}
+
 pub struct Layer {
     pub sr: f32,
     pub kind: u32,
@@ -208,27 +186,27 @@ pub struct Layer {
     pub infl_amount: f32,
     pub infl_mask: u32,
     pub kit_cents: [f32; KIT_SLOTS],
-    pub base: ParamSet,
     pub macros: [f32; N_MACROS],
-    pub influence: ParamSet,
-    pub kit: [ParamSet; KIT_SLOTS],
 
-    /// Steps 2-3 output per set, smoothed copy, and real units of the smoothed copy.
-    target: [ParamSet; SETS],
-    norm: [ParamSet; SETS],
-    real: [ParamSet; SETS],
-    settled: [bool; SETS],
+    patch: Box<Patch>,
+    touched: Box<[Touched; KIT_SLOTS]>,
+    /// Stored values (after the morph), Influence target and group bits.
+    base: Box<[f32; MAX_VALUES]>,
+    influence: Box<[f32; MAX_VALUES]>,
+    groups: Box<[u32; MAX_VALUES]>,
+    /// Steps 3-4 output, the smoothed copy and its real units.
+    target: Box<[f32; MAX_VALUES]>,
+    norm: Box<[f32; MAX_VALUES]>,
+    real: Box<[f32; MAX_VALUES]>,
+    smooth: Box<[f32; MAX_VALUES]>,
+    settled: bool,
     dirty: bool,
-    smooth: ParamSet,
 
     pub voices: [Voice; VOICES_PER_LAYER],
     slots: [Slot; VOICES_PER_LAYER],
-    noise_banks: [ShapedNoise; SETS],
+    noise_banks: [ShapedNoise; KIT_SLOTS],
     seed: u32,
-    crush: Crush,
-    tape: Tape,
-    delay: StereoDelay,
-    reverb: Reverb,
+    chan: Channel,
     bus: [f32; TICK],
     gl: f32,
     gr: f32,
@@ -236,42 +214,45 @@ pub struct Layer {
     gr_t: f32,
     gl_step: f32,
     gr_step: f32,
-    grit_on: bool,
+    mono_on: bool,
     /// What renders during the current tick, decided at the tick (or when a
     /// voice starts) so that splitting a tick into smaller calls cannot change
     /// which samples a voice or effect is advanced over.
     voice_on: [bool; VOICES_PER_LAYER],
     layer_on: bool,
-    space_on: bool,
+    stereo_on: bool,
     pub peak: f32,
     pub steals: u32,
     /// Morph states (resolution step 1) and the blend last applied.
-    states: [State; MAX_STATES],
+    states: Box<[f32; MAX_STATES * MAX_VALUES]>,
+    state_macros: [[f32; N_MACROS]; MAX_STATES],
+    state_amount: [f32; MAX_STATES],
     n_states: usize,
     morph_applied: Option<(u32, u32, f32)>,
-    grain: GrainCloud,
+    pub grain: GrainCloud,
     /// Partial budget share per voice, set by the engine before each tick.
     pub max_partials: [usize; VOICES_PER_LAYER],
     age: u64,
-    /// Normalized values after step 5 for the loudest voice (meters).
-    pub live: ParamSet,
+    /// Normalized values after step 6 for the loudest voice (meters).
+    pub live: Box<[f32; MAX_VALUES]>,
     /// Live follow: the frame record the live voice reads each tick, and the
     /// gate envelope that scales its amplitude.
     follow_rec: [f32; CURVE_STRIDE],
     follow_gain: f32,
 }
 
+fn bank_seed(layer_seed: u32, k: usize) -> u32 {
+    layer_seed ^ 0x5bd1_e995u32.wrapping_mul(k as u32 + 1)
+}
+
+/// Group depths in route order: loud, open, hard, breath, mouth, follow.
+fn depths(d: &[f32; 5], follow: f32) -> [f32; 6] {
+    [d[0], d[1], d[2], d[3], d[4], follow]
+}
+
 impl Layer {
     pub fn new(sr: f32, index: usize) -> Self {
         let seed = 0x9E37_79B9u32.wrapping_mul(index as u32 + 1);
-        let neutral = P::neutral_set();
-        let dt = TICK as f32 / sr;
-        let mut smooth = [1.0; P::COUNT];
-        for (i, d) in P::DESCS.iter().enumerate() {
-            if d.smooth_ms > 0.0 {
-                smooth[i] = 1.0 - (-dt * 1000.0 / d.smooth_ms).exp();
-            }
-        }
         let mut l = Layer {
             sr,
             kind: KIND_MELODY,
@@ -283,24 +264,28 @@ impl Layer {
             infl_amount: 0.0,
             infl_mask: 0x1f,
             kit_cents: [2400.0, 4800.0, 6000.0, 7200.0],
-            base: neutral,
             macros: [0.5; N_MACROS],
-            influence: neutral,
-            kit: [neutral; KIT_SLOTS],
-            target: [neutral; SETS],
-            norm: [neutral; SETS],
-            real: [[0.0; P::COUNT]; SETS],
-            settled: [false; SETS],
+            patch: Patch::new_boxed(),
+            touched: Box::new(std::array::from_fn(|_| Touched { list: [0; MAX_VALUES], n: 0, is: [false; MAX_VALUES], amount: [false; MAX_VALUES], from_real: [false; MAX_VALUES] })),
+            base: Box::new([0.0; MAX_VALUES]),
+            influence: Box::new([0.0; MAX_VALUES]),
+            groups: Box::new([0; MAX_VALUES]),
+            target: Box::new([0.0; MAX_VALUES]),
+            norm: Box::new([0.0; MAX_VALUES]),
+            real: Box::new([0.0; MAX_VALUES]),
+            smooth: Box::new([1.0; MAX_VALUES]),
+            settled: false,
             dirty: true,
-            smooth,
             voices: std::array::from_fn(|v| Voice::new(sr, seed ^ (v as u32 + 1).wrapping_mul(0x85EB_CA6B))),
             slots: [Slot::default(); VOICES_PER_LAYER],
-            noise_banks: std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, k))),
+            noise_banks: std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, k + 1))),
             seed,
-            crush: Crush::new(sr, seed ^ 0x27d4_eb2f),
-            tape: Tape::new(sr, seed ^ 0x1656_67b1),
-            delay: StereoDelay::new(sr),
-            reverb: Reverb::new(sr, seed ^ 0xc2b2_ae35),
+            chan: Channel {
+                crush: Crush::new(sr, seed ^ 0x27d4_eb2f),
+                tape: Tape::new(sr, seed ^ 0x1656_67b1),
+                delay: StereoDelay::new(sr),
+                reverb: Reverb::new(sr, seed ^ 0xc2b2_ae35),
+            },
             bus: [0.0; TICK],
             gl: 0.0,
             gr: 0.0,
@@ -308,41 +293,133 @@ impl Layer {
             gr_t: 0.0,
             gl_step: 0.0,
             gr_step: 0.0,
-            grit_on: false,
+            mono_on: false,
             voice_on: [false; VOICES_PER_LAYER],
             layer_on: false,
-            space_on: false,
+            stereo_on: false,
             peak: 0.0,
             steals: 0,
-            states: [State { base: neutral, macros: [0.5; N_MACROS], amount: 0.0 }; MAX_STATES],
+            states: Box::new([0.0; MAX_STATES * MAX_VALUES]),
+            state_macros: [[0.5; N_MACROS]; MAX_STATES],
+            state_amount: [0.0; MAX_STATES],
             n_states: 0,
             morph_applied: None,
             grain: GrainCloud::new(sr, seed ^ 0x7f4a_7c15),
             max_partials: [crate::voice::MAX_PARTIALS; VOICES_PER_LAYER],
             age: 0,
-            live: neutral,
+            live: Box::new([0.0; MAX_VALUES]),
             follow_rec: [0.0; CURVE_STRIDE],
             follow_gain: 0.0,
         };
-        l.resolve();
-        for s in 0..SETS {
-            l.norm[s] = l.target[s];
-            l.map_set(s);
-        }
+        let classic = crate::classic::patch_blob(KIND_MELODY, index as u32);
+        let mut p = Patch::new_boxed();
+        p.parse(&classic).expect("the built-in classic patch is valid");
+        l.set_patch(&p);
         l
+    }
+
+    // ------------------------------------------------------------ patch
+
+    pub fn patch(&self) -> &Patch {
+        &self.patch
+    }
+
+    pub fn n_values(&self) -> usize {
+        self.patch.n_values
+    }
+
+    /// Replace the patch (LOAD_PATCH). An identical patch changes nothing.
+    /// Otherwise every voice is silenced, the values return to the patch's starting values and
+    /// the channel's tails are cleared.
+    pub fn set_patch(&mut self, p: &Patch) {
+        if *self.patch == *p {
+            return;
+        }
+        (*self.patch).clone_from(p);
+        for v in 0..VOICES_PER_LAYER {
+            self.voices[v].kill();
+        }
+        self.slots = [Slot::default(); VOICES_PER_LAYER];
+        let n = p.n_values;
+        let dt = TICK as f32 / self.sr;
+        for i in 0..n {
+            let d = p.descs[i] as usize;
+            self.base[i] = p.init[i];
+            self.influence[i] = p.init[i];
+            // Until a layer blob says otherwise, Influence moves a value by its descriptor's group.
+            self.groups[i] = 1 << (P::desc(d).group as u32);
+            let ms = P::desc(d).smooth_ms;
+            self.smooth[i] = if ms > 0.0 { 1.0 - (-dt * 1000.0 / ms).exp() } else { 1.0 };
+        }
+        for (k, vp) in p.voices().iter().enumerate() {
+            let t = &mut self.touched[k];
+            t.is = [false; MAX_VALUES];
+            t.amount = [false; MAX_VALUES];
+            for r in vp.routes() {
+                t.amount[r.amount as usize] = true;
+            }
+            t.n = 0;
+            let add = |t: &mut Touched, i: usize| {
+                if !t.is[i] {
+                    t.is[i] = true;
+                    t.list[t.n] = i as u16;
+                    t.n += 1;
+                }
+            };
+            for r in vp.routes() {
+                match r.target_kind {
+                    TGT_BANDS => (0..N_BANDS).for_each(|b| add(t, r.targets[0] as usize + b)),
+                    TGT_VALUE | TGT_OCTAVES => r.targets[..r.n_targets as usize].iter().for_each(|&x| add(t, x as usize)),
+                    _ => {}
+                }
+            }
+            t.from_real = t.is;
+            for r in vp.routes() {
+                if !r.latch && (r.target_kind == TGT_VALUE || r.target_kind == TGT_OCTAVES) {
+                    r.targets[..r.n_targets as usize].iter().for_each(|&x| t.from_real[x as usize] = false);
+                }
+                if !r.latch && r.target_kind == TGT_BANDS {
+                    (0..N_BANDS).for_each(|b| t.from_real[r.targets[0] as usize + b] = false);
+                }
+            }
+            if let (Some(m), Some((nb, _))) = (vp.find(P::T_PARTIALS), vp.noise) {
+                add(t, vp.modules[m].base as usize + P::partials::LEVEL);
+                add(t, nb as usize + P::shaped_noise::LEVEL);
+                t.from_real[vp.modules[m].base as usize + P::partials::LEVEL] = false;
+                t.from_real[nb as usize + P::shaped_noise::LEVEL] = false;
+            }
+        }
+        for v in 0..VOICES_PER_LAYER {
+            self.voices[v].bind(&p.voices[0], 0);
+            self.voices[v].kill();
+        }
+        self.reset_noise();
+        self.n_states = 0;
+        self.morph_applied = None;
+        self.grain.clear_grains();
+        self.chan.delay.reset();
+        self.chan.reverb.reset();
+        self.resolve();
+        self.norm[..n].copy_from_slice(&self.target[..n]);
+        self.map_all();
+        self.settled = true;
+    }
+
+    /// Grain sample id of the patch (its first voice patch with grains), if any.
+    pub fn grain_sample(&self) -> Option<usize> {
+        self.patch.voices().iter().find_map(|vp| vp.grains.map(|g| g.2 as usize))
     }
 
     // ------------------------------------------------------------ stored sound
 
     pub fn set_param(&mut self, set: u8, i: usize, v: f32) {
-        if i >= P::COUNT || !v.is_finite() {
+        if i >= self.patch.n_values || !v.is_finite() {
             return;
         }
         let v = v.clamp(0.0, 1.0);
         match set {
             SET_BASE => self.base[i] = v,
             SET_INFLUENCE => self.influence[i] = v,
-            s if (SET_KIT..SET_KIT + KIT_SLOTS as u8).contains(&s) => self.kit[(s - SET_KIT) as usize][i] = v,
             _ => return,
         }
         self.dirty = true;
@@ -386,42 +463,42 @@ impl Layer {
         }
     }
 
-    /// Load a layer blob (protocol LAYER_* layout). Words are already
-    /// bounds-checked by the caller to be LAYER_WORDS long.
+    /// Load a layer blob v2 (protocol "Layer blob"): the caller checked the
+    /// magic and that it holds `n_values` values for this layer's patch.
     pub fn load(&mut self, w: &[f32]) {
+        let n = self.patch.n_values;
         for f in 0..LAYER_FIELDS {
             self.set_field(f as u16, w[LAYER_OFF_FIELDS + f]);
         }
-        for i in 0..P::COUNT {
-            self.set_param(SET_BASE, i, w[LAYER_OFF_BASE + i]);
-            self.set_param(SET_INFLUENCE, i, w[LAYER_OFF_INFLUENCE + i]);
-            for k in 0..KIT_SLOTS {
-                self.set_param(SET_KIT + k as u8, i, w[LAYER_OFF_KIT + k * P::COUNT + i]);
-            }
+        let vals = &w[LAYER_HEADER_WORDS..];
+        for i in 0..n {
+            self.set_param(SET_BASE, i, vals[i]);
+            self.set_param(SET_INFLUENCE, i, vals[n + N_MACROS + i]);
+            self.groups[i] = vals[2 * n + N_MACROS + i].to_bits() & 0x1f;
         }
         for k in 0..N_MACROS {
-            self.set_macro(k, w[LAYER_OFF_MACROS + k]);
+            self.set_macro(k, vals[n + k]);
         }
-        // With states loaded they stay the source of base, macros and amount.
+        // With states loaded they stay the source of values, macros and amount.
         self.morph_applied = None;
         self.dirty = true;
     }
 
-    /// Load states (protocol STATES layout): `w` holds `n * STATE_WORDS`
-    /// floats, already bounds-checked. n = 0 clears them (the layer then keeps
-    /// the values it has now).
+    /// Load states (protocol "States blob" v2): `w` holds `n` states of
+    /// `n_values + N_MACROS + 1` floats, already checked. n = 0 clears them
+    /// (the layer then keeps the values it has now).
     pub fn load_states(&mut self, w: &[f32], n: usize) {
-        let neutral = P::neutral_set();
+        let nv = self.patch.n_values;
+        let stride = nv + N_MACROS + 1;
         let clean = |x: f32, d: f32| if x.is_finite() { x.clamp(0.0, 1.0) } else { d };
-        for (k, st) in w.chunks_exact(STATE_WORDS).take(n.min(MAX_STATES)).enumerate() {
-            let s = &mut self.states[k];
-            for i in 0..P::COUNT {
-                s.base[i] = clean(st[i], neutral[i]);
+        for (k, st) in w.chunks_exact(stride).take(n.min(MAX_STATES)).enumerate() {
+            for i in 0..nv {
+                self.states[k * MAX_VALUES + i] = clean(st[i], self.patch.init[i]);
             }
             for m in 0..N_MACROS {
-                s.macros[m] = clean(st[P::COUNT + m], 0.5);
+                self.state_macros[k][m] = clean(st[nv + m], 0.5);
             }
-            s.amount = clean(st[P::COUNT + N_MACROS], 0.0);
+            self.state_amount[k] = clean(st[nv + N_MACROS], 0.0);
         }
         self.n_states = n.min(MAX_STATES);
         self.morph_applied = None;
@@ -445,47 +522,69 @@ impl Layer {
             return;
         }
         self.morph_applied = Some((a, b, x));
-        let (sa, sb) = (&self.states[a as usize], &self.states[b as usize]);
+        let (a, b) = (a as usize, b as usize);
         // Exact at the ends, so a settled morph sits on the state's own values.
         let mix = |p: f32, q: f32| if x <= 0.0 { p } else if x >= 1.0 { q } else { p + (q - p) * x };
-        for i in 0..P::COUNT {
-            self.base[i] = mix(sa.base[i], sb.base[i]);
+        for i in 0..self.patch.n_values {
+            self.base[i] = mix(self.states[a * MAX_VALUES + i], self.states[b * MAX_VALUES + i]);
         }
         for m in 0..N_MACROS {
-            self.macros[m] = mix(sa.macros[m], sb.macros[m]);
+            self.macros[m] = mix(self.state_macros[a][m], self.state_macros[b][m]);
         }
-        self.infl_amount = mix(sa.amount, sb.amount);
+        self.infl_amount = mix(self.state_amount[a], self.state_amount[b]);
         self.dirty = true;
     }
 
-    /// Replace the grain source (LOAD_GRAIN). `data` is the sample bytes.
-    pub fn load_grain(&mut self, rate: f32, ref_cents: f32, n: usize, data: &[u8]) {
-        self.grain.set_source(rate, ref_cents, n, data);
-    }
-
+    /// Steps 3 and 4.
     fn resolve(&mut self) {
-        let mut b = self.base;
-        P::influence_blend(&self.base, &self.influence, self.infl_amount, self.infl_mask, &mut b);
-        P::apply_macros(&mut b, &self.macros);
-        self.target[0] = b;
-        for k in 0..KIT_SLOTS {
-            let mut s = self.kit[k];
-            P::apply_macros(&mut s, &self.macros);
-            self.target[1 + k] = s;
+        let n = self.patch.n_values;
+        let a = if self.infl_amount.is_nan() { 0.0 } else { self.infl_amount.clamp(0.0, 1.0) };
+        let fz = |x: f32| if x.is_finite() { x } else { 0.0 };
+        for i in 0..n {
+            let b = fz(self.base[i]);
+            self.target[i] = if self.groups[i] & self.infl_mask != 0 {
+                ((1.0 - a) * b + a * fz(self.influence[i])).clamp(0.0, 1.0)
+            } else {
+                b.clamp(0.0, 1.0)
+            };
         }
-        self.settled = [false; SETS];
+        let p = &*self.patch;
+        for r in p.layer_routes() {
+            let u = if self.macros[r.arg as usize].is_nan() { 0.5 } else { self.macros[r.arg as usize] };
+            let c = r.polar(r.shape(u));
+            let amt = P::to_real(p.descs[r.amount as usize] as usize, self.base[r.amount as usize]);
+            let via = if r.via == SRC_NONE { 1.0 } else { self.macros[r.via_arg as usize].clamp(0.0, 1.0) };
+            let k = amt * r.unit * via;
+            for &t in &r.targets[..r.n_targets as usize] {
+                let t = t as usize;
+                if r.mode == MODE_SCALE {
+                    self.target[t] *= 1.0 + k * c;
+                } else {
+                    self.target[t] += k * c;
+                }
+            }
+        }
+        for v in self.target[..n].iter_mut() {
+            *v = v.clamp(0.0, 1.0);
+        }
+        self.settled = false;
         self.dirty = false;
     }
 
-    fn map_set(&mut self, s: usize) {
-        for i in 0..P::COUNT {
-            self.real[s][i] = P::to_real(i, self.norm[s][i]);
+    fn map_all(&mut self) {
+        for i in 0..self.patch.n_values {
+            self.real[i] = P::to_real(self.patch.descs[i] as usize, self.norm[i]);
         }
     }
 
-    /// Normalized values after step 3 for the layer set (meters).
-    pub fn stored(&self) -> &ParamSet {
-        &self.norm[0]
+    /// Normalized values after step 4 (meters).
+    pub fn stored(&self) -> &[f32] {
+        &self.norm[..self.patch.n_values]
+    }
+
+    /// Real value `i` after step 4.
+    pub fn real(&self, i: usize) -> f32 {
+        self.real[i]
     }
 
     // ------------------------------------------------------------ notes
@@ -504,6 +603,27 @@ impl Layer {
             .unwrap_or(0)
     }
 
+    /// The voice patch a kit slot plays (the only one on melody and texture layers).
+    fn vp_of(&self, kit_slot: usize) -> usize {
+        if self.kind == KIND_BEAT { kit_slot.min(self.patch.n_voices - 1) } else { 0 }
+    }
+
+    /// The hit-shape part of a note: beat layers only, gated by Follow where
+    /// a field needs it; NaN elsewhere so its routes do nothing.
+    fn shape_note(&self, note: &mut Note, e: &Event) {
+        if self.kind != KIND_BEAT {
+            return;
+        }
+        note.attack = if e.attack.is_finite() && e.attack > 0.0 { e.attack.clamp(0.001, 1.0) } else { f32::NAN };
+        note.burst = e.burst;
+        note.bend = e.bend;
+        note.hold = if e.hold.is_finite() && e.hold > 0.0 { e.hold.clamp(0.05, 0.8) } else { f32::NAN };
+        note.vowel = e.vowel;
+        note.tone = e.tone;
+        note.end_click = e.end_click;
+        note.end_stop = e.end_stop.is_finite() && e.end_stop > 0.5 && self.follow > 0.5;
+    }
+
     /// Start a sequenced note or hit. `len` samples remain in the current tick.
     pub fn note_from_event(&mut self, track: &Track, curves: &CurvePool, clip_i: u32, e: &Event, dur_samples: u32, len: usize) {
         if self.mute {
@@ -516,7 +636,6 @@ impl Layer {
         let mut slot = Slot {
             left: dur_samples.max(1),
             seq: true,
-            velocity: if e.strength.is_finite() && e.strength > 0.0 { e.strength.min(1.0) } else { 1.0 },
             curve: clip.curve,
             clip: clip_i,
             clip_t: e.t,
@@ -524,17 +643,21 @@ impl Layer {
             default_slope,
             ..Slot::default()
         };
+        let mut note = Note {
+            velocity: if e.strength.is_finite() && e.strength > 0.0 { e.strength.min(1.0) } else { 1.0 },
+            hard: e.hard,
+            ..Note::default()
+        };
         if self.kind == KIND_BEAT {
             let k = (e.slot as usize).min(KIT_SLOTS - 1);
-            slot.set = 1 + k;
+            slot.vp = self.vp_of(k);
             let own = self.kit_cents[k];
-            slot.cents = if e.cents.is_finite() { own + self.follow * (e.cents - own) } else { own };
+            note.cents = if e.cents.is_finite() { own + self.follow * (e.cents - own) } else { own };
         } else {
-            slot.set = 0;
-            slot.cents = if e.cents.is_finite() { e.cents } else { 4800.0 };
+            note.cents = if e.cents.is_finite() { e.cents } else { 4800.0 };
         }
-        let start = self.hit_start(&mut slot, e);
-        self.start_voice(slot, &start, track, curves, len);
+        self.shape_note(&mut note, e);
+        self.start_voice(slot, &note, track, curves, len);
     }
 
     /// Live trigger (MSG_NOTE_ON).
@@ -542,20 +665,20 @@ impl Layer {
         if self.mute {
             return;
         }
-        let mut slot = Slot { left: u32::MAX, live_key: cents, velocity: velocity.clamp(0.0, 1.0), ..Slot::default() };
+        let slot = Slot { left: u32::MAX, live_key: cents, vp: self.vp_of(kit_slot), ..Slot::default() };
+        let mut note = Note { velocity: velocity.clamp(0.0, 1.0), hard: 0.0, ..Note::default() };
         if self.kind == KIND_BEAT {
             let k = kit_slot.min(KIT_SLOTS - 1);
-            slot.set = 1 + k;
-            slot.cents = if cents.is_finite() { cents } else { self.kit_cents[k] };
+            note.cents = if cents.is_finite() { cents } else { self.kit_cents[k] };
         } else {
             if !cents.is_finite() {
                 return;
             }
-            slot.cents = cents;
+            note.cents = cents;
         }
         let e = Event { hard: 0.0, ..Event::default() };
-        let start = self.hit_start(&mut slot, &e);
-        self.start_voice(slot, &start, track, curves, len);
+        self.shape_note(&mut note, &e);
+        self.start_voice(slot, &note, track, curves, len);
     }
 
     /// Live follow: the mic starts a voice. Beat layers play a hit on
@@ -567,15 +690,14 @@ impl Layer {
         if self.mute {
             return;
         }
-        let mut slot = Slot { left: u32::MAX, follow: true, velocity: velocity.clamp(0.0, 1.0), ..Slot::default() };
+        let slot = Slot { left: u32::MAX, follow: true, vp: self.vp_of(kit_slot), ..Slot::default() };
+        let mut note = Note { velocity: velocity.clamp(0.0, 1.0), hard, follow: true, ..Note::default() };
         if self.kind == KIND_BEAT {
-            let k = kit_slot.min(KIT_SLOTS - 1);
-            slot.set = 1 + k;
-            slot.cents = self.kit_cents[k];
+            note.cents = self.kit_cents[kit_slot.min(KIT_SLOTS - 1)];
         }
         let e = Event { hard, ..Event::default() };
-        let start = self.hit_start(&mut slot, &e);
-        self.start_voice(slot, &start, track, curves, len);
+        self.shape_note(&mut note, &e);
+        self.start_voice(slot, &note, track, curves, len);
     }
 
     /// Release the voice Live follow started, if it still sounds.
@@ -584,7 +706,8 @@ impl Layer {
             if self.slots[v].follow && self.slots[v].left == u32::MAX {
                 self.slots[v].left = 0;
                 if self.voices[v].active() {
-                    self.voices[v].release();
+                    let vp = &self.patch.voices[self.slots[v].vp];
+                    self.voices[v].release(vp);
                 }
             }
         }
@@ -602,7 +725,7 @@ impl Layer {
             let s = &mut self.slots[v];
             if !s.seq && !s.follow && s.left == u32::MAX && (s.live_key == cents || (s.live_key.is_nan() && cents.is_nan())) {
                 s.left = 0;
-                self.voices[v].release();
+                self.voices[v].release(&self.patch.voices[s.vp]);
             }
         }
     }
@@ -610,7 +733,7 @@ impl Layer {
     pub fn release_all(&mut self) {
         for v in 0..VOICES_PER_LAYER {
             if self.voices[v].active() && !self.voices[v].released() {
-                self.voices[v].release();
+                self.voices[v].release(&self.patch.voices[self.slots[v].vp]);
             }
             self.slots[v].left = 0;
         }
@@ -619,7 +742,7 @@ impl Layer {
     pub fn release_sequenced(&mut self) {
         for v in 0..VOICES_PER_LAYER {
             if self.slots[v].seq && self.voices[v].active() && !self.voices[v].released() {
-                self.voices[v].release();
+                self.voices[v].release(&self.patch.voices[self.slots[v].vp]);
                 self.slots[v].left = 0;
             }
         }
@@ -631,84 +754,35 @@ impl Layer {
         }
         self.slots = [Slot::default(); VOICES_PER_LAYER];
         self.grain.clear_grains();
-        self.delay.reset();
-        self.reverb.reset();
+        self.chan.delay.reset();
+        self.chan.reverb.reset();
+        self.reset_noise();
+    }
+
+    /// Fresh noise banks. A single voice patch uses the old layer bank's seed,
+    /// kit slots the old kit banks' seeds.
+    fn reset_noise(&mut self) {
         let (sr, seed) = (self.sr, self.seed);
-        self.noise_banks = std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, k)));
+        let single = self.patch.n_voices <= 1;
+        self.noise_banks = std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, if single { k } else { k + 1 })));
     }
 
-    /// Step 6 (and the note's fixed start values). Fills the slot's offsets
-    /// and returns the voice's NoteStart.
-    fn hit_start(&mut self, slot: &mut Slot, e: &Event) -> NoteStart {
-        let r = &self.real[slot.set];
-        let mut start = NoteStart {
-            velocity: slot.velocity,
-            attack: r[P::ENV_ATTACK],
-            hold: if r[P::ENV_HOLD] <= 0.0006 { 0.0 } else { r[P::ENV_HOLD] },
-            decay: r[P::ENV_DECAY],
-            sustain: r[P::ENV_SUSTAIN],
-            release: r[P::ENV_RELEASE],
-            noise_decay: r[P::ENV_NOISE_DECAY],
-            pitch_amt: r[P::ENV_PITCH_AMT],
-            pitch_time: r[P::ENV_PITCH_TIME],
-            click: r[P::STRIKE_CLICK],
-            end_click: r[P::STRIKE_END_CLICK],
-            end_stop: false,
-        };
-        // Note hardness (melody notes and live hits) sharpens the start.
-        if e.hard.is_finite() && e.hard > 0.0 {
-            let h = e.hard.min(1.0) * self.depth[2];
-            start.click = (start.click + 0.5 * h).min(1.0);
-            start.attack = P::to_real(P::ENV_ATTACK, P::to_norm(P::ENV_ATTACK, start.attack) - 0.3 * h);
-        }
-        if self.kind == KIND_BEAT {
-            let f = self.follow;
-            let ok = |x: f32| x.is_finite();
-            if ok(e.attack) && e.attack > 0.0 {
-                start.attack += f * (e.attack.clamp(0.001, 1.0) - start.attack);
-            }
-            if ok(e.burst) {
-                start.click = (start.click + f * 0.5 * e.burst.clamp(0.0, 1.0)).min(1.0);
-            }
-            if ok(e.bend) {
-                start.pitch_amt = (start.pitch_amt - f * e.bend).clamp(-24.0, 48.0);
-            }
-            if ok(e.hold) && e.hold > 0.0 {
-                let k = (e.hold / 0.2).clamp(0.25, 4.0).powf(f);
-                start.hold *= k;
-                start.decay *= k;
-                start.noise_decay *= k;
-            }
-            if ok(e.vowel) {
-                slot.off.tilt = f * (e.vowel.clamp(0.0, 1.0) - 0.5) * 0.4;
-                slot.off.f1 = f * (e.vowel.clamp(0.0, 1.0) - 0.5) * 0.5;
-            }
-            if ok(e.tone) {
-                let t = e.tone.clamp(0.0, 1.0);
-                let n = &self.norm[slot.set];
-                slot.off.harm = Some(n[P::SRC_HARM_MIX] + f * (t - n[P::SRC_HARM_MIX]));
-                slot.off.noise = Some(n[P::SRC_NOISE_MIX] + f * ((1.0 - t) - n[P::SRC_NOISE_MIX]));
-            }
-            if ok(e.end_stop) && e.end_stop > 0.5 && f > 0.5 {
-                start.end_stop = true;
-            }
-            if ok(e.end_click) {
-                start.end_click = (start.end_click + f * e.end_click.clamp(0.0, 1.0)).min(1.0);
-            }
-        }
-        start
+    fn view<'a>(norm: &'a [f32], real: &'a [f32], descs: &'a [u16], t: &'a Touched, depth: [f32; 6], max_partials: usize, follow_gain: f32) -> LayerView<'a> {
+        LayerView { norm, real, descs, touched: &t.list[..t.n], is_touched: &t.is, is_amount: &t.amount, from_real: &t.from_real, depth, max_partials, follow_gain }
     }
 
-    fn start_voice(&mut self, slot: Slot, start: &NoteStart, track: &Track, curves: &CurvePool, len: usize) {
+    fn start_voice(&mut self, slot: Slot, note: &Note, track: &Track, curves: &CurvePool, len: usize) {
         let v = self.alloc_voice();
         self.age += 1;
-        self.slots[v] = Slot { age: self.age, vmix: 1.0, ..slot };
+        self.slots[v] = Slot { age: self.age, ..slot };
         let mut nf = [0.0f32; CURVE_STRIDE];
         let frame = self.read_frame(v, track, curves, &mut nf);
-        let mut live = self.norm[self.slots[v].set];
-        let mut c = self.controls(v, frame.then_some(&nf), &mut live);
-        c.max_partials = self.max_partials[v];
-        self.voices[v].start(start, &c, len);
+        let k = slot.vp;
+        if self.voices[v].vp != k {
+            self.voices[v].bind(&self.patch.voices[k], k);
+        }
+        let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], depths(&self.depth, self.follow), self.max_partials[v], self.follow_gain);
+        self.voices[v].start(&self.patch.voices[k], &lv, note, frame.then_some(&nf), len);
         self.grain.voice_start(v);
         self.voice_on[v] = true;
         self.layer_on = true;
@@ -716,34 +790,55 @@ impl Layer {
 
     // ------------------------------------------------------------ control rate
 
-    /// Per tick, before the voices: steps 2-3 when dirty, then smoothing.
+    /// Per tick, before the voices: steps 3-4 when dirty, then smoothing and the channel.
     pub fn control_tick(&mut self) {
         if self.dirty {
             self.resolve();
         }
-        for s in 0..SETS {
-            if self.settled[s] {
-                continue;
-            }
+        let n = self.patch.n_values;
+        if !self.settled {
             let mut moving = false;
-            for i in 0..P::COUNT {
-                let d = self.target[s][i] - self.norm[s][i];
+            for i in 0..n {
+                let d = self.target[i] - self.norm[i];
                 if d.abs() > 1e-6 {
-                    self.norm[s][i] += self.smooth[i] * d;
+                    self.norm[i] += self.smooth[i] * d;
                     moving = true;
                 } else {
-                    self.norm[s][i] = self.target[s][i];
+                    self.norm[i] = self.target[i];
                 }
             }
-            self.map_set(s);
-            self.settled[s] = !moving;
+            self.map_all();
+            self.settled = !moving;
         }
-        let r = &self.real[0];
-        self.crush.set(r[P::CRUSH_BITS], r[P::CRUSH_RATE]);
-        self.tape.set(r[P::TAPE_AMT]);
-        self.grit_on = r[P::CRUSH_BITS] < 15.99 || r[P::CRUSH_RATE] < self.sr * 0.999 || r[P::TAPE_AMT] > 0.0;
-        self.delay.set(r[P::DELAY_TIME], r[P::DELAY_FB], r[P::DELAY_SHIFT], r[P::DELAY_MIX]);
-        self.reverb.set(r[P::VERB_SIZE], r[P::VERB_DAMP], r[P::VERB_MIX], r[P::VERB_FREEZE]);
+        let p = &*self.patch;
+        let r = &self.real;
+        let (mut mono, mut stereo) = (false, false);
+        for fx in p.channel() {
+            let b = fx.base as usize;
+            match fx.code {
+                P::T_CRUSH => {
+                    let (bits, rate) = (r[b + P::crush::BITS], r[b + P::crush::RATE]);
+                    self.chan.crush.set(bits, rate);
+                    mono |= bits < 15.99 || rate < self.sr * 0.999;
+                }
+                P::T_TAPE => {
+                    let amt = r[b + P::tape::AMOUNT];
+                    self.chan.tape.set(amt);
+                    mono |= amt > 0.0;
+                }
+                P::T_DELAY => {
+                    self.chan.delay.set(r[b + P::delay::TIME], r[b + P::delay::FEEDBACK], r[b + P::delay::SHIFT], r[b + P::delay::MIX]);
+                    stereo |= self.chan.delay.active();
+                }
+                P::T_REVERB => {
+                    self.chan.reverb.set(r[b + P::reverb::SIZE], r[b + P::reverb::DAMP], r[b + P::reverb::MIX], r[b + P::reverb::FREEZE]);
+                    stereo |= self.chan.reverb.active();
+                }
+                _ => {}
+            }
+        }
+        self.mono_on = mono;
+        let _ = stereo;
         let lvl = if self.mute { 0.0 } else { dsp::db_to_lin(self.level_db) };
         let a = (self.pan + 1.0) * std::f32::consts::FRAC_PI_4;
         self.gl_t = lvl * a.cos();
@@ -776,35 +871,43 @@ impl Layer {
     /// Per tick, after `control_tick`: each sounding voice gets its controls.
     /// `units_per_sample` advances the voices' clip time for curve reads.
     pub fn voices_tick(&mut self, track: &Track, curves: &CurvePool, units_per_sample: f64) {
-        let mut noise_lvl = [0.0f32; SETS];
+        let mut noise_lvl = [0.0f32; KIT_SLOTS];
         let mut loudest = (0.0f32, usize::MAX);
         let mut nf = [0.0f32; CURVE_STRIDE];
-        let mut live = self.norm[0];
+        let dep = depths(&self.depth, self.follow);
         for v in 0..VOICES_PER_LAYER {
             self.voice_on[v] = self.voices[v].active();
             if !self.voice_on[v] {
                 continue;
             }
             let frame = self.read_frame(v, track, curves, &mut nf);
-            let mut lv = self.norm[self.slots[v].set];
-            let mut c = self.controls(v, frame.then_some(&nf), &mut lv);
-            c.max_partials = self.max_partials[v];
-            self.voices[v].control(&c, TICK);
+            let k = self.slots[v].vp;
+            let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], dep, self.max_partials[v], self.follow_gain);
+            self.voices[v].control(&self.patch.voices[k], &lv, frame.then_some(&nf), TICK);
             self.slots[v].clip_t += units_per_sample * TICK as f64;
-            noise_lvl[self.slots[v].set] += self.voices[v].noise_level();
+            noise_lvl[k] += self.voices[v].noise_level();
             let l = self.voices[v].loudness();
             if l > loudest.0 {
                 loudest = (l, v);
-                live = lv;
             }
         }
-        self.live = if loudest.1 == usize::MAX { self.norm[0] } else { live };
-        for s in 0..SETS {
-            let mut nb = [0.0f32; N_BANDS];
-            for b in 0..N_BANDS {
-                nb[b] = self.real[s][P::NOISE_BANDS + b];
+        // Meters: the loudest voice's values over the layer's.
+        let n = self.patch.n_values;
+        self.live[..n].copy_from_slice(&self.norm[..n]);
+        if loudest.1 != usize::MAX {
+            let v = loudest.1;
+            let t = &self.touched[self.slots[v].vp];
+            for &i in &t.list[..t.n] {
+                self.live[i as usize] = self.voices[v].norm(i as usize);
             }
-            self.noise_banks[s].control(noise_lvl[s], &nb, TICK);
+        }
+        for (k, vp) in self.patch.voices().iter().enumerate() {
+            let Some((nb, _)) = vp.noise else { continue };
+            let mut b = [0.0f32; N_BANDS];
+            for (j, x) in b.iter_mut().enumerate() {
+                *x = self.real[nb as usize + P::shaped_noise::BANDS + j];
+            }
+            self.noise_banks[k].control(noise_lvl[k], &b, TICK);
         }
         if self.grain.wants() {
             let mut vg = [VoiceGrain::default(); VOICES_PER_LAYER];
@@ -812,29 +915,30 @@ impl Layer {
                 if !self.voice_on[v] {
                     continue;
                 }
-                let r = &self.real[self.slots[v].set];
-                let mix = r[P::SRC_GRAIN_MIX];
+                let k = self.slots[v].vp;
+                let Some((gb, _, _)) = self.patch.voices[k].grains else { continue };
+                let t = &self.touched[k];
+                let val = |i: usize| if t.is[i] { self.voices[v].real(i) } else { self.real[i] };
+                let gb = gb as usize;
                 vg[v] = VoiceGrain {
                     on: true,
-                    amp: self.voices[v].loudness() * mix,
-                    size: r[P::GRAIN_SIZE],
-                    density: r[P::GRAIN_DENSITY],
-                    pos: r[P::GRAIN_POS],
-                    spray: r[P::GRAIN_SPRAY],
-                    scatter: r[P::GRAIN_SCATTER],
-                    to_grain: r[P::LFO2_TO_GRAIN],
-                    lfo2: self.voices[v].lfo2(),
+                    amp: self.voices[v].grain_level(),
+                    size: val(gb + P::grains::SIZE),
+                    density: val(gb + P::grains::DENSITY),
+                    pos: val(gb + P::grains::POS),
+                    spray: val(gb + P::grains::SPRAY),
+                    scatter: val(gb + P::grains::SCATTER),
                     cents: self.voices[v].pitch_cents(),
                 };
             }
             self.grain.tick(&vg);
         }
-        self.space_on = self.delay.active() || self.reverb.active();
+        self.stereo_on = self.chan.delay.active() || self.chan.reverb.active();
         let gain_moving = (self.gl - self.gl_t).abs() > 1e-6 || (self.gr - self.gr_t).abs() > 1e-6;
         self.layer_on = self.voice_on.iter().any(|&a| a)
             || self.noise_banks.iter().any(|n| n.on)
             || self.grain.active()
-            || self.space_on
+            || self.stereo_on
             || gain_moving;
     }
 
@@ -859,13 +963,13 @@ impl Layer {
             }
             s.left = s.left.saturating_sub(n);
             if s.left == 0 && self.voices[v].active() {
-                self.voices[v].release();
+                self.voices[v].release(&self.patch.voices[s.vp]);
             }
         }
     }
 
     /// Render `n` samples (n <= TICK) of this layer, adding into `l` and `r`.
-    pub fn render(&mut self, l: &mut [f32], r: &mut [f32]) {
+    pub fn render(&mut self, l: &mut [f32], r: &mut [f32], pool: &SamplePool) {
         let n = l.len();
         if !self.layer_on {
             return;
@@ -874,21 +978,28 @@ impl Layer {
         bus.fill(0.0);
         for (v, on) in self.voices.iter_mut().zip(self.voice_on) {
             if on {
-                v.render(bus);
+                v.render(&self.patch.voices[v.vp], bus);
             }
         }
         for nb in self.noise_banks.iter_mut() {
             nb.render(bus);
         }
-        self.grain.render(bus);
-        let space = self.space_on;
+        self.grain.render(bus, pool);
+        let p = &*self.patch;
         let (dl, dr) = (self.gl_step, self.gr_step);
-        let w = self.real[0][P::WIDTH];
+        let w = self.real[p.width as usize];
+        let (mono, stereo) = (self.mono_on, self.stereo_on);
         let mut peak = 0.0f32;
         for i in 0..n {
             let mut x = bus[i];
-            if self.grit_on {
-                x = self.tape.process(self.crush.process(x));
+            if mono {
+                for fx in p.channel() {
+                    match fx.code {
+                        P::T_CRUSH => x = self.chan.crush.process(x),
+                        P::T_TAPE => x = self.chan.tape.process(x),
+                        _ => {}
+                    }
+                }
             }
             self.gl += dl;
             self.gr += dr;
@@ -899,9 +1010,14 @@ impl Layer {
                 self.gr = self.gr_t;
             }
             let (mut a, mut b) = (x * self.gl, x * self.gr);
-            if space {
-                (a, b) = self.delay.process(a, b);
-                (a, b) = self.reverb.process(a, b);
+            if stereo {
+                for fx in p.channel() {
+                    match fx.code {
+                        P::T_DELAY => (a, b) = self.chan.delay.process(a, b),
+                        P::T_REVERB => (a, b) = self.chan.reverb.process(a, b),
+                        _ => {}
+                    }
+                }
             }
             (a, b) = width(a, b, w);
             peak = peak.max(a.abs()).max(b.abs());
@@ -915,178 +1031,25 @@ impl Layer {
         self.voices.iter().filter(|v| v.active()).count()
     }
 
-    /// Steps 4-6 for voice `v` into real-unit controls; `live` receives the
-    /// normalized values after step 5.
-    fn controls(&mut self, v: usize, frame: Option<&[f32; CURVE_STRIDE]>, live: &mut ParamSet) -> VoiceControls {
-        let slot = &mut self.slots[v];
-        let set = slot.set;
-        let n = &self.norm[set];
-        let r = &self.real[set];
-        *live = *n;
-        let mut amp = 1.0;
-        let mut cents = slot.cents;
-        live[P::SRC_TILT] = (n[P::SRC_TILT] + slot.off.tilt).clamp(0.0, 1.0);
-        live[P::SRC_F1_FREQ] = (n[P::SRC_F1_FREQ] + slot.off.f1).clamp(0.0, 1.0);
-        if let Some(h) = slot.off.harm {
-            live[P::SRC_HARM_MIX] = h.clamp(0.0, 1.0);
-        }
-        if let Some(x) = slot.off.noise {
-            live[P::SRC_NOISE_MIX] = x.clamp(0.0, 1.0);
-        }
-        if let Some(f) = frame {
-            amp = gesture_offsets(f, &self.depth, live, &mut slot.vmix, TICK as f32 / self.sr);
-            if slot.follow {
-                amp *= self.follow_gain;
-            }
-            if f[TUNED].is_finite() {
-                cents = f[TUNED];
-            } else if f[frame::PITCH].is_finite() {
-                cents = f[frame::PITCH];
+    /// Macro positions with the voices' movement projected back onto each
+    /// macro through its layer routes (TDD "What the sliders show").
+    pub fn macros_live(&self, out: &mut [f32; N_MACROS]) {
+        let p = &*self.patch;
+        let mut dot = [0.0f32; N_MACROS];
+        let mut n2 = [0.0f32; N_MACROS];
+        let fz = |x: f32| if x.is_finite() { x } else { 0.0 };
+        for r in p.layer_routes() {
+            let k = r.arg as usize;
+            let w = P::to_real(p.descs[r.amount as usize] as usize, self.base[r.amount as usize]) * r.unit;
+            for &t in &r.targets[..r.n_targets as usize] {
+                let t = t as usize;
+                dot[k] += w * (fz(self.live[t]) - fz(self.norm[t]));
+                n2[k] += w * w;
             }
         }
-        let m = |i: usize| P::to_real(i, live[i]);
-        let mut tone = [0.0; N_BANDS];
-        for b in 0..N_BANDS {
-            tone[b] = P::to_real(P::TONE_BANDS + b, live[P::TONE_BANDS + b]);
+        for k in 0..N_MACROS {
+            let u = if self.macros[k].is_nan() { 0.5 } else { self.macros[k].clamp(0.0, 1.0) };
+            out[k] = if n2[k] > 0.0 { (u + dot[k] / (2.0 * n2[k])).clamp(0.0, 1.0) } else { u };
         }
-        VoiceControls {
-            cents,
-            amp,
-            harm_mix: m(P::SRC_HARM_MIX),
-            noise_mix: m(P::SRC_NOISE_MIX),
-            tilt: m(P::SRC_TILT),
-            oddeven: r[P::SRC_ODDEVEN],
-            stretch: r[P::SRC_STRETCH],
-            jitter: r[P::SRC_JITTER],
-            modal: r[P::SRC_MODAL],
-            damp: r[P::SRC_DAMP],
-            f1_freq: m(P::SRC_F1_FREQ),
-            f1_gain: r[P::SRC_F1_GAIN],
-            f2_freq: r[P::SRC_F2_FREQ],
-            f2_gain: r[P::SRC_F2_GAIN],
-            tone_bands: tone,
-            fold_amt: r[P::FOLD_AMT],
-            fold_bias: r[P::FOLD_BIAS],
-            clang_amt: r[P::CLANG_AMT],
-            clang_ratio: r[P::CLANG_RATIO],
-            comb_amt: r[P::COMB_AMT],
-            comb_tune: r[P::COMB_TUNE],
-            comb_decay: r[P::COMB_DECAY],
-            filt_cutoff: m(P::FILT_CUTOFF),
-            filt_res: r[P::FILT_RES],
-            filt_morph: r[P::FILT_MORPH],
-            filt_track: r[P::FILT_TRACK],
-            strike_color: r[P::STRIKE_COLOR],
-            lfo1_rate: r[P::LFO1_RATE],
-            lfo1_pitch: r[P::LFO1_TO_PITCH],
-            lfo1_filter: r[P::LFO1_TO_FILTER],
-            lfo1_level: r[P::LFO1_TO_LEVEL],
-            lfo2_rate: r[P::LFO2_RATE],
-            lfo2_pitch: r[P::LFO2_TO_PITCH],
-            lfo2_filter: r[P::LFO2_TO_FILTER],
-            chaos_rate: r[P::CHAOS_RATE],
-            chaos_amt: r[P::CHAOS_AMT],
-            max_partials: crate::voice::MAX_PARTIALS,
-        }
-    }
-}
-
-fn bank_seed(layer_seed: u32, k: usize) -> u32 {
-    layer_seed ^ 0x5bd1_e995u32.wrapping_mul(k as u32 + 1)
-}
-
-/// Step 5 for stored playback: fixed linear maps from a frame to normalized
-/// parameter offsets (TDD Live follow requirement 12), and the voicing
-/// crossfade. Returns the amplitude factor from loudness.
-/// Maps, each scaled by its depth (loud, open, hard, breath, mouth):
-/// - loudness l: amplitude (1 - d) + d l
-/// - openness o: src.tilt +0.4 o, src.f1_freq +0.25 o, filt.cutoff +0.2 o
-/// - breathiness b: src.noise_mix +0.5 b
-/// - mouth: tone and noise bands move toward the frame's vowel shape (dB)
-/// - unvoiced frames crossfade partials to noise over 10 ms
-pub fn gesture_offsets(f: &[f32; CURVE_STRIDE], depth: &[f32; 5], p: &mut ParamSet, vmix: &mut f32, dt: f32) -> f32 {
-    let fin = |x: f32| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 };
-    let loud = fin(f[frame::LOUDNESS]);
-    let open = fin(f[frame::OPENNESS]) * depth[1];
-    let breath = fin(f[frame::BREATHINESS]) * depth[3];
-    let add = |p: &mut ParamSet, i: usize, d: f32| p[i] = (p[i] + d).clamp(0.0, 1.0);
-    add(p, P::SRC_TILT, 0.4 * open);
-    add(p, P::SRC_F1_FREQ, 0.25 * open);
-    add(p, P::FILT_CUTOFF, 0.2 * open);
-    add(p, P::SRC_NOISE_MIX, 0.5 * breath);
-    let dm = depth[4];
-    if dm > 0.0 {
-        for b in 0..N_BANDS {
-            let v = f[frame::BANDS + b];
-            if v.is_finite() {
-                let t = P::to_norm(P::TONE_BANDS + b, v.clamp(-30.0, 30.0));
-                p[P::TONE_BANDS + b] += dm * (t - p[P::TONE_BANDS + b]);
-                p[P::NOISE_BANDS + b] += dm * (t - p[P::NOISE_BANDS + b]);
-            }
-        }
-    }
-    let voicing = f[frame::VOICING];
-    let target = if voicing < 0.5 { 1.0 } else { 0.0 };
-    let dv = dt / VOICE_XFADE_S;
-    *vmix += (target - *vmix).clamp(-dv, dv);
-    let h = p[P::SRC_HARM_MIX];
-    let n = p[P::SRC_NOISE_MIX];
-    p[P::SRC_HARM_MIX] = h * *vmix;
-    p[P::SRC_NOISE_MIX] = n * *vmix + h.max(n) * (1.0 - *vmix);
-    let silent = voicing > 1.5;
-    let amp = (1.0 - depth[0]) + depth[0] * loud;
-    if silent { amp * 0.0 } else { amp }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn states(n: usize, f: impl Fn(usize, usize) -> f32) -> Vec<f32> {
-        let mut w = vec![0.0; n * STATE_WORDS];
-        for k in 0..n {
-            for i in 0..P::COUNT {
-                w[k * STATE_WORDS + i] = f(k, i);
-            }
-        }
-        w
-    }
-
-    #[test]
-    fn a_steady_morph_marks_nothing_dirty() {
-        let mut l = Layer::new(48_000.0, 0);
-        l.load_states(&states(2, |k, _| k as f32 * 0.5), 2);
-        l.control_tick();
-        l.set_morph(0, 1, 0.25);
-        assert!(l.dirty);
-        l.control_tick();
-        assert!(!l.dirty);
-        l.set_morph(0, 1, 0.25);
-        assert!(!l.dirty, "same blend again");
-        l.set_morph(0, 1, 0.5);
-        assert!(l.dirty);
-        // Ends are exact.
-        l.set_morph(0, 1, 1.0);
-        assert!(l.base.iter().all(|&v| v == 0.5));
-        l.set_morph(0, 1, 0.0);
-        assert!(l.base.iter().all(|&v| v == 0.0));
-    }
-
-    #[test]
-    fn without_states_the_layer_is_left_alone() {
-        let mut l = Layer::new(48_000.0, 0);
-        l.set_param(SET_BASE, P::FILT_CUTOFF, 0.3);
-        l.control_tick();
-        l.set_morph(0, 1, 0.5);
-        assert!(!l.dirty);
-        assert_eq!(l.base[P::FILT_CUTOFF], 0.3);
-    }
-
-    #[test]
-    fn state_indices_past_the_loaded_ones_use_the_last() {
-        let mut l = Layer::new(48_000.0, 0);
-        l.load_states(&states(2, |k, _| k as f32 * 0.5), 2);
-        l.set_morph(5, 7, 0.5);
-        assert!(l.base.iter().all(|&v| v == 0.5));
     }
 }

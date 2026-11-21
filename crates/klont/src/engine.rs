@@ -10,11 +10,12 @@ use crate::curve::CurvePool;
 use crate::layer::Layer;
 use crate::live::{Action, LiveCapture};
 use crate::metro::Metro;
+use crate::patch::{Patch, MAX_VALUES};
 use crate::protocol::*;
+use crate::samples::{SampleError, SamplePool};
 use crate::seq::{EventList, Track, Transport};
 use crate::voice::{MAX_PARTIALS, TICK};
 use dsp::filters::DcBlocker;
-use params as P;
 
 /// A live trigger waiting for its sample offset in the current call.
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,6 +45,10 @@ pub struct Engine {
     table: BufferTable,
 
     layers: Vec<Layer>,
+    samples: Box<SamplePool>,
+    state_scratch: Box<[f32; MAX_STATES * (MAX_VALUES + N_MACROS + 1)]>,
+    /// A patch is parsed here and copied into the layer only when it is valid.
+    patch_scratch: Box<Patch>,
     track: Box<Track>,
     curves: Box<CurvePool>,
     transport: Transport,
@@ -114,6 +119,9 @@ impl Engine {
                 frames_count: 0,
             },
             layers: (0..MAX_LAYERS).map(|i| Layer::new(sr, i)).collect(),
+            samples: Box::new(SamplePool::new()),
+            state_scratch: Box::new([0.0; MAX_STATES * (MAX_VALUES + N_MACROS + 1)]),
+            patch_scratch: Patch::new_boxed(),
             track: Box::new(Track::new()),
             curves: Box::new(CurvePool::new()),
             transport: Transport::new(sr),
@@ -232,105 +240,106 @@ impl Engine {
                     Err(crate::seq::LoadError::Malformed) => LOAD_MALFORMED,
                 }
             }
+            LOAD_PATCH => {
+                let s = slot as usize;
+                if s >= MAX_LAYERS {
+                    return LOAD_BAD_SLOT;
+                }
+                if bytes.len() < 4 {
+                    return LOAD_MALFORMED;
+                }
+                if word(bytes, 0) != crate::patch::PATCH_MAGIC {
+                    return LOAD_BAD_MAGIC;
+                }
+                if self.patch_scratch.parse(bytes).is_err() {
+                    return LOAD_MALFORMED;
+                }
+                let l = &mut self.layers[s];
+                l.set_patch(&self.patch_scratch);
+                let src = l.grain_sample().and_then(|id| self.samples.get(id));
+                l.grain.set_source(src, &mut self.samples);
+                LOAD_OK
+            }
             LOAD_LAYER => {
                 let s = slot as usize;
                 if s >= MAX_LAYERS {
                     return LOAD_BAD_SLOT;
                 }
-                if bytes.len() != LAYER_WORDS * 4 {
+                if bytes.len() < LAYER_HEADER_WORDS * 4 {
                     return LOAD_MALFORMED;
                 }
-                let word = |i: usize| {
-                    u32::from_le_bytes([
-                        bytes[i * 4],
-                        bytes[i * 4 + 1],
-                        bytes[i * 4 + 2],
-                        bytes[i * 4 + 3],
-                    ])
-                };
-                if word(0) != LAYER_MAGIC {
+                if word(bytes, 0) != LAYER_MAGIC {
                     return LOAD_BAD_MAGIC;
                 }
-                let mut w = [0.0f32; LAYER_WORDS];
-                for (i, x) in w.iter_mut().enumerate() {
-                    *x = f32::from_bits(word(i));
+                let n = word(bytes, LAYER_OFF_N) as usize;
+                if n != self.layers[s].n_values() || bytes.len() != layer_words(n) * 4 {
+                    return LOAD_MALFORMED;
                 }
-                self.layers[s].load(&w);
+                let mut w = [0.0f32; LAYER_HEADER_WORDS + 3 * MAX_VALUES + N_MACROS];
+                for (i, x) in w[..layer_words(n)].iter_mut().enumerate() {
+                    *x = f32::from_bits(word(bytes, i));
+                }
+                self.layers[s].load(&w[..layer_words(n)]);
                 LOAD_OK
             }
-            LOAD_GRAIN => {
-                let s = slot as usize;
-                if s >= MAX_LAYERS {
+            LOAD_SAMPLE => {
+                let id = slot as usize;
+                if id >= MAX_SAMPLES {
                     return LOAD_BAD_SLOT;
                 }
-                let hdr = GRAIN_HEADER_WORDS * 4;
+                let hdr = SAMPLE_HEADER_WORDS * 4;
                 if bytes.len() < hdr {
                     return LOAD_MALFORMED;
                 }
-                let word = |i: usize| {
-                    u32::from_le_bytes([
-                        bytes[i * 4],
-                        bytes[i * 4 + 1],
-                        bytes[i * 4 + 2],
-                        bytes[i * 4 + 3],
-                    ])
-                };
-                if word(0) != GRAIN_MAGIC {
+                if word(bytes, 0) != SAMPLE_MAGIC {
                     return LOAD_BAD_MAGIC;
                 }
-                let (rate, ref_cents, n) = (
-                    f32::from_bits(word(1)),
-                    f32::from_bits(word(2)),
-                    word(3) as usize,
-                );
-                if n > GRAIN_MAX_SAMPLES {
+                let (rate, ref_cents, n) = (f32::from_bits(word(bytes, 1)), f32::from_bits(word(bytes, 2)), word(bytes, 3) as usize);
+                if n > SAMPLE_POOL_FLOATS {
                     return LOAD_TOO_BIG;
                 }
-                if bytes.len() != hdr + n * 4
-                    || (n > 0 && !(rate.is_finite() && (1000.0..=384_000.0).contains(&rate)))
-                {
+                if bytes.len() != hdr + n * 4 || (n > 0 && !(rate.is_finite() && (1000.0..=384_000.0).contains(&rate))) {
                     return LOAD_MALFORMED;
                 }
                 // NaN means unpitched; any other value is a pitch in cents.
-                let ref_cents = if ref_cents.is_finite() {
-                    ref_cents.clamp(0.0, 13_000.0)
-                } else {
-                    f32::NAN
-                };
-                self.layers[s].load_grain(rate, ref_cents, n, &bytes[hdr..]);
-                LOAD_OK
+                let ref_cents = if ref_cents.is_finite() { ref_cents.clamp(0.0, 13_000.0) } else { f32::NAN };
+                match self.samples.load(id, rate, ref_cents, n, &bytes[hdr..]) {
+                    Ok(src) => {
+                        for l in self.layers.iter_mut() {
+                            if l.grain_sample() == Some(id) {
+                                l.grain.set_source(src, &mut self.samples);
+                            }
+                        }
+                        LOAD_OK
+                    }
+                    Err(SampleError::TooBig) => LOAD_TOO_BIG,
+                }
             }
             LOAD_STATES => {
                 let s = slot as usize;
                 if s >= MAX_LAYERS {
                     return LOAD_BAD_SLOT;
                 }
-                if bytes.len() < 8 {
+                if bytes.len() < 12 {
                     return LOAD_MALFORMED;
                 }
-                let word = |i: usize| {
-                    u32::from_le_bytes([
-                        bytes[i * 4],
-                        bytes[i * 4 + 1],
-                        bytes[i * 4 + 2],
-                        bytes[i * 4 + 3],
-                    ])
-                };
-                if word(0) != STATES_MAGIC {
+                if word(bytes, 0) != STATES_MAGIC {
                     return LOAD_BAD_MAGIC;
                 }
-                let n = word(1) as usize;
+                let n = word(bytes, 1) as usize;
                 if n > MAX_STATES {
                     return LOAD_TOO_BIG;
                 }
-                if bytes.len() != 8 + n * STATE_WORDS * 4 {
+                let nv = word(bytes, 2) as usize;
+                let stride = state_words(nv);
+                if nv != self.layers[s].n_values() || bytes.len() != 12 + n * stride * 4 {
                     return LOAD_MALFORMED;
                 }
-                let mut w = [0.0f32; MAX_STATES * STATE_WORDS];
-                for (i, x) in w[..n * STATE_WORDS].iter_mut().enumerate() {
-                    *x = f32::from_bits(word(2 + i));
+                let w = &mut self.state_scratch[..n * stride];
+                for (i, x) in w.iter_mut().enumerate() {
+                    *x = f32::from_bits(word(bytes, 3 + i));
                 }
-                self.layers[s].load_states(&w[..n * STATE_WORDS], n);
+                self.layers[s].load_states(&self.state_scratch[..n * stride], n);
                 LOAD_OK
             }
             LOAD_CURVE => match self.curves.load(slot as usize, bytes) {
@@ -736,7 +745,7 @@ impl Engine {
     fn render_span(&mut self, a: usize, b: usize) {
         let (l, r) = (&mut self.out_l[a..b], &mut self.out_r[a..b]);
         for layer in self.layers.iter_mut() {
-            layer.render(l, r);
+            layer.render(l, r, &self.samples);
         }
     }
 
@@ -975,12 +984,18 @@ impl Engine {
         m[M_PEAK_R] = self.peak.1;
         m[M_SELECTED] = self.selected as f32;
         let l = &self.layers[self.selected];
-        m[M_STORED..M_STORED + P::COUNT].copy_from_slice(l.stored());
-        m[M_LIVE..M_LIVE + P::COUNT].copy_from_slice(&l.live);
+        let n = l.n_values();
+        m[M_N_VALUES] = n as f32;
+        m[M_STORED..M_STORED + n].copy_from_slice(l.stored());
+        m[M_LIVE..M_LIVE + n].copy_from_slice(&l.live[..n]);
         let mut u = [0.0f32; N_MACROS];
-        P::project_macros(l.stored(), &l.live, &l.macros, &mut u);
+        l.macros_live(&mut u);
         m[M_MACRO_LIVE..M_MACRO_LIVE + N_MACROS].copy_from_slice(&u);
     }
+}
+
+fn word(b: &[u8], i: usize) -> u32 {
+    u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
 }
 
 // ---------------------------------------------------------------- C ABI (TDD "Engine ABI")

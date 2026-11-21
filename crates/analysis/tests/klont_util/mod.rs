@@ -33,44 +33,23 @@ impl LayerSpec {
     }
 }
 
+/// Layer blob for the classic melody patch every engine layer starts with.
 pub fn layer_bytes(spec: &LayerSpec) -> Vec<u8> {
-    let mut w = vec![0u32; LAYER_WORDS];
-    w[0] = LAYER_MAGIC;
-    let f = |x: f32| x.to_bits();
+    let mut fields = klont::classic::default_fields(KIND_MELODY);
     let (amount, mask) = spec.influence.as_ref().map_or((0.0, 0), |i| (i.1, i.2));
-    w[LAYER_OFF_FIELDS + LAYER_LEVEL as usize] = f(0.0);
-    w[LAYER_OFF_FIELDS + LAYER_KIND as usize] = f(KIND_MELODY as f32);
-    w[LAYER_OFF_FIELDS + LAYER_INFLUENCE_AMOUNT as usize] = f(amount);
-    w[LAYER_OFF_FIELDS + LAYER_INFLUENCE_MASK as usize] = f(mask as f32);
-    for i in 0..P::COUNT {
-        w[LAYER_OFF_BASE + i] = f(spec.base[i]);
-        let t = spec.influence.as_ref().map_or(spec.base[i], |x| x.0[i]);
-        w[LAYER_OFF_INFLUENCE + i] = f(t);
-        for k in 0..KIT_SLOTS {
-            w[LAYER_OFF_KIT + k * P::COUNT + i] = f(P::neutral_set()[i]);
-        }
-    }
-    for k in 0..N_MACROS {
-        w[LAYER_OFF_MACROS + k] = f(0.5);
-    }
-    w.iter().flat_map(|x| x.to_le_bytes()).collect()
+    fields[LAYER_INFLUENCE_AMOUNT as usize] = amount;
+    fields[LAYER_INFLUENCE_MASK as usize] = mask as f32;
+    let target = spec.influence.as_ref().map_or(spec.base, |x| x.0);
+    klont::classic::layer_blob(KIND_MELODY, &fields, &spec.base, &[P::neutral_set(); KIT_SLOTS], &[0.5; N_MACROS], &target)
 }
 
-/// A grain blob (LOAD_GRAIN = 4): magic, sample rate, ref cents (NaN none),
-/// sample count, samples.
+/// A sample blob (LOAD_SAMPLE = 4) for layer 0's grains: magic, sample rate,
+/// ref cents (NaN none), sample count, samples.
 pub fn grain_bytes(rate: f32, ref_cents: Option<f32>, data: &[f32]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(16 + 4 * data.len());
-    b.extend_from_slice(&0x3147_5745u32.to_le_bytes());
-    b.extend_from_slice(&rate.to_le_bytes());
-    b.extend_from_slice(&ref_cents.unwrap_or(f32::NAN).to_le_bytes());
-    b.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    for v in data {
-        b.extend_from_slice(&v.to_le_bytes());
-    }
-    b
+    klont::classic::sample_blob(rate, ref_cents.unwrap_or(f32::NAN), data)
 }
 
-/// True when this build of the Klont has the grain cloud (LOAD_GRAIN accepted).
+/// True when this build of the Klont has the grain cloud (a sample accepted).
 pub fn engine_has_grain() -> bool {
     let mut e = Engine::new(SR, 256);
     e.load_bytes(0, 4, &grain_bytes(SR, None, &[0.0; 64])) == LOAD_OK

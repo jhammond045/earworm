@@ -1,0 +1,209 @@
+# The module table (docs/synth.md "The module table").
+#
+# Every value in a patch is one parameter of a module, a modulation source,
+# a channel effect or a route, stored normalized 0..1 and described by a
+# descriptor. The descriptors are the 96 of params.toml (the Klont
+# vocabulary, kept for Influence matching and for today's presets) plus the
+# [[desc]] entries below. Append descriptors, never reorder or reuse an id:
+# the engine receives each value's descriptor by index.
+#
+# A [[module]] lists its parameters in value order as "name:descriptor" or
+# "name:descriptor*N" for N consecutive values (a 16-band shape). A patch may
+# give one of its values another descriptor of the same kind (the classic
+# patch keeps the old ranges of lfo2.rate, chaos.rate and the envelope times
+# that way); the descriptor named here is the default.
+#
+# kind: voice (runs per voice), source (per-voice modulation source), layer
+# (a layer source, per voice patch) or channel (per layer).
+# code: the type number in the patch blob (crates/klont/src/patch.rs).
+# steps: a stepped value takes that many evenly spaced real values; a morph
+# switches it at its midpoint.
+# scalable: a gain, level or mix, the only values a `scale` route may multiply.
+# [vocab] scalable lists the vocabulary descriptors a `scale` route may multiply.
+# `pnpm gen:params` turns this file into crates/params/src/modules.rs and
+# web/src/gen/modules.ts.
+
+[vocab]
+scalable = ["src.harm_mix", "src.noise_mix", "src.grain_mix", "delay.mix", "verb.mix"]
+
+[[desc]]
+id        = "amp.gain"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 2.0
+neutral   = 1.0
+unit      = ""
+smooth_ms = 15
+scalable  = 1
+doc       = "Gain of an amp module. 1 leaves the level as it is."
+
+[[desc]]
+id        = "env.mode"
+group     = "shape"
+scale     = "lin"
+min       = 0.0
+max       = 2.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 0
+steps     = 3
+doc       = "0 ADSR: note-off starts the release. 1 decay: starts at full, falls with decay, and note-off adds the release. 2 one-shot: starts at full, falls with decay, ignores note-off."
+
+[[desc]]
+id        = "lfo.wave"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+steps     = 2
+doc       = "0 sine, 1 drift (smoothed random). The other shapes arrive with the modulation matrix."
+
+[[desc]]
+id        = "lfo.level"
+group     = "motion"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 1.0
+unit      = ""
+smooth_ms = 15
+doc       = "Output level of an LFO."
+
+[[desc]]
+id        = "route.amount"
+group     = "motion"
+scale     = "bipolar"
+min       = -1.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 15
+doc       = "Amount of a modulation route. 1 moves the target across its whole range; for pitch, 1 is 48 semitones."
+
+[[desc]]
+id        = "voicing.depth"
+group     = "tone"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 1.0
+unit      = ""
+smooth_ms = 15
+doc       = "How far unvoiced sung frames swap the pitched sources for noise."
+
+[[desc]]
+id        = "partials.octave"
+group     = "tone"
+scale     = "lin"
+min       = -3.0
+max       = 3.0
+neutral   = 0.0
+unit      = "oct"
+smooth_ms = 0
+steps     = 7
+doc       = "Octave of the partial bank against the voice pitch."
+
+[[desc]]
+id        = "partials.fine"
+group     = "tone"
+scale     = "bipolar"
+min       = -100.0
+max       = 100.0
+neutral   = 0.0
+unit      = "cents"
+smooth_ms = 15
+doc       = "Fine tune of the partial bank against the voice pitch."
+
+[[module]]
+type   = "partials"
+kind   = "voice"
+code   = 1
+params = ["level:src.harm_mix", "tilt:src.tilt", "oddeven:src.oddeven", "stretch:src.stretch", "jitter:src.jitter", "modal:src.modal", "damp:src.damp", "f1_freq:src.f1_freq", "f1_gain:src.f1_gain", "f2_freq:src.f2_freq", "f2_gain:src.f2_gain", "tone_bands:tone_bands.0*16", "octave:partials.octave", "fine:partials.fine"]
+
+[[module]]
+type   = "click"
+kind   = "voice"
+code   = 5
+params = ["start:strike.click", "end:strike.end_click", "colour:strike.color"]
+
+[[module]]
+type   = "filter"
+kind   = "voice"
+code   = 6
+params = ["cutoff:filt.cutoff", "res:filt.res", "morph:filt.morph", "track:filt.track"]
+
+[[module]]
+type   = "amp"
+kind   = "voice"
+code   = 7
+params = ["gain:amp.gain"]
+
+[[module]]
+type   = "fold"
+kind   = "voice"
+code   = 8
+params = ["amount:fold.amt", "bias:fold.bias"]
+
+[[module]]
+type   = "clang"
+kind   = "voice"
+code   = 9
+params = ["amount:clang.amt", "ratio:clang.ratio"]
+
+[[module]]
+type   = "comb"
+kind   = "voice"
+code   = 10
+params = ["amount:comb.amt", "tune:comb.tune", "decay:comb.decay"]
+
+[[module]]
+type   = "env"
+kind   = "source"
+code   = 30
+params = ["mode:env.mode", "attack:env.attack", "hold:env.hold", "decay:env.decay", "sustain:env.sustain", "release:env.release"]
+
+[[module]]
+type   = "lfo"
+kind   = "source"
+code   = 31
+params = ["rate:lfo1.rate", "wave:lfo.wave", "level:lfo.level"]
+
+[[module]]
+type   = "shaped_noise"
+kind   = "layer"
+code   = 40
+params = ["level:src.noise_mix", "bands:noise_bands.0*16"]
+
+[[module]]
+type   = "grains"
+kind   = "layer"
+code   = 41
+params = ["level:src.grain_mix", "size:grain.size", "density:grain.density", "pos:grain.pos", "spray:grain.spray", "scatter:grain.scatter"]
+
+[[module]]
+type   = "crush"
+kind   = "channel"
+code   = 21
+params = ["bits:crush.bits", "rate:crush.rate"]
+
+[[module]]
+type   = "tape"
+kind   = "channel"
+code   = 22
+params = ["amount:tape.amt"]
+
+[[module]]
+type   = "delay"
+kind   = "channel"
+code   = 23
+params = ["time:delay.time", "feedback:delay.fb", "shift:delay.shift", "mix:delay.mix"]
+
+[[module]]
+type   = "reverb"
+kind   = "channel"
+code   = 24
+params = ["size:verb.size", "damp:verb.damp", "mix:verb.mix", "freeze:verb.freeze"]

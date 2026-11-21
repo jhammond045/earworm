@@ -2,9 +2,9 @@
 //! `web/src/m1/protocol.ts`; keep the two in step (a Vitest test checks the
 //! constants against this file).
 //!
-//! Everything is little endian. Parameter values on the wire are normalized
-//! 0..1, indexed by the ParamSet layout in `params` (64 scalars, then 16 tone
-//! bands, then 16 noise bands).
+//! Everything is little endian. Values on the wire are normalized 0..1,
+//! indexed by the layer's value vector, whose layout the layer's patch sets
+//! (`LOAD_PATCH`, patch.rs).
 
 // ---------------------------------------------------------------- limits
 
@@ -29,7 +29,8 @@ pub const STAGING_BYTES: usize = 4 << 20;
 pub const MSG_BYTES: usize = 16;
 pub const CONTROL_CAP: usize = 256;
 
-/// layer, index = target set (SET_*), param = ParamSet index, value 0..1.
+/// layer, index = SET_BASE or SET_INFLUENCE, param = index into the layer's
+/// value vector, value 0..1.
 pub const MSG_SET_PARAM: u16 = 1;
 /// layer, index = macro 0..7, value 0..1 (0.5 is neutral).
 pub const MSG_SET_MACRO: u16 = 2;
@@ -83,10 +84,8 @@ pub const METRO_LAYER: u16 = 3; // layer index, used when METRO_VOICE is kit
 pub const METRO_SLOT: u16 = 4; // kit slot 0..3
 pub const METRO_BAR: u16 = 5; // beats per bar, 1..32; the downbeat is accented
 
-/// MSG_SET_PARAM targets (the `index` byte).
+/// MSG_SET_PARAM targets (the `index` byte): the stored values, or the Influence target.
 pub const SET_BASE: u8 = 0;
-/// Kit slot k is SET_KIT + k.
-pub const SET_KIT: u8 = 1;
 pub const SET_INFLUENCE: u8 = 5;
 
 /// MSG_SET_LAYER fields (the `param` field).
@@ -152,10 +151,15 @@ pub const LOAD_TRACK: u32 = 1;
 pub const LOAD_LAYER: u32 = 2;
 /// Curve table; slot = curve id 0..MAX_CURVES. Layout in `curve.rs`.
 pub const LOAD_CURVE: u32 = 3;
-/// Grain source; slot = layer. Layout below.
-pub const LOAD_GRAIN: u32 = 4;
+/// A sample of the pool; slot = sample id 0..MAX_SAMPLES. Layout below.
+pub const LOAD_SAMPLE: u32 = 4;
 /// Morph states; slot = layer. Layout below.
 pub const LOAD_STATES: u32 = 5;
+/// The layer's patch; slot = layer. Layout in `patch.rs`. Send it before the
+/// layer and states blobs: they must hold one value per value of the patch.
+/// A patch equal to the loaded one changes nothing; any other silences the
+/// layer's voices and returns its values to the patch's starting values.
+pub const LOAD_PATCH: u32 = 6;
 
 pub const LOAD_OK: i32 = 0;
 pub const LOAD_BAD_KIND: i32 = -1;
@@ -164,45 +168,49 @@ pub const LOAD_BAD_MAGIC: i32 = -3;
 pub const LOAD_TOO_BIG: i32 = -4;
 pub const LOAD_MALFORMED: i32 = -5;
 
-/// Layer blob: 32-bit words.
+/// Layer blob v2: 32-bit words, `n` = the patch's value count.
 /// ```text
 /// word 0          u32 magic LAYER_MAGIC
 /// words 1..17     f32 fields, LAYER_* order (level, pan, mute, kind, depths, follow,
 ///                 influence amount, influence mask, kit cents x4)
-/// words 17..113   f32 base ParamSet (96, normalized)
-/// words 113..121  f32 macros (8, 0..1, 0.5 neutral)
-/// words 121..217  f32 influence target ParamSet (96)
-/// words 217..601  f32 kit slots, 4 x 96
+/// word 17         u32 n
+/// then            f32 values (n, normalized)
+///                 f32 macros (8, 0..1, 0.5 neutral)
+///                 f32 Influence target (n, normalized)
+///                 u32 group bits (n): 1 << the value's aspect group when Influence moves it, else 0
 /// ```
-pub const LAYER_MAGIC: u32 = 0x314C_5745; // "EWL1"
-pub const LAYER_WORDS: usize = 1 + LAYER_FIELDS + 96 + N_MACROS + 96 + KIT_SLOTS * 96;
+pub const LAYER_MAGIC: u32 = 0x324C_5745; // "EWL2"
 pub const LAYER_OFF_FIELDS: usize = 1;
-pub const LAYER_OFF_BASE: usize = LAYER_OFF_FIELDS + LAYER_FIELDS;
-pub const LAYER_OFF_MACROS: usize = LAYER_OFF_BASE + 96;
-pub const LAYER_OFF_INFLUENCE: usize = LAYER_OFF_MACROS + N_MACROS;
-pub const LAYER_OFF_KIT: usize = LAYER_OFF_INFLUENCE + 96;
+pub const LAYER_OFF_N: usize = LAYER_OFF_FIELDS + LAYER_FIELDS;
+pub const LAYER_HEADER_WORDS: usize = LAYER_OFF_N + 1;
+pub const fn layer_words(n: usize) -> usize {
+    LAYER_HEADER_WORDS + 3 * n + N_MACROS
+}
 
-/// Grain source blob (`LOAD_GRAIN`): 32-bit words.
+/// Sample blob (`LOAD_SAMPLE`): 32-bit words.
 /// ```text
-/// u32 magic GRAIN_MAGIC, f32 sample_rate (of the data), f32 ref_cents (cents
-/// above C0 of the source's pitch; NaN = unpitched), u32 n_samples (0 clears
-/// the source), then n f32 samples
+/// u32 magic SAMPLE_MAGIC, f32 sample_rate (of the data), f32 ref_cents (cents
+/// above C0 of the sample's pitch; NaN = unpitched), u32 n_samples (0 clears
+/// the sample), then n f32 samples
 /// ```
-/// Each layer owns two buffers of GRAIN_MAX_SAMPLES floats (3.8 MB per layer,
-/// 30.7 MB for eight), allocated at init so loading never allocates.
-pub const GRAIN_MAGIC: u32 = 0x3147_5745; // "EWG1"
-pub const GRAIN_MAX_SAMPLES: usize = 480_000;
-pub const GRAIN_HEADER_WORDS: usize = 4;
+/// All samples share one pool of SAMPLE_POOL_FLOATS floats (32 MB), allocated
+/// at init so loading never allocates (samples.rs).
+pub const SAMPLE_MAGIC: u32 = 0x314D_5745; // "EWM1"
+pub const SAMPLE_HEADER_WORDS: usize = 4;
+pub const MAX_SAMPLES: usize = 64;
+pub const SAMPLE_POOL_FLOATS: usize = 1 << 23;
 
-/// States blob (`LOAD_STATES`): 32-bit words.
+/// States blob v2 (`LOAD_STATES`): 32-bit words.
 /// ```text
 /// u32 magic STATES_MAGIC, u32 n_states (0..=MAX_STATES; 0 clears the states),
-/// then n_states x STATE_WORDS f32: 96 base (normalized), 8 macros (0..1),
-/// 1 Influence amount (0..1), 3 zero
+/// u32 n (the patch's value count), then n_states x (n + N_MACROS + 1) f32:
+/// n values (normalized), 8 macros (0..1), 1 Influence amount (0..1)
 /// ```
-pub const STATES_MAGIC: u32 = 0x3153_5745; // "EWS1"
+pub const STATES_MAGIC: u32 = 0x3253_5745; // "EWS2"
 pub const MAX_STATES: usize = 8;
-pub const STATE_WORDS: usize = 96 + N_MACROS + 1 + 3;
+pub const fn state_words(n: usize) -> usize {
+    n + N_MACROS + 1
+}
 
 // ---------------------------------------------------------------- meter block
 
@@ -225,13 +233,10 @@ pub const M_PEAK_R: usize = 14;
 pub const M_SELECTED: usize = 15;
 pub const M_LAYER_PEAK: usize = 16; // 8 slots, per-layer peak (max of L and R)
 pub const M_LAYER_VOICES: usize = 24; // 8 slots, sounding voices per layer
-/// Selected layer after resolution step 3 (the stored sound), 96 normalized values.
-pub const M_STORED: usize = 32;
-/// Selected layer after step 5 (with the voice applied: its loudest sounding
-/// voice, or the stored values when none sounds), 96 normalized values.
-pub const M_LIVE: usize = 128;
-/// Macro values with the gesture projected back onto each macro (TDD "What
-/// the sliders show"), 8 values.
+/// Value count of the selected layer's patch: the length of M_STORED and M_LIVE.
+pub const M_N_VALUES: usize = 32;
+/// Macro values with the gesture projected back onto each macro through its
+/// layer routes (TDD "What the sliders show"), 8 values.
 pub const M_MACRO_LIVE: usize = 224;
 /// Live tier (M2): latest values, refreshed every process call.
 pub const M_IN_DB: usize = 240; // input level, dBFS
@@ -271,7 +276,12 @@ pub const M_COUNTIN: usize = 262;
 /// How many count-ins have finished and started the transport.
 pub const M_COUNT_SEQ: usize = 263;
 pub const M_VOWEL: usize = 264; // 16 slots: live vowel shape, dB
-pub const METER_LEN: usize = 280;
+/// Selected layer after resolution step 4, MAX_VALUES normalized values.
+pub const M_STORED: usize = 280;
+/// Selected layer after step 6 (with its loudest sounding voice's routes
+/// applied, or the stored values when none sounds), MAX_VALUES values.
+pub const M_LIVE: usize = M_STORED + crate::patch::MAX_VALUES;
+pub const METER_LEN: usize = M_LIVE + crate::patch::MAX_VALUES;
 
 // ---------------------------------------------------------------- buffer table
 

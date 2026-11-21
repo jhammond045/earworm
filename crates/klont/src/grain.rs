@@ -1,27 +1,28 @@
 //! The grain cloud of one layer (TDD "Klont DSP", Grain cloud row).
 //!
-//! A layer holds an optional mono source (`LOAD_GRAIN`). While the layer has a
-//! source and `src.grain_mix` above 0, every sounding voice spawns short
+//! A layer's patch names a sample of the pool (`LOAD_SAMPLE`, samples.rs) for
+//! its grains. While that sample is loaded and a voice's grain level is above
+//! 0, every sounding voice spawns short
 //! Hann-windowed grains at `grain.density` per second. A grain reads the
 //! source with 4-point cubic interpolation at
 //! `source rate / engine rate * pitch ratio`, where the ratio is the voice's
 //! pitch over the source's reference pitch (an unpitched source uses C4, so
 //! the middle of the keyboard plays it at its own speed). Each grain is tagged
-//! with the voice that spawned it and takes that voice's amplitude (its
-//! envelope, gesture and velocity: `Voice::loudness`) times the grain mix,
-//! so a released note fades its grains with its own release.
+//! with the voice that spawned it and takes that voice's grain level (the
+//! grains' level value, driven by an envelope, with the voice's velocity and
+//! gesture routes: `Voice::grain_level`), so a released note fades its
+//! grains with its own release.
 //!
-//! Where a grain starts: `grain.pos` (0..1 of the source) plus a random spread
-//! of `grain.spray` (full spray spans the whole source) plus the voice's second
-//! LFO times `lfo2.to_grain` (a quarter of the source at the extreme). The
-//! spawn interval is `1 / density`, jittered by `grain.scatter`. Randomness
-//! comes from a generator seeded per layer, so offline renders repeat.
+//! Where a grain starts: the position value (0..1 of the source, after the
+//! voice's routes; the classic patch routes its second LFO there) plus a
+//! random spread of the spray value (full spray spans the whole source). The
+//! spawn interval is `1 / density`, jittered by scatter. Randomness comes
+//! from a generator seeded per layer, so offline renders repeat.
 //!
-//! Memory: two source buffers of `GRAIN_MAX_SAMPLES` floats per layer (3.84 MB,
-//! 30.7 MB for eight layers) are allocated in `new`, so `LOAD_GRAIN` and the
-//! audio thread never allocate. A new source goes into the idle buffer and the
-//! cloud crossfades from the old one over 50 ms (equal power, per sample), so
-//! a change makes no click. A second change inside the 50 ms ends the first
+//! The source data lives in the sample pool; the cloud holds its region. A
+//! new source crossfades from the old one over 50 ms (equal power, per
+//! sample), so a change makes no click; the old region stays in the pool
+//! until the next change. A second change inside the 50 ms ends the first
 //! fade at once (the old grains are cut), which can click; the host does not
 //! send two sources that close together.
 //!
@@ -30,6 +31,7 @@
 //! pass over the eight voice slots and no grain is rendered.
 
 use crate::protocol::*;
+use crate::samples::{SamplePool, SampleRef};
 use crate::voice::TICK;
 use dsp::noise::Noise;
 
@@ -42,28 +44,18 @@ const UNPITCHED_REF: f32 = 4800.0;
 /// Shortest spawn interval in samples (guards a density times scatter product).
 const MIN_INTERVAL: f32 = 8.0;
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Source {
-    n: usize,
-    rate: f32,
-    ref_cents: f32,
-}
-
 /// What one voice tells the cloud each tick (real units).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VoiceGrain {
     /// The voice sounds.
     pub on: bool,
-    /// Voice amplitude times `src.grain_mix`.
+    /// The voice's grain level.
     pub amp: f32,
     pub size: f32,
     pub density: f32,
     pub pos: f32,
     pub spray: f32,
     pub scatter: f32,
-    pub to_grain: f32,
-    /// Second LFO of the voice, -1..1.
-    pub lfo2: f32,
     /// Current pitch of the voice in cents above C0.
     pub cents: f32,
 }
@@ -89,8 +81,8 @@ struct Grain {
 
 pub struct GrainCloud {
     sr: f32,
-    bufs: [Vec<f32>; 2],
-    src: [Source; 2],
+    /// The source of each grain buffer index: the active one and the one being left.
+    src: [Option<SampleRef>; 2],
     active: usize,
     /// Crossfade progress of the active buffer, 1 = done.
     fade: f32,
@@ -111,8 +103,7 @@ impl GrainCloud {
         }
         GrainCloud {
             sr,
-            bufs: [vec![0.0; GRAIN_MAX_SAMPLES], vec![0.0; GRAIN_MAX_SAMPLES]],
-            src: [Source::default(); 2],
+            src: [None; 2],
             active: 0,
             fade: 1.0,
             fade_step: 1.0 / (XFADE_S * sr),
@@ -124,18 +115,28 @@ impl GrainCloud {
         }
     }
 
-    /// Replace the source. `data` is little-endian f32 bytes, `n` samples
-    /// (checked by the caller to be at most GRAIN_MAX_SAMPLES). n = 0 clears.
-    pub fn set_source(&mut self, rate: f32, ref_cents: f32, n: usize, data: &[u8]) {
+    /// The sample the cloud plays now.
+    pub fn source(&self) -> Option<SampleRef> {
+        self.src[self.active]
+    }
+
+    /// Replace the source (None clears it), holding the new region in the pool
+    /// and letting go of the one before the last.
+    pub fn set_source(&mut self, s: Option<SampleRef>, pool: &mut SamplePool) {
+        if s == self.src[self.active] {
+            return;
+        }
         if self.fade < 1.0 {
             self.end_fade();
         }
         let new = 1 - self.active;
-        for (d, c) in self.bufs[new][..n].iter_mut().zip(data.chunks_exact(4)) {
-            let x = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-            *d = if x.is_finite() { x } else { 0.0 };
+        if let Some(old) = self.src[new].take() {
+            pool.release(old.region);
         }
-        self.src[new] = Source { n, rate, ref_cents };
+        if let Some(x) = s {
+            pool.acquire(x.region);
+        }
+        self.src[new] = s;
         self.active = new;
         // Nothing sounding: no fade needed, the old buffer has no readers.
         self.fade = if self.live == 0 { 1.0 } else { 0.0 };
@@ -154,7 +155,7 @@ impl GrainCloud {
     }
 
     pub fn has_source(&self) -> bool {
-        self.src[self.active].n > 0
+        self.src[self.active].is_some_and(|s| s.n > 0)
     }
 
     /// The layer needs to call `tick` (a source to play, or grains still sounding).
@@ -196,7 +197,7 @@ impl GrainCloud {
             }
             g.amp_step = (target - g.amp) * inv;
         }
-        let src = self.src[self.active];
+        let src = self.src[self.active].unwrap_or(SampleRef { region: 0, n: 0, rate: 0.0, ref_cents: f32::NAN });
         for (vi, v) in vg.iter().enumerate() {
             if !v.on || v.amp <= 1e-9 || src.n == 0 {
                 self.timer[vi] = 0.0;
@@ -213,7 +214,7 @@ impl GrainCloud {
         }
     }
 
-    fn spawn(&mut self, voice: usize, delay: u32, v: &VoiceGrain, src: &Source, density: f32) {
+    fn spawn(&mut self, voice: usize, delay: u32, v: &VoiceGrain, src: &SampleRef, density: f32) {
         let Some(slot) = self.grains.iter().position(|g| !g.on) else { return };
         let n = src.n as f64;
         let size = v.size.clamp(0.01, 0.5);
@@ -222,9 +223,7 @@ impl GrainCloud {
         let cents = if v.cents.is_finite() { v.cents } else { UNPITCHED_REF };
         let ratio = ((cents - refc) / 1200.0).clamp(-6.0, 6.0).exp2();
         let step = (src.rate / self.sr * ratio) as f64;
-        let centre = v.pos.clamp(0.0, 1.0)
-            + v.spray.clamp(0.0, 1.0) * 0.5 * self.rng.next()
-            + v.to_grain.clamp(0.0, 1.0) * 0.25 * v.lfo2;
+        let centre = v.pos.clamp(0.0, 1.0) + v.spray.clamp(0.0, 1.0) * 0.5 * self.rng.next();
         let start = (centre as f64).rem_euclid(1.0) * n - 0.5 * len as f64 * step;
         let overlap = (density * size).max(1.0);
         self.grains[slot] = Grain {
@@ -245,7 +244,7 @@ impl GrainCloud {
     }
 
     /// Add `out.len()` (<= TICK) samples of the cloud into `out`.
-    pub fn render(&mut self, out: &mut [f32]) {
+    pub fn render(&mut self, out: &mut [f32], pool: &SamplePool) {
         if self.live == 0 {
             return;
         }
@@ -266,8 +265,13 @@ impl GrainCloud {
             if !g.on {
                 continue;
             }
-            let ns = self.src[g.buf as usize].n;
-            let data = &self.bufs[g.buf as usize][..ns];
+            let Some(src) = self.src[g.buf as usize] else {
+                g.on = false;
+                self.live -= 1;
+                continue;
+            };
+            let ns = src.n;
+            let data = &pool.data(src.region)[..ns];
             let fade_g = if g.buf == active { &g_new } else { &g_old };
             let mut ended = false;
             for i in 0..n {

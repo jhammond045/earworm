@@ -1,5 +1,6 @@
-//! M4 engine tests: the grain cloud (LOAD_GRAIN) and states with the morph
-//! lane (LOAD_STATES, track blob v2).
+//! M4 engine tests: the grain cloud (a sample of the pool, LOAD_SAMPLE) and
+//! states with the morph lane (LOAD_STATES, track blob v2), on the classic
+//! patch each layer starts with (layer i's grains read sample i).
 
 use klont::Engine;
 use klont::protocol::*;
@@ -44,9 +45,12 @@ fn track(beats: f32, notes: &[(f32, f32, f32)], morph: &[(f32, u32, f32, u32)]) 
 }
 
 fn grain_blob(rate: f32, ref_cents: f32, data: &[f32]) -> Vec<u8> {
-    let mut w = vec![GRAIN_MAGIC, rate.to_bits(), ref_cents.to_bits(), data.len() as u32];
-    w.extend(data.iter().map(|x| x.to_bits()));
-    bytes(&w)
+    klont::classic::sample_blob(rate, ref_cents, data)
+}
+
+/// Value index of an old parameter on the classic melody layer.
+fn vi(p: usize) -> usize {
+    klont::classic::index(KIND_MELODY, p)[0]
 }
 
 fn sine(freq: f32, secs: f32, amp: f32) -> Vec<f32> {
@@ -54,7 +58,7 @@ fn sine(freq: f32, secs: f32, amp: f32) -> Vec<f32> {
 }
 
 fn set(e: &mut Engine, p: usize, real: f32) {
-    e.push(MSG_SET_PARAM, 0, SET_BASE, p as u16, P::to_norm(p, real), 0);
+    klont::classic::set_param(e, 0, KIND_MELODY, p, P::to_norm(p, real));
 }
 
 /// A layer that makes sound only through its grain cloud.
@@ -122,20 +126,20 @@ fn no_source_or_no_mix_is_silent_and_a_source_with_mix_is_not() {
 
     // A source but a mix of 0.
     let mut e = grain_engine_mix(512, 0.0);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, A4, &sine(440.0, 1.0, 0.5))), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, A4, &sine(440.0, 1.0, 0.5))), LOAD_OK);
     play_note(&mut e, A4, 2.0);
     assert!(render(&mut e, 24_000, 512).iter().all(|&v| v == 0.0));
 
     // Source and mix.
     let mut e = grain_engine(512);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, A4, &sine(440.0, 1.0, 0.5))), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, A4, &sine(440.0, 1.0, 0.5))), LOAD_OK);
     play_note(&mut e, A4, 2.0);
     let out = render(&mut e, 24_000, 512);
     assert!(rms(&out[4800..]) > 0.05, "rms {}", rms(&out[4800..]));
     assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
 
     // Clearing the source (n = 0) fades the cloud out.
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, A4, &[])), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, A4, &[])), LOAD_OK);
     let tail = render(&mut e, 24_000, 512);
     assert!(rms(&tail[12_000..]) == 0.0, "still sounding after a clear");
 }
@@ -145,7 +149,7 @@ fn grain_pitch_follows_the_note() {
     let src = grain_blob(SR, A4, &sine(440.0, 1.0, 0.5));
     for (cents, want) in [(A4, 440.0), (A4 + 1200.0, 880.0), (A4 - 1200.0, 220.0)] {
         let mut e = grain_engine(512);
-        assert_eq!(e.load_bytes(0, LOAD_GRAIN, &src), LOAD_OK);
+        assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &src), LOAD_OK);
         play_note(&mut e, cents, 3.0);
         let out = render(&mut e, 48_000, 512);
         let hz = peak_hz(&out[9600..9600 + 24_000]);
@@ -156,7 +160,7 @@ fn grain_pitch_follows_the_note() {
 #[test]
 fn an_unpitched_source_plays_at_its_own_speed_around_c4() {
     let mut e = grain_engine(512);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, f32::NAN, &sine(300.0, 1.0, 0.5))), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, f32::NAN, &sine(300.0, 1.0, 0.5))), LOAD_OK);
     play_note(&mut e, 4800.0, 3.0);
     let out = render(&mut e, 48_000, 512);
     let hz = peak_hz(&out[9600..9600 + 24_000]);
@@ -167,7 +171,7 @@ fn an_unpitched_source_plays_at_its_own_speed_around_c4() {
 fn a_source_at_another_rate_keeps_its_pitch() {
     let mut e = grain_engine(512);
     let src: Vec<f32> = (0..24_000).map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / 24_000.0).sin()).collect();
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(24_000.0, A4, &src)), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(24_000.0, A4, &src)), LOAD_OK);
     play_note(&mut e, A4, 3.0);
     let out = render(&mut e, 48_000, 512);
     let hz = peak_hz(&out[9600..9600 + 24_000]);
@@ -183,13 +187,13 @@ fn changing_the_source_makes_no_click() {
     let mut e = grain_engine(128);
     let a = grain_blob(SR, A4, &sine(440.0, 1.0, 0.5));
     let b = grain_blob(SR, A4, &sine(660.0, 1.0, 0.5));
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &a), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &a), LOAD_OK);
     play_note(&mut e, A4, 4.0);
     let before = render(&mut e, 48_000, 128);
     let steady = max_step(&before[12_000..]);
     // Load mid-block (not on a tick boundary) and keep rendering.
     let _ = render(&mut e, 77, 77);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &b), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &b), LOAD_OK);
     let after = render(&mut e, 24_000, 128);
     let worst = max_step(&after);
     assert!(steady > 0.01, "a 440 Hz sine should step by about 0.02: {steady}");
@@ -199,9 +203,9 @@ fn changing_the_source_makes_no_click() {
     let hz = peak_hz(&after[12_000..]);
     assert!((hz - 660.0).abs() < 14.0, "{hz}");
     // A second change while one is fading is accepted.
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &a), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &a), LOAD_OK);
     render(&mut e, 100, 100);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &b), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &b), LOAD_OK);
     assert!(render(&mut e, 4800, 128).iter().all(|v| v.is_finite()));
 }
 
@@ -213,7 +217,7 @@ fn busy_cloud(max_block: usize) -> Box<Engine> {
     set(&mut e, P::LFO2_TO_GRAIN, 0.5);
     set(&mut e, P::LFO2_RATE, 3.0);
     let noise: Vec<f32> = (0..48_000).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).map(|x| x * 0.3).collect();
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, f32::NAN, &noise)), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, f32::NAN, &noise)), LOAD_OK);
     play_note(&mut e, 5400.0, 3.0);
     e
 }
@@ -233,39 +237,37 @@ fn offline_renders_are_bit_identical() {
 fn grain_loads_are_checked() {
     let mut e = Engine::new(SR, 128);
     let ok = grain_blob(SR, A4, &[0.0; 16]);
-    assert_eq!(e.load_bytes(8, LOAD_GRAIN, &ok), LOAD_BAD_SLOT);
+    assert_eq!(e.load_bytes(MAX_SAMPLES as u32, LOAD_SAMPLE, &ok), LOAD_BAD_SLOT);
     let mut bad = ok.clone();
     bad[0] ^= 1;
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &bad), LOAD_BAD_MAGIC);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &ok[..ok.len() - 4]), LOAD_MALFORMED);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &ok[..8]), LOAD_MALFORMED);
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(0.0, A4, &[0.0; 16])), LOAD_MALFORMED);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &bad), LOAD_BAD_MAGIC);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &ok[..ok.len() - 4]), LOAD_MALFORMED);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &ok[..8]), LOAD_MALFORMED);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(0.0, A4, &[0.0; 16])), LOAD_MALFORMED);
     let mut big = ok.clone();
-    big[12..16].copy_from_slice(&(GRAIN_MAX_SAMPLES as u32 + 1).to_le_bytes());
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &big), LOAD_TOO_BIG);
-    // The maximum fits.
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, A4, &vec![0.1; GRAIN_MAX_SAMPLES])), LOAD_OK);
+    big[12..16].copy_from_slice(&(SAMPLE_POOL_FLOATS as u32 + 1).to_le_bytes());
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &big), LOAD_TOO_BIG);
+    // A long source fits (the pool holds about 2.9 minutes in all).
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, A4, &vec![0.1; 4_000_000])), LOAD_OK);
+    // Two that do not fit together are refused, and the first stays.
+    assert_eq!(e.load_bytes(1, LOAD_SAMPLE, &grain_blob(SR, A4, &vec![0.1; 4_500_000])), LOAD_TOO_BIG);
     // A mono source of any other length too, down to one sample.
-    assert_eq!(e.load_bytes(0, LOAD_GRAIN, &grain_blob(SR, A4, &[0.5])), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_SAMPLE, &grain_blob(SR, A4, &[0.5])), LOAD_OK);
 }
 
 // ---------------------------------------------------------------- states and morph
 
 fn states_blob(states: &[(f32, f32)]) -> Vec<u8> {
     // Each state: a filter cutoff (normalized) and an Influence amount; the rest neutral.
-    let neutral = P::neutral_set();
-    let mut w = vec![STATES_MAGIC, states.len() as u32];
-    for &(cut, amount) in states {
-        let mut s = [0f32; STATE_WORDS];
-        s[..P::COUNT].copy_from_slice(&neutral);
-        s[P::FILT_CUTOFF] = cut;
-        for m in 0..N_MACROS {
-            s[P::COUNT + m] = 0.5;
-        }
-        s[P::COUNT + N_MACROS] = amount;
-        w.extend(s.iter().map(|x| x.to_bits()));
-    }
-    bytes(&w)
+    let st: Vec<_> = states
+        .iter()
+        .map(|&(cut, amount)| {
+            let mut s = P::neutral_set();
+            s[P::FILT_CUTOFF] = cut;
+            (s, [0.5; N_MACROS], amount)
+        })
+        .collect();
+    klont::classic::states_blob(KIND_MELODY, &st, &[P::neutral_set(); KIT_SLOTS])
 }
 
 /// Meter value of the selected layer's stored cutoff after each 480-sample
@@ -274,7 +276,7 @@ fn cutoff_trace(e: &mut Engine, secs: f32) -> Vec<f32> {
     (0..(secs * 100.0) as usize)
         .map(|_| {
             e.render(480);
-            e.meter()[M_STORED + P::FILT_CUTOFF]
+            e.meter()[M_STORED + vi(P::FILT_CUTOFF)]
         })
         .collect()
 }
@@ -345,7 +347,7 @@ fn states_without_markers_or_a_clip_use_state_zero() {
     let mut e = Engine::new(SR, 480);
     set(&mut e, P::FILT_CUTOFF, 5000.0);
     cutoff_trace(&mut e, 0.5);
-    let before = e.meter()[M_STORED + P::FILT_CUTOFF];
+    let before = e.meter()[M_STORED + vi(P::FILT_CUTOFF)];
     assert!((before - P::to_norm(P::FILT_CUTOFF, 5000.0)).abs() < 1e-3);
     assert_eq!(e.load_bytes(0, LOAD_STATES, &states_blob(&[(0.3, 0.0), (0.9, 0.0)])), LOAD_OK);
     let tr = cutoff_trace(&mut e, 0.5);
@@ -368,7 +370,7 @@ fn states_without_markers_or_a_clip_use_state_zero() {
 fn clearing_states_leaves_the_last_blend_in_place() {
     let mut e = morph_engine(MORPH_STEP, 0.0);
     cutoff_trace(&mut e, 1.5);
-    assert_eq!(e.load_bytes(0, LOAD_STATES, &bytes(&[STATES_MAGIC, 0])), LOAD_OK);
+    assert_eq!(e.load_bytes(0, LOAD_STATES, &bytes(&[STATES_MAGIC, 0, klont::classic::layout(KIND_MELODY).vals.len() as u32])), LOAD_OK);
     let tr = cutoff_trace(&mut e, 0.2);
     assert!((tr[19] - 0.8).abs() < 1e-5);
 }
@@ -378,7 +380,7 @@ fn the_influence_amount_morphs_too() {
     // Influence target far from the base, amount 0 in state 0 and 1 in state 1.
     let mut e = Engine::new(SR, 480);
     let target = P::to_norm(P::FILT_CUTOFF, 200.0);
-    e.push(MSG_SET_PARAM, 0, SET_INFLUENCE, P::FILT_CUTOFF as u16, target, 0);
+    e.push(MSG_SET_PARAM, 0, SET_INFLUENCE, vi(P::FILT_CUTOFF) as u16, target, 0);
     e.push(MSG_SET_LAYER, 0, 0, LAYER_INFLUENCE_MASK, 0x1f as f32, 0);
     assert_eq!(e.load_bytes(0, LOAD_STATES, &states_blob(&[(0.8, 0.0), (0.8, 1.0)])), LOAD_OK);
     let markers = [(0.0, 0, 0.0, MORPH_LINE), (2.0 * PPQ as f32, 1, 0.0, MORPH_STEP)];
@@ -442,12 +444,12 @@ fn grain_cost() {
         let mut e = Engine::new(SR, 128);
         let notes: Vec<(f32, f32, f32)> = (0..8).map(|k| (0.0, 40.0, 4800.0 + 100.0 * k as f32)).collect();
         for l in 0..layers {
-            let s = |e: &mut Engine, p: usize, real: f32| e.push(MSG_SET_PARAM, l as u8, SET_BASE, p as u16, P::to_norm(p, real), 0);
+            let s = |e: &mut Engine, p: usize, real: f32| klont::classic::set_param(e, l as u8, KIND_MELODY, p, P::to_norm(p, real));
             s(&mut e, P::SRC_GRAIN_MIX, 1.0);
             s(&mut e, P::GRAIN_DENSITY, 100.0);
             s(&mut e, P::GRAIN_SIZE, 0.5);
             s(&mut e, P::GRAIN_SPRAY, 0.5);
-            assert_eq!(e.load_bytes(l as u32, LOAD_GRAIN, &grain_blob(SR, 5700.0, &src)), LOAD_OK);
+            assert_eq!(e.load_bytes(l as u32, LOAD_SAMPLE, &grain_blob(SR, 5700.0, &src)), LOAD_OK);
         }
         // One clip per layer, all playing the same 8-note chord.
         let mut w: Vec<u32> = vec![TRACK_MAGIC, 1, layers as u32, (8 * layers) as u32, 0, 1, 0, 0];

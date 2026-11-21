@@ -119,7 +119,7 @@ fn rms(x: &[f32]) -> f32 {
 }
 
 fn set(e: &mut Engine, layer: u8, p: usize, real: f32) {
-    e.push(MSG_SET_PARAM, layer, SET_BASE, p as u16, P::to_norm(p, real), 0);
+    klont::classic::set_param(e, layer, KIND_MELODY, p, P::to_norm(p, real));
 }
 
 /// A small song: melody on layer 0, a beat layer on 1, a pad on 2.
@@ -195,7 +195,8 @@ fn hit_lands_on_its_sample() {
     // A hit at beat 1 of 120 bpm starts at sample 24000.
     let mut e = Engine::new(SR, 4096);
     e.push(MSG_SET_LAYER, 0, 0, LAYER_KIND, KIND_BEAT as f32, 0);
-    e.push(MSG_SET_PARAM, 0, SET_KIT, P::ENV_ATTACK as u16, 0.0, 0);
+    // The kit slot plays the layer's (melody) classic patch: its only voice patch.
+    klont::classic::set_param(&mut e, 0, KIND_MELODY, P::ENV_ATTACK, 0.0);
     e.render(1);
     let c = ClipDef { layer: 0, loop_len: 4.0 * PPQ as f32, events: vec![note(1.0, 0.25, f32::NAN)], curve: -1, warp: vec![] };
     assert_eq!(e.load_bytes(0, LOAD_TRACK, &track(4.0, 120.0, false, &[c])), LOAD_OK);
@@ -258,9 +259,28 @@ fn eight_layers_render_without_allocating() {
         set(&mut e, layer, P::TAPE_AMT, 0.5);
     }
     render_all(&mut e, 4800, 128);
+    // Blobs are built before the watch starts; loading them must not allocate.
+    let kind = KIND_BEAT;
+    let fields = klont::classic::default_fields(kind);
+    let kit = [P::neutral_set(); KIT_SLOTS];
+    let patch = klont::classic::patch_blob(kind, 2);
+    let layer = klont::classic::layer_blob(kind, &fields, &P::neutral_set(), &kit, &[0.5; N_MACROS], &P::neutral_set());
+    let states = klont::classic::states_blob(kind, &[(P::neutral_set(), [0.5; N_MACROS], 0.0), (P::neutral_set(), [0.7; N_MACROS], 0.0)], &kit);
+    let sample = klont::classic::sample_blob(SR, 4800.0, &vec![0.1; 48_000]);
+    let melody = klont::classic::patch_blob(KIND_MELODY, 2);
     ALLOCS.store(0, Ordering::Relaxed);
     ARMED.with(|a| a.set(true));
     for i in 0..2000 {
+        if i == 300 {
+            assert_eq!(e.load_bytes(2, LOAD_SAMPLE, &sample), LOAD_OK);
+            assert_eq!(e.load_bytes(2, LOAD_PATCH, &patch), LOAD_OK);
+            assert_eq!(e.load_bytes(2, LOAD_LAYER, &layer), LOAD_OK);
+            assert_eq!(e.load_bytes(2, LOAD_STATES, &states), LOAD_OK);
+        }
+        if i == 1200 {
+            assert_eq!(e.load_bytes(2, LOAD_PATCH, &melody), LOAD_OK);
+            assert_eq!(e.load_bytes(2, LOAD_SAMPLE, &sample), LOAD_OK);
+        }
         if i % 50 == 0 {
             for layer in 3..MAX_LAYERS as u8 {
                 e.push(MSG_NOTE_ON, layer, 0, 0, 4000.0 + 37.0 * i as f32 % 2400.0, (i % 128) as u32);
@@ -274,7 +294,7 @@ fn eight_layers_render_without_allocating() {
         e.process(128);
     }
     ARMED.with(|a| a.set(false));
-    assert_eq!(ALLOCS.load(Ordering::Relaxed), 0, "allocations while rendering");
+    assert_eq!(ALLOCS.load(Ordering::Relaxed), 0, "allocations while rendering or loading");
 }
 
 /// Mic in, tier, tuner, frames, an armed layer started and released over and
@@ -325,7 +345,7 @@ fn bad_loads_are_rejected_and_reported() {
     let mut e = Engine::new(SR, 128);
     assert_eq!(e.load_bytes(0, 99, &[0; 8]), LOAD_BAD_KIND);
     assert_eq!(e.load_bytes(0, LOAD_TRACK, &[0; 32]), LOAD_BAD_MAGIC);
-    assert_eq!(e.load_bytes(9, LOAD_LAYER, &[0; LAYER_WORDS * 4]), LOAD_BAD_SLOT);
+    assert_eq!(e.load_bytes(9, LOAD_LAYER, &[0; 64]), LOAD_BAD_SLOT);
     assert_eq!(e.load_bytes(0, LOAD_LAYER, &[0; 16]), LOAD_MALFORMED);
     e.render(128);
     assert_eq!(e.meter()[M_LOAD_STATUS], LOAD_MALFORMED as f32);
@@ -334,26 +354,62 @@ fn bad_loads_are_rejected_and_reported() {
 #[test]
 fn layer_blob_sets_the_stored_sound() {
     let mut e = Engine::new(SR, 128);
-    let mut w = vec![0u32; LAYER_WORDS];
-    w[0] = LAYER_MAGIC;
-    let f = |x: f32| x.to_bits();
-    w[LAYER_OFF_FIELDS + LAYER_LEVEL as usize] = f(-6.0);
-    w[LAYER_OFF_FIELDS + LAYER_DEPTH_MOUTH as usize] = f(1.0);
-    for i in 0..P::COUNT {
-        w[LAYER_OFF_BASE + i] = f(P::neutral_set()[i]);
-        w[LAYER_OFF_INFLUENCE + i] = f(P::neutral_set()[i]);
-        for k in 0..KIT_SLOTS {
-            w[LAYER_OFF_KIT + k * P::COUNT + i] = f(P::neutral_set()[i]);
-        }
-    }
-    w[LAYER_OFF_BASE + P::SRC_TILT] = f(0.9);
-    for k in 0..N_MACROS {
-        w[LAYER_OFF_MACROS + k] = f(0.5);
-    }
-    let bytes: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
-    assert_eq!(e.load_bytes(0, LOAD_LAYER, &bytes), LOAD_OK);
+    let mut fields = klont::classic::default_fields(KIND_MELODY);
+    fields[LAYER_LEVEL as usize] = -6.0;
+    let mut base = P::neutral_set();
+    base[P::SRC_TILT] = 0.9;
+    let kit = [P::neutral_set(); KIT_SLOTS];
+    assert_eq!(klont::classic::load(&mut e, 0, &fields, &base, &kit, &[0.5; N_MACROS], &P::neutral_set()), LOAD_OK);
     render_all(&mut e, 48_000, 128);
-    assert!((e.meter()[M_STORED + P::SRC_TILT] - 0.9).abs() < 1e-3);
+    let i = klont::classic::index(KIND_MELODY, P::SRC_TILT)[0];
+    assert!((e.meter()[M_STORED + i] - 0.9).abs() < 1e-3);
+    assert_eq!(e.meter()[M_N_VALUES] as usize, klont::classic::layout(KIND_MELODY).vals.len());
+}
+
+#[test]
+fn bad_patches_are_refused_and_the_old_one_keeps_playing() {
+    use klont::patch::PATCH_MAGIC;
+    let mut e = Engine::new(SR, 128);
+    e.push(MSG_NOTE_ON, 0, 0, 0, 5700.0, 0);
+    render_all(&mut e, 4800, 128);
+    let good = klont::classic::patch_blob(KIND_MELODY, 0);
+    let w = |b: &[u8], i: usize| u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]]);
+    let put = |b: &mut Vec<u8>, i: usize, x: u32| b[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
+    let n = w(&good, 1) as usize;
+    // Word offset of the first voice patch's module list.
+    let vp = 6 + 2 * n;
+    let modules = vp + 13;
+    let cables = modules + 2 * w(&good, vp) as usize;
+    let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+    cases.push(("truncated", good[..good.len() - 4].to_vec()));
+    let mut x = good.clone();
+    put(&mut x, modules, 77);
+    cases.push(("unknown module type", x));
+    let mut x = good.clone();
+    put(&mut x, modules + 2 * 6, klont::patch::NONE);
+    cases.push(("unknown module type at the end", x));
+    let mut x = good.clone();
+    // Cable 0 (partials -> amp) turned backwards: amp -> partials is a cycle in run order.
+    put(&mut x, cables, 1);
+    put(&mut x, cables + 1, 0);
+    cases.push(("cycle", x));
+    let mut x = good.clone();
+    put(&mut x, modules + 2 * 6, params::T_PARTIALS);
+    cases.push(("two partial banks (cap)", x));
+    let mut x = good.clone();
+    put(&mut x, 1, 5000);
+    cases.push(("too many values", x));
+    for (what, blob) in cases {
+        assert_eq!(e.load_bytes(0, LOAD_PATCH, &blob), LOAD_MALFORMED, "{what}");
+    }
+    assert_eq!(e.load_bytes(0, LOAD_PATCH, &[0; 8]), LOAD_BAD_MAGIC);
+    assert_eq!(w(&good, 0), PATCH_MAGIC);
+    let (l, _) = render_all(&mut e, 4800, 128);
+    assert!(rms(&l) > 0.01, "the note on the old patch keeps sounding");
+    // A layer blob must carry one value per value of the patch.
+    let mut b = klont::classic::layer_blob(KIND_MELODY, &klont::classic::default_fields(KIND_MELODY), &P::neutral_set(), &[P::neutral_set(); KIT_SLOTS], &[0.5; N_MACROS], &P::neutral_set());
+    put(&mut b, LAYER_OFF_N, n as u32 - 1);
+    assert_eq!(e.load_bytes(0, LOAD_LAYER, &b), LOAD_MALFORMED);
 }
 
 #[test]

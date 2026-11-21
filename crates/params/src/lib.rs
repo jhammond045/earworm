@@ -5,7 +5,9 @@
 //! A ParamSet is 96 normalized values: the 64 scalars in table order, then
 //! 16 tone bands (index TONE_BANDS..), then 16 noise bands (NOISE_BANDS..).
 
+mod modules;
 mod table;
+pub use modules::*;
 pub use table::*;
 
 /// A full sound, normalized 0..1 per parameter.
@@ -43,6 +45,44 @@ pub struct Desc {
     pub doc: &'static str,
 }
 
+/// Where a module type runs (modules.toml `kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModKind {
+    Voice,
+    Source,
+    Layer,
+    Channel,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ModParam {
+    pub name: &'static str,
+    /// Default descriptor id of the parameter's values.
+    pub desc: u16,
+    /// Consecutive values (16 for a band shape).
+    pub count: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleType {
+    pub name: &'static str,
+    pub code: u32,
+    pub kind: ModKind,
+    pub n_values: usize,
+    pub params: &'static [ModParam],
+}
+
+/// The module type with this blob code.
+pub fn module_type(code: u32) -> Option<&'static ModuleType> {
+    MODULE_TYPES.iter().find(|t| t.code == code)
+}
+
+/// Descriptor `i`: the vocabulary first, then the module table's own.
+/// Panics past N_DESCS; the engine checks descriptor ids when it loads a patch.
+pub fn desc(i: usize) -> &'static Desc {
+    if i < COUNT { &DESCS[i] } else { &EXTRA_DESCS[i - COUNT] }
+}
+
 fn clamp01(x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
@@ -50,8 +90,10 @@ fn clamp01(x: f32) -> f32 {
 /// Normalized 0..1 to real units (lin, db and bipolar map linearly; log maps
 /// to min * (max/min)^n). The input is clamped to 0..1; NaN is treated as the
 /// parameter's neutral value. The result is always within min..max.
+/// `i` is any descriptor id (vocabulary or module table). A stepped value
+/// lands on the nearest of its steps.
 pub fn to_real(i: usize, n: f32) -> f32 {
-    let d = &DESCS[i];
+    let d = desc(i);
     if n.is_nan() {
         return d.neutral;
     }
@@ -60,13 +102,20 @@ pub fn to_real(i: usize, n: f32) -> f32 {
         Scale::Log => d.min * (d.max / d.min).powf(n),
         _ => d.min + (d.max - d.min) * n,
     };
+    let steps = STEPS[i];
+    let r = if steps >= 2 {
+        let step = (d.max - d.min) / (steps - 1) as f32;
+        d.min + ((r - d.min) / step).round() * step
+    } else {
+        r
+    };
     r.clamp(d.min, d.max)
 }
 
 /// Real units to normalized, clamped to 0..1. Inverse of `to_real`. NaN is
 /// treated as the parameter's neutral value.
 pub fn to_norm(i: usize, real: f32) -> f32 {
-    let d = &DESCS[i];
+    let d = desc(i);
     let real = if real.is_nan() { d.neutral } else { real };
     let n = match d.scale {
         Scale::Log => {
