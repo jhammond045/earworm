@@ -59,6 +59,13 @@ function readout(desc: number, norm: number): string {
   const r = toReal(desc, norm);
   if (d.id === 'lfo.wave') return WAVES[Math.round(r * 5)] ?? String(r);
   if (d.id === 'env.mode') return ENV_MODES[Math.round(r)] ?? String(r);
+  if (d.id === 'osc.wave') {
+    const x = r * 3, k = Math.round(x);
+    const names = ['sine', 'triangle', 'saw', 'square'];
+    return Math.abs(x - k) < 0.03 ? names[k] : `${names[Math.floor(x)]}–${names[Math.ceil(x)]}`;
+  }
+  if (d.id === 'noise.colour') return r < 0.03 ? 'white' : Math.abs(r - 0.5) < 0.03 ? 'pink' : r > 0.97 ? 'brown' : r.toFixed(2);
+  if (d.id === 'sampler.loop') return r >= 0.5 ? 'on' : 'off';
   const a = Math.abs(r);
   const n = a >= 1000 ? r.toFixed(0) : a >= 100 ? r.toFixed(0) : a >= 10 ? r.toFixed(1) : a >= 1 ? r.toFixed(2) : r.toFixed(3);
   return d.unit ? `${n} ${d.unit}` : n;
