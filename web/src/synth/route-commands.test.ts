@@ -7,6 +7,8 @@ import { Store } from '../project/store';
 import type { Project } from '../project/types';
 import { layoutOf, patchBlob } from './patch';
 import { findRoute } from './routes';
+import { classicVectors } from './classic';
+import { layerBlob } from '../project/compile';
 
 function doc(): Project {
   let d = newProject('t');
@@ -83,5 +85,21 @@ describe('route commands', () => {
     expect(add({ source: 'note.velocity', target: 'nothing.here' })).toThrow(/no value/);
     expect(add({ source: 'macro1', target: 'filter1.res', mode: 'scale' })).toThrow(/gain/);
     expect(add({ source: 'macro1', target: 'filter1.res', latch: true })).toThrow(/latch/);
+  });
+
+  it('a classic patch with routes added keeps its binding to the old parameters (Influence still reaches it)', () => {
+    const s = new Store(doc());
+    const l = s.doc.layers[0];
+    s.dispatch('addRoute', { layer: l.id, route: { id: 'x', source: 'layer.lfo1', target: 'filter1.res' } });
+    const cur = s.doc.layers[0];
+    const target = new Array(96).fill(0.25);
+    const v = classicVectors(cur.kind, cur.states[0].values, target, cur.patch);
+    const lay = layoutOf(cur.patch);
+    expect(v.values.length).toBe(lay.keys.length);
+    const cut = lay.index.get('filter1.cutoff')!;
+    expect(v.target[cut]).toBe(0.25);
+    expect(v.groups[cut]).not.toBe(0);
+    expect(v.groups[lay.index.get('route.x')!]).toBe(0);
+    expect(new Uint32Array(layerBlob(cur), 17 * 4, 1)[0]).toBe(lay.keys.length);
   });
 });

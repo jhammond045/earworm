@@ -243,7 +243,7 @@ Each source gives one value per control tick. Unipolar sources run 0 to 1. Bipol
 
 | Source | What it is |
 | --- | --- |
-| `env1` to `env4` | A mode, then attack, hold, decay, sustain, release. Modes: ADSR (note-off starts the release); decay (starts at full and falls with decay; while `env1` releases, the release adds to the fall); one-shot (starts at full, falls with decay, ignores note-off). Trigger: the note, or each sung onset. `env1` decides when the voice ends. |
+| `env1` to `env4` | A mode, then attack, hold, decay, sustain, release, with a curve per envelope. Modes: ADSR (note-off starts the release); decay (starts at full and falls with decay; while `env1` releases, the release adds to the fall); one-shot (starts at full, falls with decay, ignores note-off). Trigger: the note, or each sung onset. `env1` decides when the voice ends. |
 | `lfo1` to `lfo4` | Rate in Hz, or in beats when synced. Wave is a morph: sine, triangle, saw, square, random steps, drift (today's chaos). Phase restarts on each note unless set to run free. |
 | `note.pitch`, `note.velocity`, `note.hardness` | The note's pitch, velocity or hit strength, and hardness (a stored note's `hard`, or the onset hardness of a live voice). |
 | `note.attack`, `note.burst`, `note.bend`, `note.hold`, `note.vowel`, `note.tone`, `note.endClick` | A beat hit's shape fields, as measured by the second pass. Fixed for the note. |
