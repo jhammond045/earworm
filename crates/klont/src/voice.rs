@@ -26,7 +26,8 @@
 //! The output must not depend on how a span is split into `render` calls.
 
 use crate::curve::{CURVE_STRIDE, TUNED};
-use crate::modules::{Env, EnvEvent, EnvTimes, LfoSrc, Partials, PartialsCtl, Stage, cl};
+use crate::modules::{Env, EnvEvent, EnvTimes, LfoSrc, NoiseSrc, Osc, Partials, PartialsCtl, SamplerSrc, Stage, cl};
+use crate::samples::SamplePool;
 use crate::patch::*;
 use dsp::filters::Svf;
 use dsp::fx::{Clang, Click, CombPair, Folder, fast_exp2, fast_log2};
@@ -50,6 +51,8 @@ const HOLD_OFF_S: f32 = 0.0006;
 const SILENT: u8 = u8::MAX;
 /// Seeds of the four LFOs' drift sequences: the third keeps the old chaos seed.
 const LFO_SALT: [u32; MAX_LFOS] = [0x1b87_3593, 0xcc9e_2d51, 0, 0x85eb_ca6b];
+/// The pitch a sampler plays an unpitched sample at its own speed (C4).
+const REF_CENTS: f32 = 4800.0;
 
 /// Intensity bands (of the 16 from 80 Hz to 12 kHz): about 300 to 800 Hz
 /// (centres 304, 425, 594 Hz) and about 2 to 6 kHz (2.3, 3.2, 4.4, 6.2 kHz).
@@ -164,11 +167,53 @@ struct Chain<T> {
     dirty: bool,
 }
 
+/// A gain that ramps linearly across each tick (amps, and the levels of the sources).
 #[derive(Clone, Copy)]
 struct AmpMod {
     gain: f32,
     step: f32,
     target: f32,
+}
+
+impl AmpMod {
+    const ZERO: AmpMod = AmpMod { gain: 0.0, step: 0.0, target: 0.0 };
+    /// A new target for this tick of `len` samples.
+    fn to(&mut self, target: f32, len: usize) {
+        self.gain = self.target;
+        self.target = target;
+        self.step = (target - self.gain) / len as f32;
+    }
+    fn span_end(&mut self) {
+        self.gain = self.target;
+        self.step = 0.0;
+    }
+}
+
+struct OscMod {
+    osc: Osc,
+    level: AmpMod,
+    /// Cycles per sample, wave, pulse width, pm depth (radians per unit of input).
+    inc: f32,
+    wave: f32,
+    pw: f32,
+    pm: f32,
+}
+
+struct NoiseMod {
+    src: NoiseSrc,
+    level: AmpMod,
+    colour: f32,
+}
+
+struct SamplerMod {
+    src: SamplerSrc,
+    level: AmpMod,
+    /// Pitch offset from the voice pitch (cents, octave and fine) and how far it follows the pitch.
+    cents: f32,
+    follow: f32,
+    looping: bool,
+    loop_start: f32,
+    loop_len: f32,
 }
 
 /// Which pool instance a program module uses.
@@ -183,6 +228,9 @@ enum Inst {
     Fold,
     Clang,
     Comb,
+    Osc(u8),
+    Noise(u8),
+    Sampler,
 }
 
 /// Raw per-voice source values: note fields (SRC_NOTE_* order), sung
@@ -202,6 +250,11 @@ pub struct Voice {
     fold: Chain<Folder>,
     clang: Chain<Clang>,
     comb: Chain<CombPair>,
+    oscs: [OscMod; 4],
+    noises: [NoiseMod; 2],
+    sampler: SamplerMod,
+    /// The voicing swap's pitched level this tick (1: voiced or no frame), for the sources.
+    pitched: f32,
     inst: [Inst; MAX_MODULES],
     /// Program module whose buffer a module's output is (a fused amp reads the bank's).
     alias: [u8; MAX_MODULES],
@@ -209,6 +262,8 @@ pub struct Voice {
     /// The buffer holding each module's output this span (its own, or a passed-on input).
     buf_of: [u8; MAX_MODULES],
     inb: [f32; TICK],
+    /// An oscillator's phase input this span.
+    pmb: [f32; TICK],
 
     envs: [Env; MAX_ENVS],
     lfos: [LfoSrc; MAX_LFOS],
@@ -323,11 +378,16 @@ impl Voice {
             fold: Chain { fx: Folder::new(sr), on: false, dirty: false },
             clang: Chain { fx: Clang::new(sr), on: false, dirty: false },
             comb: Chain { fx: CombPair::new(sr), on: false, dirty: false },
+            oscs: std::array::from_fn(|_| OscMod { osc: Osc::new(), level: AmpMod::ZERO, inc: 0.0, wave: 0.0, pw: 0.5, pm: 0.0 }),
+            noises: std::array::from_fn(|j| NoiseMod { src: NoiseSrc::new(seed ^ 0x68e3_1da4u32.wrapping_mul(j as u32 + 1)), level: AmpMod::ZERO, colour: 0.0 }),
+            sampler: SamplerMod { src: SamplerSrc::new(), level: AmpMod::ZERO, cents: 0.0, follow: 1.0, looping: false, loop_start: 0.0, loop_len: 1.0 },
+            pitched: 1.0,
             inst: [Inst::None; MAX_MODULES],
             alias: std::array::from_fn(|i| i as u8),
             bufs: [[0.0; TICK]; MAX_MODULES],
             buf_of: std::array::from_fn(|i| i as u8),
             inb: [0.0; TICK],
+            pmb: [0.0; TICK],
             envs: std::array::from_fn(|_| Env::new()),
             lfos: std::array::from_fn(|j| LfoSrc::new(s ^ LFO_SALT[j])),
             mod_slot: [0; MAX_MODS],
@@ -377,10 +437,19 @@ impl Voice {
     /// same chain; a new patch kills the voice first.
     pub fn bind(&mut self, vp: &VoicePatch, index: usize) {
         self.vp = index;
-        let (mut nf, mut na) = (0u8, 0u8);
+        let (mut nf, mut na, mut no, mut nn) = (0u8, 0u8, 0u8, 0u8);
         for (m, md) in vp.modules().iter().enumerate() {
             self.inst[m] = match md.code {
                 P::T_PARTIALS => Inst::Partials,
+                P::T_OSC => {
+                    no += 1;
+                    Inst::Osc(no - 1)
+                }
+                P::T_NOISE => {
+                    nn += 1;
+                    Inst::Noise(nn - 1)
+                }
+                P::T_SAMPLER => Inst::Sampler,
                 P::T_CLICK => Inst::Click,
                 P::T_FILTER => {
                     nf += 1;
@@ -474,6 +543,11 @@ impl Voice {
                 };
                 self.envs[self.mod_slot[k] as usize].start(t);
             }
+        }
+        if let Some(sm) = vp.find(P::T_SAMPLER) {
+            let b = vp.modules[sm].base as usize;
+            let v = |i: usize| val_of(&self.moved[..], &self.rv[..], lv.real, b + i);
+            self.sampler.src.start(cl(v(P::sampler::START), 0.0, 1.0));
         }
         if let Some(c) = vp.find(P::T_CLICK) {
             let b = vp.modules[c].base as usize;
@@ -633,8 +707,17 @@ impl Voice {
             f.on = false;
         }
         for a in self.amps.iter_mut() {
-            *a = AmpMod { gain: 0.0, step: 0.0, target: 0.0 };
+            *a = AmpMod::ZERO;
         }
+        for o in self.oscs.iter_mut() {
+            o.osc.reset();
+            o.level = AmpMod::ZERO;
+        }
+        for n in self.noises.iter_mut() {
+            n.level = AmpMod::ZERO;
+        }
+        self.sampler.src.stop();
+        self.sampler.level = AmpMod::ZERO;
         self.cg = 1.0;
         self.cg_t = 1.0;
         self.peak_acc = 0.0;
@@ -898,6 +981,7 @@ impl Voice {
             }
         }
         // Voicing swap: unvoiced frames crossfade the pitched level into the noise level over 10 ms.
+        self.pitched = 1.0;
         if let Some(f) = frame {
             let target = if f[frame::VOICING] < 0.5 { 1.0 } else { 0.0 };
             if mods {
@@ -906,6 +990,7 @@ impl Voice {
             }
             let depth = lv.real[vp.voicing as usize];
             let m = if depth == 1.0 { self.vmix } else { 1.0 - depth * (1.0 - self.vmix) };
+            self.pitched = m;
             if let (Some(p), Some((nb, _))) = (vp.partials, vp.noise) {
                 let (hi, ni) = (vp.modules[p as usize].base as usize + P::partials::LEVEL, nb as usize + P::shaped_noise::LEVEL);
                 self.mark(lv, hi);
@@ -1005,7 +1090,20 @@ impl Voice {
             None => 0.0,
         };
 
-        // Modules.
+        // Modules. A noise module rises to the loudest pitched level on unvoiced frames.
+        let pitched_max = if self.pitched == 1.0 {
+            0.0
+        } else {
+            vp.modules().iter().fold(0.0f32, |a, md| {
+                let b = md.base as usize;
+                a.max(match md.code {
+                    P::T_OSC => cl(val(b + P::osc::LEVEL), 0.0, 2.0),
+                    P::T_SAMPLER => cl(val(b + P::sampler::LEVEL), 0.0, 2.0),
+                    P::T_PARTIALS => cl(val(b + P::partials::LEVEL), 0.0, 2.0),
+                    _ => 0.0,
+                })
+            })
+        };
         let attack = self.envs[0].stage == Stage::Attack;
         let decay = self.envs[0].t.decay;
         for (m, md) in vp.modules().iter().enumerate() {
@@ -1048,10 +1146,34 @@ impl Voice {
                     if vp.fused_amp == Some(m as u8) {
                         continue;
                     }
-                    let amp = &mut self.amps[a as usize];
-                    amp.gain = amp.target;
-                    amp.target = cl(val(b + P::amp::GAIN), 0.0, 8.0) * gate;
-                    amp.step = (amp.target - amp.gain) / len as f32;
+                    self.amps[a as usize].to(cl(val(b + P::amp::GAIN), 0.0, 8.0) * gate, len);
+                }
+                Inst::Osc(o) => {
+                    let shift = val(b + P::osc::OCTAVE) * 1200.0 + val(b + P::osc::SEMI) * 100.0 + val(b + P::osc::FINE);
+                    let f = (C0_HZ * fast_exp2((cents + shift) * (1.0 / 1200.0))).clamp(1.0, nyq);
+                    let o = &mut self.oscs[o as usize];
+                    o.inc = f / self.sr;
+                    o.wave = cl(val(b + P::osc::WAVE), 0.0, 1.0);
+                    o.pw = cl(val(b + P::osc::PW), 0.05, 0.95);
+                    o.pm = cl(val(b + P::osc::PM), 0.0, 4.0);
+                    o.level.to(cl(val(b + P::osc::LEVEL), 0.0, 2.0) * gate * self.pitched, len);
+                }
+                Inst::Noise(n) => {
+                    // The voicing swap raises noise to at least the pitched level on unvoiced frames.
+                    let lvl = cl(val(b + P::noise::LEVEL), 0.0, 2.0);
+                    let lvl = if self.pitched == 1.0 { lvl } else { lvl * self.pitched + lvl.max(pitched_max) * (1.0 - self.pitched) };
+                    let n = &mut self.noises[n as usize];
+                    n.colour = cl(val(b + P::noise::COLOUR), 0.0, 1.0);
+                    n.level.to(lvl * gate, len);
+                }
+                Inst::Sampler => {
+                    let s = &mut self.sampler;
+                    s.cents = cents + val(b + P::sampler::OCTAVE) * 1200.0 + val(b + P::sampler::FINE);
+                    s.follow = cl(val(b + P::sampler::FOLLOW), 0.0, 1.0);
+                    s.looping = val(b + P::sampler::LOOP) >= 0.5;
+                    s.loop_start = cl(val(b + P::sampler::LOOP_START), 0.0, 1.0);
+                    s.loop_len = cl(val(b + P::sampler::LOOP_LEN), 0.0, 1.0);
+                    s.level.to(cl(val(b + P::sampler::LEVEL), 0.0, 2.0) * gate * self.pitched, len);
                 }
                 Inst::Click => self.click.colour = cl(val(b + P::click::COLOUR), 40.0, 20_000.0),
                 Inst::Clang => {
@@ -1119,7 +1241,7 @@ impl Voice {
     // ------------------------------------------------------------ audio rate
 
     /// Add this voice into `out` (mono).
-    pub fn render(&mut self, vp: &VoicePatch, out: &mut [f32]) {
+    pub fn render(&mut self, vp: &VoicePatch, out: &mut [f32], pool: &SamplePool) {
         if !self.active() {
             return;
         }
@@ -1129,7 +1251,7 @@ impl Voice {
             if self.left > 0 {
                 m = m.min(self.left);
             }
-            self.render_piece(vp, &mut out[pos..pos + m]);
+            self.render_piece(vp, &mut out[pos..pos + m], pool);
             pos += m;
         }
     }
@@ -1144,11 +1266,63 @@ impl Voice {
 
     /// Run the program over `m` samples into the module buffers. A processor that is off and has
     /// one input passes that input's buffer on instead of copying it.
-    fn run_program(&mut self, vp: &VoicePatch, m: usize) {
+    fn run_program(&mut self, vp: &VoicePatch, m: usize, pool: &SamplePool) {
         for k in 0..vp.n_modules {
             self.buf_of[k] = k as u8;
             match self.inst[k] {
                 Inst::Partials => self.partials.render(&mut self.bufs[k][..m]),
+                Inst::Osc(o) => {
+                    // The phase input: every cable into the pm port, summed.
+                    let mut n_pm = 0;
+                    for c in &vp.cables[..vp.n_cables] {
+                        if c.to as usize != k || c.port != PORT_PM {
+                            continue;
+                        }
+                        let src = self.buf_of[c.from as usize] as usize;
+                        if src == SILENT as usize {
+                            continue;
+                        }
+                        if n_pm == 0 {
+                            self.pmb[..m].copy_from_slice(&self.bufs[src][..m]);
+                        } else {
+                            for i in 0..m {
+                                self.pmb[i] += self.bufs[src][i];
+                            }
+                        }
+                        n_pm += 1;
+                    }
+                    let om = &mut self.oscs[o as usize];
+                    if om.level.gain == 0.0 && om.level.target == 0.0 {
+                        // Silent: keep the phase running so a fade-in starts where it would have.
+                        om.osc.skip(om.inc, m);
+                        self.buf_of[k] = SILENT;
+                        continue;
+                    }
+                    let pm = if n_pm > 0 && om.pm > 0.0 { Some((&self.pmb[..m], om.pm)) } else { None };
+                    om.osc.render(&mut self.bufs[k][..m], om.inc, om.wave, om.pw, pm, &mut om.level.gain, om.level.step);
+                }
+                Inst::Noise(n) => {
+                    let nm = &mut self.noises[n as usize];
+                    if nm.level.gain == 0.0 && nm.level.target == 0.0 {
+                        self.buf_of[k] = SILENT;
+                        continue;
+                    }
+                    nm.src.render(&mut self.bufs[k][..m], nm.colour, &mut nm.level.gain, nm.level.step);
+                }
+                Inst::Sampler => {
+                    let s = &mut self.sampler;
+                    let sample = vp.sampler.and_then(|id| pool.get(id as usize));
+                    let Some(sr) = sample.filter(|x| x.n > 1 && s.src.playing()) else {
+                        self.buf_of[k] = SILENT;
+                        continue;
+                    };
+                    let rc = if sr.ref_cents.is_finite() { sr.ref_cents } else { REF_CENTS };
+                    let pitch = s.follow * (s.cents - rc) + (1.0 - s.follow) * (s.cents - self.cents_now);
+                    let inc = sr.rate / self.sr * fast_exp2(pitch * (1.0 / 1200.0));
+                    let data = &pool.data(sr.region)[..sr.n];
+                    let lp = s.looping.then_some((s.loop_start, s.loop_len));
+                    s.src.render(&mut self.bufs[k][..m], data, inc, lp, &mut s.level.gain, s.level.step);
+                }
                 Inst::Click => {
                     let post = self.click.end_post;
                     // An idle click adds nothing and keeps its state: mark its output silent.
@@ -1244,9 +1418,9 @@ impl Voice {
         }
     }
 
-    fn render_piece(&mut self, vp: &VoicePatch, out: &mut [f32]) {
+    fn render_piece(&mut self, vp: &VoicePatch, out: &mut [f32], pool: &SamplePool) {
         let m = out.len();
-        self.run_program(vp, m);
+        self.run_program(vp, m, pool);
         // Output: the out modules, the choke gain, the post end click.
         let mut pk = 0.0f32;
         let mut ok = true;
@@ -1300,9 +1474,15 @@ impl Voice {
             if self.left == 0 {
                 self.partials.span_end();
                 for a in self.amps.iter_mut() {
-                    a.gain = a.target;
-                    a.step = 0.0;
+                    a.span_end();
                 }
+                for o in self.oscs.iter_mut() {
+                    o.level.span_end();
+                }
+                for n in self.noises.iter_mut() {
+                    n.level.span_end();
+                }
+                self.sampler.level.span_end();
             }
         }
     }

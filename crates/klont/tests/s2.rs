@@ -161,8 +161,12 @@ fn a_shaper_edit_keeps_the_notes_sounding() {
     e.render(128);
     assert_eq!(e.meter()[M_LAYER_VOICES], 1.0, "a shaper edit silenced the layer");
     assert!(e.meter()[M_PEAK_L] > 1e-3);
-    // Another route is a structure change: the layer starts over.
+    // Another route is a structure change: the layer fades out over 5 ms (S3), then starts over.
     load(&mut e, &[bent, a]);
     e.render(128);
+    assert_eq!(e.meter()[M_LAYER_VOICES], 1.0, "the old patch plays through the fade");
+    for _ in 0..3 {
+        e.render(128);
+    }
     assert_eq!(e.meter()[M_LAYER_VOICES], 0.0);
 }

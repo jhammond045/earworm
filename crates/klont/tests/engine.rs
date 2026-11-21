@@ -378,7 +378,7 @@ fn bad_patches_are_refused_and_the_old_one_keeps_playing() {
     let n = w(&good, 1) as usize;
     // Word offset of the first voice patch's module list.
     let vp = 7 + 2 * n;
-    let modules = vp + 13;
+    let modules = vp + 14;
     let cables = modules + 2 * w(&good, vp) as usize;
     let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
     cases.push(("truncated", good[..good.len() - 4].to_vec()));

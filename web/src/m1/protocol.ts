@@ -152,6 +152,8 @@ export const M_N_VALUES = 32;
 export const M_INTENSITY = 33;
 /** Bit per listening layer. */
 export const M_LISTEN = 34;
+/** Voices the selected layer's patch may sound at once (its cost against the layer budget). */
+export const M_MAX_VOICES = 35;
 /** The selected layer's sources (21): macros 8, wheel, bend, pressure, layer LFOs 2, features 8
  *  (pitch cents, volume, openness, breath, hardness, onset, voicing, intensity). */
 export const M_LAYER_SRC = 40;

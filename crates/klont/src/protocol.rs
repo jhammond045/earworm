@@ -251,6 +251,8 @@ pub const M_N_VALUES: usize = 32;
 pub const M_INTENSITY: usize = 33;
 /// Bit per layer: listening (MSG_LISTEN).
 pub const M_LISTEN: usize = 34;
+/// Voices the selected layer's patch may sound at once (its cost against the layer budget).
+pub const M_MAX_VOICES: usize = 35;
 /// The selected layer's sources this tick, patch.rs LS_* order (21 slots): macros (8),
 /// wheel, bend, pressure, layer LFOs (2), sung features (pitch in cents, volume, openness,
 /// breath, hardness, onset, voicing, intensity; NaN when the layer has none).

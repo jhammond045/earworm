@@ -1010,8 +1010,10 @@ impl Engine {
         m[M_PEAK_R] = self.peak.1;
         m[M_SELECTED] = self.selected as f32;
         let l = &self.layers[self.selected];
-        let n = l.n_values();
+        // The values the layer plays now (the old patch's, during a structure-change fade).
+        let n = l.stored().len();
         m[M_N_VALUES] = n as f32;
+        m[M_MAX_VOICES] = l.max_voices as f32;
         m[M_STORED..M_STORED + n].copy_from_slice(l.stored());
         m[M_LIVE..M_LIVE + n].copy_from_slice(&l.live[..n]);
         m[M_LAYER_SRC..M_LAYER_SRC + crate::patch::N_LAYER_SOURCES].copy_from_slice(l.layer_sources());

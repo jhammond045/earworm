@@ -497,6 +497,7 @@ pub fn patch_blob_ext(kind: u32, sample: u32, voice: &[Extra], layer: &[Extra], 
         b.u(l.base(vp, "grains1") as u32);
         b.u(0); // driven by env1
         b.u(sample);
+        b.u(NONE); // no sampler
         for (name, code) in MODULES {
             b.u(code);
             b.u(l.base(vp, name) as u32);

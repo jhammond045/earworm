@@ -68,6 +68,8 @@ pub struct ModuleType {
     pub name: &'static str,
     pub code: u32,
     pub kind: ModKind,
+    /// Nanoseconds per sample on the build machine (modules.toml `cost`).
+    pub cost: f32,
     pub n_values: usize,
     pub params: &'static [ModParam],
 }

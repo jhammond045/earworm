@@ -31,6 +31,16 @@
 //! The channel is the patch's effect chain: the effects before the first
 //! stereo one run on the mono sum of the voices, level and pan then spread it
 //! to stereo, the stereo effects follow, and width is last (today's order).
+//! A filter runs mono or stereo depending on where it sits. A bypassed effect
+//! is skipped; bypass is not structure, so switching it keeps notes sounding.
+//!
+//! Structure changes (docs/synth.md "Changing the structure"): a new patch
+//! that is more than a route-shaper or bypass edit, arriving while the layer
+//! sounds, does not cut it. The layer keeps playing the old patch and fades
+//! its output to silence over 5 ms, then takes the new patch at the next
+//! control tick. Values, states and layer blobs sent meanwhile are for the
+//! new patch and wait with it; notes that start meanwhile start when it is
+//! taken. The patch's cost (patch.rs) caps how many voices it may sound.
 
 use crate::curve::{self, CurvePool, CURVE_STRIDE};
 use crate::modules::LfoSrc;
@@ -44,6 +54,7 @@ use dsp::bands::{band_centres, band_q};
 use dsp::filters::Svf;
 use dsp::frame;
 use dsp::layer_fx::{width, Crush, Reverb, StereoDelay, Tape};
+use dsp::DENORMAL;
 use dsp::noise::Noise;
 use params as P;
 
@@ -166,13 +177,102 @@ impl ShapedNoise {
     }
 }
 
-/// The channel's effect instances (the patch's chain uses at most one of each in this stage).
-struct Channel {
-    crush: Crush,
-    tape: Tape,
-    delay: StereoDelay,
-    reverb: Reverb,
+/// A channel filter: two state-variable filters (left and right; the left alone in the mono part).
+struct ChanFilter {
+    svf: [Svf; 2],
+    key: (u32, u32),
+    on: bool,
+    w: [f32; 3],
 }
+
+impl ChanFilter {
+    fn new() -> Self {
+        ChanFilter { svf: [Svf::default(); 2], key: (0, 0), on: false, w: [0.0; 3] }
+    }
+
+    /// Per tick, the voice filter's mapping: off when fully open as a low-pass.
+    fn set(&mut self, sr: f32, cutoff: f32, res: f32, morph: f32) {
+        let cut = modules_cl(cutoff, 20.0, 0.45 * sr);
+        let (res, morph) = (modules_cl(res, 0.0, 1.0), modules_cl(morph, 0.0, 1.0));
+        let on = !(morph <= 0.0 && cut >= 18_000.0);
+        if on {
+            let q = 0.5 + 19.5 * res * res;
+            let key = (cut.to_bits(), q.to_bits());
+            if !self.on {
+                self.svf.iter_mut().for_each(|f| f.reset());
+                self.key = (0, 0);
+            }
+            if key != self.key {
+                self.key = key;
+                self.svf.iter_mut().for_each(|f| f.set(sr, cut, q));
+            }
+            self.w = if morph < 0.5 {
+                let w = morph * 2.0;
+                [1.0 - w, w / q, 0.0]
+            } else {
+                let w = morph * 2.0 - 1.0;
+                [0.0, (1.0 - w) / q, w]
+            };
+        }
+        self.on = on;
+    }
+
+    #[inline]
+    fn process(&mut self, ch: usize, x: f32) -> f32 {
+        let o = self.svf[ch].process(x);
+        o.lp * self.w[0] + o.bp * self.w[1] + o.hp * self.w[2] + DENORMAL
+    }
+}
+
+use crate::modules::cl as modules_cl;
+
+/// The channel's effect instances, allocated at start-up: as many of each as a chain may hold.
+struct Channel {
+    crush: [Crush; MAX_CHANNEL],
+    tape: [Tape; MAX_CHANNEL],
+    filter: [ChanFilter; MAX_CHANNEL],
+    delay: [StereoDelay; MAX_DELAYS],
+    reverb: [Reverb; MAX_REVERBS],
+    /// The instance each effect of the patch's chain uses, and where the stereo part starts.
+    inst: [u8; MAX_CHANNEL],
+    split: usize,
+    /// A filter in the stereo part is on this tick.
+    stereo_filter: bool,
+}
+
+impl Channel {
+    fn reset_tails(&mut self) {
+        self.delay.iter_mut().for_each(|d| d.reset());
+        self.reverb.iter_mut().for_each(|r| r.reset());
+    }
+
+    /// Instances for the chain of `p`: the k-th effect of a type uses that type's k-th instance.
+    fn index(&mut self, p: &Patch) {
+        let mut n = [0u8; 256];
+        self.split = p.n_channel;
+        for (c, fx) in p.channel().iter().enumerate() {
+            let t = (fx.code & 255) as usize;
+            self.inst[c] = n[t];
+            n[t] += 1;
+            if matches!(fx.code, P::T_DELAY | P::T_REVERB) && self.split == p.n_channel {
+                self.split = c;
+            }
+        }
+    }
+
+    /// Something in the stereo part sounds.
+    fn stereo_active(&self, p: &Patch) -> bool {
+        self.stereo_filter
+            || p.channel().iter().zip(&self.inst).any(|(fx, &j)| match fx.code {
+                P::T_DELAY => self.delay[j as usize].active(),
+                P::T_REVERB => self.reverb[j as usize].active(),
+                _ => false,
+            })
+    }
+}
+
+/// The structure-change fade (docs/synth.md "Changing the structure").
+const FADE_S: f32 = 0.005;
 
 /// Per voice patch: the values its voice routes and voicing swap write.
 struct Touched {
@@ -198,6 +298,20 @@ pub struct Layer {
     pub macros: [f32; N_MACROS],
 
     patch: Box<Patch>,
+    /// A new structure waiting for the fade to end (`pending`), else spare.
+    next: Box<Patch>,
+    pending: bool,
+    /// Samples of the fade left, and its gain and step per sample.
+    fade_left: u32,
+    fade_len: u32,
+    fade_g: f32,
+    /// Notes that started during the fade; they start when the new patch is taken.
+    queued: [(Slot, Note); VOICES_PER_LAYER],
+    n_queued: usize,
+    /// What the layer may spend (ns per sample, patch.rs `layer_budget`) and the voices the
+    /// current patch's cost leaves room for.
+    budget: f32,
+    pub max_voices: usize,
     touched: Box<[Touched; KIT_SLOTS]>,
     /// Stored values (after the morph), Influence target and group bits.
     base: Box<[f32; MAX_VALUES]>,
@@ -308,6 +422,15 @@ impl Layer {
             kit_cents: [2400.0, 4800.0, 6000.0, 7200.0],
             macros: [0.5; N_MACROS],
             patch: Patch::new_boxed(),
+            next: Patch::new_boxed(),
+            pending: false,
+            fade_left: 0,
+            fade_len: ((FADE_S * sr).round() as u32).max(1),
+            fade_g: 1.0,
+            queued: [(Slot::default(), Note::default()); VOICES_PER_LAYER],
+            n_queued: 0,
+            budget: 0.0,
+            max_voices: VOICES_PER_LAYER,
             touched: Box::new(std::array::from_fn(|_| Touched { list: [0; MAX_VALUES], n: 0, is: [false; MAX_VALUES], amount: [false; MAX_VALUES], from_real: [false; MAX_VALUES] })),
             base: Box::new([0.0; MAX_VALUES]),
             influence: Box::new([0.0; MAX_VALUES]),
@@ -323,10 +446,14 @@ impl Layer {
             noise_banks: std::array::from_fn(|k| ShapedNoise::new(sr, bank_seed(seed, k + 1))),
             seed,
             chan: Channel {
-                crush: Crush::new(sr, seed ^ 0x27d4_eb2f),
-                tape: Tape::new(sr, seed ^ 0x1656_67b1),
-                delay: StereoDelay::new(sr),
-                reverb: Reverb::new(sr, seed ^ 0xc2b2_ae35),
+                crush: std::array::from_fn(|j| Crush::new(sr, seed ^ 0x27d4_eb2f ^ (j as u32).wrapping_mul(0x9e37_79b9))),
+                tape: std::array::from_fn(|j| Tape::new(sr, seed ^ 0x1656_67b1 ^ (j as u32).wrapping_mul(0x9e37_79b9))),
+                filter: std::array::from_fn(|_| ChanFilter::new()),
+                delay: std::array::from_fn(|_| StereoDelay::new(sr)),
+                reverb: std::array::from_fn(|j| Reverb::new(sr, seed ^ 0xc2b2_ae35 ^ (j as u32).wrapping_mul(0x9e37_79b9))),
+                inst: [0; MAX_CHANNEL],
+                split: 0,
+                stereo_filter: false,
             },
             bus: [0.0; TICK],
             gl: 0.0,
@@ -373,6 +500,9 @@ impl Layer {
         let classic = crate::classic::patch_blob(KIND_MELODY, index as u32);
         let mut p = Patch::new_boxed();
         p.parse(&classic).expect("the built-in classic patch is valid");
+        let mut beat = Patch::new_boxed();
+        beat.parse(&crate::classic::patch_blob(KIND_BEAT, index as u32)).expect("the built-in classic kit is valid");
+        l.budget = layer_budget(&[&p, &beat]);
         l.set_patch(&p);
         l
     }
@@ -383,59 +513,108 @@ impl Layer {
         &self.patch
     }
 
+    /// Values of the patch that layer and states blobs are for (the incoming one during a fade).
     pub fn n_values(&self) -> usize {
-        self.patch.n_values
+        self.incoming().n_values
     }
 
-    /// Replace the patch (LOAD_PATCH). An identical patch changes nothing.
-    /// Otherwise every voice is silenced, the values return to the patch's starting values and
-    /// the channel's tails are cleared.
+    /// Replace the patch (LOAD_PATCH). An identical patch changes nothing; one that differs only
+    /// in its routes' shapers or the channel's bypass switches keeps the voices and the values.
+    /// Otherwise the values return to the patch's starting values, and the layer takes the patch
+    /// now when it is silent, or after a 5 ms fade on the old patch when it sounds.
     pub fn set_patch(&mut self, p: &Patch) {
+        if self.pending {
+            if *self.next == *p {
+                return;
+            }
+            let same = self.next.same_structure(p);
+            (*self.next).clone_from(p);
+            if !same {
+                self.start_values();
+            }
+            return;
+        }
         if *self.patch == *p {
             return;
         }
-        // Only the routes' shapers changed: keep the voices and the values.
         if self.patch.same_structure(p) {
             (*self.patch).clone_from(p);
             self.index_routes();
             self.dirty = true;
             return;
         }
-        (*self.patch).clone_from(p);
+        (*self.next).clone_from(p);
+        self.start_values();
+        if self.layer_on {
+            self.pending = true;
+            self.fade_left = self.fade_len;
+            self.fade_g = 1.0;
+        } else {
+            self.swap();
+        }
+    }
+
+    /// The incoming patch's values at its starting values, Influence moving each by its
+    /// descriptor's group until a layer blob says otherwise; no states until LOAD_STATES.
+    /// While the old patch fades out nothing reads these (its values are frozen).
+    fn start_values(&mut self) {
+        let p = &*self.next;
+        for i in 0..p.n_values {
+            self.base[i] = p.init[i];
+            self.influence[i] = p.init[i];
+            self.groups[i] = 1 << (P::desc(p.descs[i] as usize).group as u32);
+        }
+        self.n_states = 0;
+        self.morph_applied = None;
+    }
+
+    /// The patch that values, states and layer blobs are for: the one waiting, if any.
+    fn incoming(&self) -> &Patch {
+        if self.pending { &self.next } else { &self.patch }
+    }
+
+    /// Take the incoming patch: every voice is silenced, the channel's tails are cleared, and
+    /// the values (already set for it) are resolved afresh.
+    fn swap(&mut self) {
+        std::mem::swap(&mut self.patch, &mut self.next);
+        self.pending = false;
+        self.fade_left = 0;
+        self.fade_g = 1.0;
         for v in 0..VOICES_PER_LAYER {
             self.voices[v].kill();
         }
         self.slots = [Slot::default(); VOICES_PER_LAYER];
-        let n = p.n_values;
+        let n = self.patch.n_values;
         let dt = TICK as f32 / self.sr;
         for i in 0..n {
-            let d = p.descs[i] as usize;
-            self.base[i] = p.init[i];
-            self.influence[i] = p.init[i];
-            // Until a layer blob says otherwise, Influence moves a value by its descriptor's group.
-            self.groups[i] = 1 << (P::desc(d).group as u32);
-            let ms = P::desc(d).smooth_ms;
+            let ms = P::desc(self.patch.descs[i] as usize).smooth_ms;
             self.smooth[i] = if ms > 0.0 { 1.0 - (-dt * 1000.0 / ms).exp() } else { 1.0 };
         }
         self.index_routes();
+        self.chan.index(&self.patch);
         for l in self.lfos.iter_mut() {
             l.start();
         }
         self.held_pitch = f32::NAN;
         for v in 0..VOICES_PER_LAYER {
-            self.voices[v].bind(&p.voices[0], 0);
+            self.voices[v].bind(&self.patch.voices[0], 0);
             self.voices[v].kill();
         }
+        self.max_voices = self.patch.voice_count(self.budget);
         self.reset_noise();
-        self.n_states = 0;
-        self.morph_applied = None;
         self.grain.clear_grains();
-        self.chan.delay.reset();
-        self.chan.reverb.reset();
+        self.chan.reset_tails();
         self.resolve();
         self.norm[..n].copy_from_slice(&self.target[..n]);
         self.map_all();
         self.settled = true;
+    }
+
+    /// Voices the patch may sound at once, and its cost per voice and per layer (ns per sample)
+    /// against the layer's budget.
+    pub fn cost(&self) -> (usize, f32, f32, f32) {
+        let p = self.incoming();
+        (p.voice_count(self.budget), p.max_voice_cost(), p.layer_cost(), self.budget)
     }
 
     /// What the patch's routes write: per voice patch the values its voice routes and voicing
@@ -507,13 +686,13 @@ impl Layer {
 
     /// Grain sample id of the patch (its first voice patch with grains), if any.
     pub fn grain_sample(&self) -> Option<usize> {
-        self.patch.voices().iter().find_map(|vp| vp.grains.map(|g| g.2 as usize))
+        self.incoming().voices().iter().find_map(|vp| vp.grains.map(|g| g.2 as usize))
     }
 
     // ------------------------------------------------------------ stored sound
 
     pub fn set_param(&mut self, set: u8, i: usize, v: f32) {
-        if i >= self.patch.n_values || !v.is_finite() {
+        if i >= self.n_values() || !v.is_finite() {
             return;
         }
         let v = v.clamp(0.0, 1.0);
@@ -566,7 +745,7 @@ impl Layer {
     /// Load a layer blob v2 (protocol "Layer blob"): the caller checked the
     /// magic and that it holds `n_values` values for this layer's patch.
     pub fn load(&mut self, w: &[f32]) {
-        let n = self.patch.n_values;
+        let n = self.n_values();
         for f in 0..LAYER_FIELDS {
             self.set_field(f as u16, w[LAYER_OFF_FIELDS + f]);
         }
@@ -588,12 +767,12 @@ impl Layer {
     /// `n_values + N_MACROS + 1` floats, already checked. n = 0 clears them
     /// (the layer then keeps the values it has now).
     pub fn load_states(&mut self, w: &[f32], n: usize) {
-        let nv = self.patch.n_values;
+        let nv = self.n_values();
         let stride = nv + N_MACROS + 1;
         let clean = |x: f32, d: f32| if x.is_finite() { x.clamp(0.0, 1.0) } else { d };
         for (k, st) in w.chunks_exact(stride).take(n.min(MAX_STATES)).enumerate() {
             for i in 0..nv {
-                self.states[k * MAX_VALUES + i] = clean(st[i], self.patch.init[i]);
+                self.states[k * MAX_VALUES + i] = clean(st[i], self.incoming().init[i]);
             }
             for m in 0..N_MACROS {
                 self.state_macros[k][m] = clean(st[nv + m], 0.5);
@@ -625,7 +804,7 @@ impl Layer {
         let (a, b) = (a as usize, b as usize);
         // Exact at the ends, so a settled morph sits on the state's own values.
         let mix = |p: f32, q: f32| if x <= 0.0 { p } else if x >= 1.0 { q } else { p + (q - p) * x };
-        for i in 0..self.patch.n_values {
+        for i in 0..self.n_values() {
             self.base[i] = mix(self.states[a * MAX_VALUES + i], self.states[b * MAX_VALUES + i]);
         }
         for m in 0..N_MACROS {
@@ -802,16 +981,19 @@ impl Layer {
 
     // ------------------------------------------------------------ notes
 
+    /// A voice for a new note, among the first `max_voices`: an idle one, else the oldest
+    /// released one, else the quietest.
     fn alloc_voice(&mut self) -> usize {
-        if let Some(v) = (0..VOICES_PER_LAYER).find(|&v| !self.voices[v].active()) {
+        let n = self.max_voices.clamp(1, VOICES_PER_LAYER);
+        if let Some(v) = (0..n).find(|&v| !self.voices[v].active()) {
             return v;
         }
         self.steals += 1;
-        let released = (0..VOICES_PER_LAYER).filter(|&v| self.voices[v].released()).min_by_key(|&v| self.slots[v].age);
+        let released = (0..n).filter(|&v| self.voices[v].released()).min_by_key(|&v| self.slots[v].age);
         if let Some(v) = released {
             return v;
         }
-        (0..VOICES_PER_LAYER)
+        (0..n)
             .min_by(|&a, &b| self.voices[a].loudness().total_cmp(&self.voices[b].loudness()))
             .unwrap_or(0)
     }
@@ -915,6 +1097,7 @@ impl Layer {
 
     /// Release the voice Live follow started, if it still sounds.
     pub fn follow_release(&mut self) {
+        self.unqueue(|s| s.follow);
         for v in 0..VOICES_PER_LAYER {
             if self.slots[v].follow && self.slots[v].left == u32::MAX {
                 self.slots[v].left = 0;
@@ -934,6 +1117,7 @@ impl Layer {
     }
 
     pub fn note_off_live(&mut self, cents: f32) {
+        self.unqueue(|s| !s.seq && !s.follow && s.left == u32::MAX && (s.live_key == cents || (s.live_key.is_nan() && cents.is_nan())));
         for v in 0..VOICES_PER_LAYER {
             let s = &mut self.slots[v];
             if !s.seq && !s.follow && s.left == u32::MAX && (s.live_key == cents || (s.live_key.is_nan() && cents.is_nan())) {
@@ -944,6 +1128,7 @@ impl Layer {
     }
 
     pub fn release_all(&mut self) {
+        self.n_queued = 0;
         for v in 0..VOICES_PER_LAYER {
             if self.voices[v].active() && !self.voices[v].released() {
                 self.voices[v].release(&self.patch.voices[self.slots[v].vp]);
@@ -953,6 +1138,7 @@ impl Layer {
     }
 
     pub fn release_sequenced(&mut self) {
+        self.unqueue(|s| s.seq);
         for v in 0..VOICES_PER_LAYER {
             if self.slots[v].seq && self.voices[v].active() && !self.voices[v].released() {
                 self.voices[v].release(&self.patch.voices[self.slots[v].vp]);
@@ -962,14 +1148,29 @@ impl Layer {
     }
 
     pub fn panic(&mut self) {
+        self.n_queued = 0;
+        if self.pending {
+            self.swap();
+        }
         for v in self.voices.iter_mut() {
             v.kill();
         }
         self.slots = [Slot::default(); VOICES_PER_LAYER];
         self.grain.clear_grains();
-        self.chan.delay.reset();
-        self.chan.reverb.reset();
+        self.chan.reset_tails();
         self.reset_noise();
+    }
+
+    /// Drop the queued notes that `f` picks.
+    fn unqueue(&mut self, f: impl Fn(&Slot) -> bool) {
+        let mut k = 0;
+        for i in 0..self.n_queued {
+            if !f(&self.queued[i].0) {
+                self.queued[k] = self.queued[i];
+                k += 1;
+            }
+        }
+        self.n_queued = k;
     }
 
     /// Fresh noise banks. A single voice patch uses the old layer bank's seed,
@@ -986,6 +1187,15 @@ impl Layer {
     }
 
     fn start_voice(&mut self, slot: Slot, note: &Note, track: &Track, curves: &CurvePool, len: usize) {
+        if self.pending {
+            // The new structure is on its way: start the note when it is taken.
+            if self.n_queued < VOICES_PER_LAYER {
+                self.queued[self.n_queued] = (slot, *note);
+                self.n_queued += 1;
+            }
+            return;
+        }
+        let slot = Slot { vp: slot.vp.min(self.patch.n_voices - 1), ..slot };
         let v = self.alloc_voice();
         self.age += 1;
         self.slots[v] = Slot { age: self.age, ..slot };
@@ -1008,14 +1218,21 @@ impl Layer {
     /// tick while a layer route's source moves by itself), then smoothing and the channel.
     /// `frame`: the layer's sung features this tick, if it has any.
     pub fn control_tick(&mut self, frame: Option<&[f32; CURVE_STRIDE]>) {
+        if self.pending && self.fade_left == 0 {
+            self.swap();
+        }
         self.update_sources(frame);
-        if self.dirty {
+        // During a fade the old patch plays on its values as they stand; the new values wait.
+        let frozen = self.pending;
+        if frozen {
+        } else if self.dirty {
             self.resolve();
         } else if self.lr_dynamic {
             self.layer_routes(false);
         }
         let n = self.patch.n_values;
-        if !self.settled {
+        if frozen {
+        } else if !self.settled {
             let mut moving = false;
             for i in 0..n {
                 let d = self.target[i] - self.norm[i];
@@ -1043,33 +1260,42 @@ impl Layer {
         }
         let p = &*self.patch;
         let r = &self.real;
-        let (mut mono, mut stereo) = (false, false);
-        for fx in p.channel() {
-            let b = fx.base as usize;
+        let (mut mono, mut stereo_filter) = (false, false);
+        let ch = &mut self.chan;
+        for (c, fx) in p.channel().iter().enumerate() {
+            if fx.bypass {
+                continue;
+            }
+            let (b, j) = (fx.base as usize, ch.inst[c] as usize);
             match fx.code {
                 P::T_CRUSH => {
                     let (bits, rate) = (r[b + P::crush::BITS], r[b + P::crush::RATE]);
-                    self.chan.crush.set(bits, rate);
+                    ch.crush[j].set(bits, rate);
                     mono |= bits < 15.99 || rate < self.sr * 0.999;
                 }
                 P::T_TAPE => {
                     let amt = r[b + P::tape::AMOUNT];
-                    self.chan.tape.set(amt);
+                    ch.tape[j].set(amt);
                     mono |= amt > 0.0;
                 }
-                P::T_DELAY => {
-                    self.chan.delay.set(r[b + P::delay::TIME], r[b + P::delay::FEEDBACK], r[b + P::delay::SHIFT], r[b + P::delay::MIX]);
-                    stereo |= self.chan.delay.active();
-                }
-                P::T_REVERB => {
-                    self.chan.reverb.set(r[b + P::reverb::SIZE], r[b + P::reverb::DAMP], r[b + P::reverb::MIX], r[b + P::reverb::FREEZE]);
-                    stereo |= self.chan.reverb.active();
+                P::T_DELAY => ch.delay[j].set(r[b + P::delay::TIME], r[b + P::delay::FEEDBACK], r[b + P::delay::SHIFT], r[b + P::delay::MIX]),
+                P::T_REVERB => ch.reverb[j].set(r[b + P::reverb::SIZE], r[b + P::reverb::DAMP], r[b + P::reverb::MIX], r[b + P::reverb::FREEZE]),
+                P::T_CFILTER => {
+                    let f = &mut ch.filter[j];
+                    f.set(self.sr, r[b + P::cfilter::CUTOFF], r[b + P::cfilter::RES], r[b + P::cfilter::MORPH]);
+                    if f.on {
+                        if c < ch.split {
+                            mono = true;
+                        } else {
+                            stereo_filter = true;
+                        }
+                    }
                 }
                 _ => {}
             }
         }
+        ch.stereo_filter = stereo_filter;
         self.mono_on = mono;
-        let _ = stereo;
         let lvl = if self.mute { 0.0 } else { dsp::db_to_lin(self.level_db) };
         let a = (self.pan + 1.0) * std::f32::consts::FRAC_PI_4;
         self.gl_t = lvl * a.cos();
@@ -1168,13 +1394,21 @@ impl Layer {
             }
             self.grain.tick(&vg);
         }
-        self.stereo_on = self.chan.delay.active() || self.chan.reverb.active();
+        self.stereo_on = self.chan.stereo_active(&self.patch);
         let gain_moving = (self.gl - self.gl_t).abs() > 1e-6 || (self.gr - self.gr_t).abs() > 1e-6;
         self.layer_on = self.voice_on.iter().any(|&a| a)
             || self.noise_banks.iter().any(|n| n.on)
             || self.grain.active()
             || self.stereo_on
             || gain_moving;
+        // Notes that waited for a new structure start now, as if at the start of this tick.
+        if !self.pending && self.n_queued > 0 {
+            let n = std::mem::replace(&mut self.n_queued, 0);
+            for i in 0..n {
+                let (slot, note) = self.queued[i];
+                self.start_voice(slot, &note, track, curves, TICK);
+            }
+        }
     }
 
     /// Samples until the next note off among this layer's voices (u32::MAX: none).
@@ -1213,7 +1447,7 @@ impl Layer {
         bus.fill(0.0);
         for (v, on) in self.voices.iter_mut().zip(self.voice_on) {
             if on {
-                v.render(&self.patch.voices[v.vp], bus);
+                v.render(&self.patch.voices[v.vp], bus, pool);
             }
         }
         for nb in self.noise_banks.iter_mut() {
@@ -1224,14 +1458,21 @@ impl Layer {
         let (dl, dr) = (self.gl_step, self.gr_step);
         let w = self.real[p.width as usize];
         let (mono, stereo) = (self.mono_on, self.stereo_on);
+        let ch = &mut self.chan;
+        let split = ch.split;
         let mut peak = 0.0f32;
         for i in 0..n {
             let mut x = bus[i];
             if mono {
-                for fx in p.channel() {
+                for (c, fx) in p.channel()[..split].iter().enumerate() {
+                    if fx.bypass {
+                        continue;
+                    }
+                    let j = ch.inst[c] as usize;
                     match fx.code {
-                        P::T_CRUSH => x = self.chan.crush.process(x),
-                        P::T_TAPE => x = self.chan.tape.process(x),
+                        P::T_CRUSH => x = ch.crush[j].process(x),
+                        P::T_TAPE => x = ch.tape[j].process(x),
+                        P::T_CFILTER if ch.filter[j].on => x = ch.filter[j].process(0, x),
                         _ => {}
                     }
                 }
@@ -1246,15 +1487,32 @@ impl Layer {
             }
             let (mut a, mut b) = (x * self.gl, x * self.gr);
             if stereo {
-                for fx in p.channel() {
+                for (c, fx) in p.channel().iter().enumerate().skip(split) {
+                    if fx.bypass {
+                        continue;
+                    }
+                    let j = ch.inst[c] as usize;
                     match fx.code {
-                        P::T_DELAY => (a, b) = self.chan.delay.process(a, b),
-                        P::T_REVERB => (a, b) = self.chan.reverb.process(a, b),
+                        P::T_DELAY => (a, b) = ch.delay[j].process(a, b),
+                        P::T_REVERB => (a, b) = ch.reverb[j].process(a, b),
+                        P::T_CFILTER if ch.filter[j].on => {
+                            let f = &mut ch.filter[j];
+                            (a, b) = (f.process(0, a), f.process(1, b));
+                        }
                         _ => {}
                     }
                 }
             }
             (a, b) = width(a, b, w);
+            if self.pending {
+                // The structure-change fade: linear to silence, then silence until the swap.
+                if self.fade_left > 0 {
+                    self.fade_left -= 1;
+                    self.fade_g = self.fade_left as f32 / self.fade_len as f32;
+                }
+                a *= self.fade_g;
+                b *= self.fade_g;
+            }
             peak = peak.max(a.abs()).max(b.abs());
             l[i] += a;
             r[i] += b;

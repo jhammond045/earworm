@@ -27,13 +27,14 @@
 //!    voicing value index,
 //!    noise value base (NONE: no shaped noise), noise drive (mod index),
 //!    grains value base (NONE: no grains), grains drive (mod index), grains sample id,
+//!    sampler sample id (NONE without a sampler),
 //!    modules  n_modules x [type code, value base]
-//!    cables   n_cables  x [from module, to module, port]
+//!    cables   n_cables  x [from module, to module, port (0 in, 1 pm: an osc's phase input)]
 //!    out      n_out     x [module]
 //!    mods     n_mods    x [type code, value base]       (mods[0] is the envelope that ends the voice;
 //!             an envelope's type code + MOD_ONSET restarts it at each sung onset)
 //!    routes   n_routes  x ROUTE_WORDS
-//! channel   n_channel x [type code, value base]
+//! channel   n_channel x [type code (+ CH_BYPASS: passes its input through), value base]
 //! layer LFOs n_layer_lfos x [type code (lfo), value base]  (outside every voice patch's values)
 //! layer routes n_layer_routes x ROUTE_WORDS
 //! ```
@@ -49,7 +50,7 @@ pub use crate::protocol::MAX_VALUES;
 use crate::protocol::{KIT_SLOTS, N_MACROS};
 use params as P;
 
-pub const PATCH_MAGIC: u32 = 0x3250_5745; // "EWP2"
+pub const PATCH_MAGIC: u32 = 0x3350_5745; // "EWP3"
 pub const MAX_MODULES: usize = 16;
 pub const MAX_CABLES: usize = 32;
 pub const MAX_MODS: usize = 8;
@@ -58,6 +59,14 @@ pub const MAX_LFOS: usize = 4;
 pub const MAX_ROUTES: usize = 48;
 pub const MAX_LAYER_ROUTES: usize = 64;
 pub const MAX_CHANNEL: usize = 8;
+pub const MAX_DELAYS: usize = 2;
+pub const MAX_REVERBS: usize = 1;
+/// Added to a channel effect's type code: the effect is bypassed. Bypass is not structure, so
+/// toggling it keeps the layer's notes sounding.
+pub const CH_BYPASS: u32 = 1 << 16;
+/// Cable ports: an input that is summed into a processor, or an oscillator's phase input.
+pub const PORT_IN: u8 = 0;
+pub const PORT_PM: u8 = 1;
 pub const MAX_LAYER_LFOS: usize = 2;
 /// Added to an envelope's type code in a voice patch's mods: the envelope
 /// also restarts at each sung onset of the voice's frame.
@@ -71,9 +80,9 @@ pub const NONE: u32 = u32::MAX;
 /// Per-type caps in one voice patch (docs/synth.md "Rules for the graph").
 fn voice_cap(code: u32) -> usize {
     match code {
-        P::T_PARTIALS | P::T_CLICK | P::T_FOLD | P::T_CLANG | P::T_COMB => 1,
-        P::T_FILTER => 2,
-        P::T_AMP => 4,
+        P::T_PARTIALS | P::T_SAMPLER | P::T_CLICK | P::T_FOLD | P::T_CLANG | P::T_COMB => 1,
+        P::T_FILTER | P::T_NOISE => 2,
+        P::T_AMP | P::T_OSC => 4,
         _ => 0,
     }
 }
@@ -318,6 +327,7 @@ pub struct Module {
 pub struct Cable {
     pub from: u8,
     pub to: u8,
+    pub port: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -348,6 +358,8 @@ pub struct VoicePatch {
     pub noise: Option<(u16, u8)>,
     /// Grains: value base, driving mod, sample id.
     pub grains: Option<(u16, u8, u8)>,
+    /// The sample a sampler module plays.
+    pub sampler: Option<u8>,
     /// An amp whose only input is the partial bank and which is the bank's
     /// only reader: its gain is applied to the partials' own amplitude ramps.
     pub fused_amp: Option<u8>,
@@ -360,7 +372,7 @@ impl VoicePatch {
         n_modules: 0,
         modules: [Module { code: 0, base: 0 }; MAX_MODULES],
         n_cables: 0,
-        cables: [Cable { from: 0, to: 0 }; MAX_CABLES],
+        cables: [Cable { from: 0, to: 0, port: 0 }; MAX_CABLES],
         n_out: 0,
         out: [0; MAX_MODULES],
         n_mods: 0,
@@ -372,6 +384,7 @@ impl VoicePatch {
         voicing: 0,
         noise: None,
         grains: None,
+        sampler: None,
         fused_amp: None,
         partials: None,
     };
@@ -395,6 +408,7 @@ impl VoicePatch {
 pub struct ChannelFx {
     pub code: u32,
     pub base: u16,
+    pub bypass: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -486,8 +500,8 @@ impl Patch {
     }
 
     /// The same patch apart from the routes' shaper fields (range, curve,
-    /// smoothing, latch, polarity, mode, group, unit, via): such an edit can
-    /// be taken without silencing the layer.
+    /// smoothing, latch, polarity, mode, group, unit, via) and the channel's
+    /// bypass switches: such an edit can be taken without silencing the layer.
     pub fn same_structure(&self, o: &Patch) -> bool {
         let route_eq = |a: &Route, b: &Route| a.source == b.source && a.arg == b.arg && a.target_kind == b.target_kind && a.n_targets == b.n_targets && a.targets == b.targets && a.amount == b.amount;
         let vp_eq = |a: &VoicePatch, b: &VoicePatch| {
@@ -497,14 +511,15 @@ impl Patch {
                 && a.cables[..a.n_cables] == b.cables[..b.n_cables]
                 && a.out[..a.n_out] == b.out[..b.n_out]
                 && a.mods() == b.mods()
-                && (a.lo, a.hi, a.voicing, a.noise, a.grains) == (b.lo, b.hi, b.voicing, b.noise, b.grains)
+                && (a.lo, a.hi, a.voicing, a.noise, a.grains, a.sampler) == (b.lo, b.hi, b.voicing, b.noise, b.grains, b.sampler)
         };
         self.n_values == o.n_values
             && self.descs[..self.n_values] == o.descs[..o.n_values]
             && self.init[..self.n_values] == o.init[..o.n_values]
             && self.n_voices == o.n_voices
             && self.voices().iter().zip(o.voices()).all(|(a, b)| vp_eq(a, b))
-            && self.channel() == o.channel()
+            && self.n_channel == o.n_channel
+            && self.channel().iter().zip(o.channel()).all(|(a, b)| (a.code, a.base) == (b.code, b.base))
             && self.width == o.width
             && self.layer_lfos() == o.layer_lfos()
             && self.n_layer_routes == o.n_layer_routes
@@ -552,7 +567,8 @@ impl Patch {
         }
         let (mut delays, mut reverbs, mut stereo) = (0, 0, false);
         for c in 0..n_channel {
-            let code = w.u()?;
+            let word = w.u()?;
+            let (code, bypass) = (word & !CH_BYPASS, word & CH_BYPASS != 0);
             let base = w.u()? as usize;
             let t = P::module_type(code).ok_or(Malformed)?;
             check(t.kind == P::ModKind::Channel && base + t.n_values <= n_values)?;
@@ -565,13 +581,15 @@ impl Patch {
                     reverbs += 1;
                     stereo = true;
                 }
+                // The filter runs mono or stereo, wherever it sits.
+                P::T_CFILTER => {}
                 // Mono effects run on the voice sum before level and pan
                 // spread it to stereo (as today), so they must come first.
                 _ => check(!stereo)?,
             }
-            self.channel[c] = ChannelFx { code, base: base as u16 };
+            self.channel[c] = ChannelFx { code, base: base as u16, bypass };
         }
-        check(delays <= 1 && reverbs <= 1)?;
+        check(delays <= MAX_DELAYS && reverbs <= MAX_REVERBS)?;
         self.n_layer_lfos = n_layer_lfos;
         for k in 0..n_layer_lfos {
             let code = w.u()?;
@@ -618,6 +636,73 @@ impl Patch {
     }
 }
 
+// ---------------------------------------------------------------- cost
+
+/// A partial-bank value (offset in the module) that makes the bank rebuild its tables when it
+/// moves: everything but the level (spectrum, formants, bands, ratios, ring, octave, fine).
+fn rebuilds(offset: usize) -> bool {
+    (P::partials::TILT..P::partials::N).contains(&offset)
+}
+
+impl Patch {
+    /// What one sounding voice of voice patch `k` costs per sample (ns, modules.toml): its
+    /// modules, envelopes and LFOs, its routes, and a partial bank that rebuilds every tick
+    /// because a route (voice or layer) moves one of its tables' inputs.
+    pub fn voice_cost(&self, k: usize) -> f32 {
+        let vp = &self.voices[k];
+        let cost = |code: u32| P::module_type(code).map_or(0.0, |t| t.cost);
+        let mut c: f32 = vp.modules().iter().map(|m| cost(m.code)).sum();
+        c += vp.mods().iter().map(|m| cost(m.code)).sum::<f32>();
+        c += vp.n_routes as f32 * P::COST_ROUTE;
+        if let Some(p) = vp.partials {
+            let b = vp.modules[p as usize].base as usize;
+            let hits = |r: &Route| {
+                let n = if r.target_kind == TGT_BANDS { N_BANDS_SHAPE } else { 1 };
+                r.target_kind != TGT_PITCH
+                    && r.targets[..r.n_targets as usize].iter().any(|&t| (0..n).any(|j| (t as usize + j).checked_sub(b).is_some_and(rebuilds)))
+            };
+            if vp.routes().iter().chain(self.layer_routes()).any(hits) {
+                c += P::COST_REBUILD;
+            }
+        }
+        c
+    }
+
+    /// What the layer costs per sample once, whatever its voice count: the shaped-noise banks,
+    /// the grain cloud, the channel, the layer LFOs and the layer routes.
+    pub fn layer_cost(&self) -> f32 {
+        let cost = |code: u32| P::module_type(code).map_or(0.0, |t| t.cost);
+        let noise = self.voices().iter().filter(|vp| vp.noise.is_some()).count() as f32 * cost(P::T_SHAPED_NOISE);
+        let grains = if self.voices().iter().any(|vp| vp.grains.is_some()) { cost(P::T_GRAINS) } else { 0.0 };
+        let channel: f32 = self.channel().iter().map(|fx| cost(fx.code)).sum();
+        let lfos: f32 = self.layer_lfos().iter().map(|m| cost(m.code)).sum();
+        noise + grains + channel + lfos + self.n_layer_routes as f32 * P::COST_ROUTE
+    }
+
+    /// The costliest voice patch's voice.
+    pub fn max_voice_cost(&self) -> f32 {
+        (0..self.n_voices).map(|k| self.voice_cost(k)).fold(0.0, f32::max)
+    }
+
+    /// Voices this patch may sound at once within `budget` (ns per sample for the whole layer):
+    /// what is left after the layer's own cost, divided by one voice's, 1 to 8.
+    pub fn voice_count(&self, budget: f32) -> usize {
+        let v = self.max_voice_cost();
+        if v <= 0.0 {
+            return VOICES;
+        }
+        (((budget - self.layer_cost()) / v).floor().max(1.0) as usize).min(VOICES)
+    }
+}
+
+const VOICES: usize = crate::protocol::VOICES_PER_LAYER;
+
+/// The budget of one layer (ns per sample): what the costlier classic layer spends with
+/// COST_VOICES voices (the beat kit, with its four noise banks).
+pub fn layer_budget(classic: &[&Patch]) -> f32 {
+    classic.iter().map(|p| P::COST_VOICES * p.max_voice_cost() + p.layer_cost()).fold(0.0, f32::max)
+}
+
 /// A route that modulates another route's amount must come before it.
 fn order_ok(routes: &[Route]) -> bool {
     routes.iter().enumerate().all(|(i, r)| {
@@ -640,6 +725,7 @@ fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize, n_lfos: usiz
     vp.voicing = voicing as u16;
     let (nb, nd) = (w.u()?, w.u()?);
     let (gb, gd, gs) = (w.u()?, w.u()?, w.u()?);
+    let ss = w.u()?;
 
     let mut count = [0usize; 256];
     for m in 0..vp.n_modules {
@@ -655,12 +741,16 @@ fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize, n_lfos: usiz
     for c in 0..vp.n_cables {
         let from = w.small(MAX_MODULES - 1)?;
         let to = w.small(MAX_MODULES - 1)?;
-        let port = w.u()?;
+        let port = w.small(PORT_PM as usize)? as u8;
         // Modules are given in run order, so a cable only runs forward: no cycles.
-        check(from < to && to < vp.n_modules && port == 0)?;
+        check(from < to && to < vp.n_modules)?;
+        // Sources have no audio input; an oscillator has only its phase input.
         let dst = vp.modules[to].code;
-        check(dst != P::T_PARTIALS && dst != P::T_CLICK)?;
-        vp.cables[c] = Cable { from: from as u8, to: to as u8 };
+        match port {
+            PORT_PM => check(dst == P::T_OSC)?,
+            _ => check(!matches!(dst, P::T_PARTIALS | P::T_OSC | P::T_NOISE | P::T_SAMPLER | P::T_CLICK))?,
+        }
+        vp.cables[c] = Cable { from: from as u8, to: to as u8, port };
     }
     for o in 0..vp.n_out {
         let m = w.small(MAX_MODULES - 1)?;
@@ -696,6 +786,13 @@ fn parse_voice(w: &mut Words, vp: &mut VoicePatch, n_values: usize, n_lfos: usiz
         check(in_range(gb as usize, P::grains::N) && drive(gd) && (gs as usize) < MAX_SAMPLES)?;
         Some((gb as u16, gd as u8, gs as u8))
     };
+    vp.sampler = if vp.find(P::T_SAMPLER).is_some() {
+        check((ss as usize) < MAX_SAMPLES)?;
+        Some(ss as u8)
+    } else {
+        check(ss == NONE)?;
+        None
+    };
     for r in 0..vp.n_routes {
         let route = parse_route_voice(w, vp, n_values, n_lfos)?;
         vp.routes[r] = route;
@@ -715,7 +812,7 @@ fn fused_amp(vp: &VoicePatch) -> Option<u8> {
     let c = cables.iter().find(|c| c.from as usize == p)?;
     let a = c.to as usize;
     let only_input = cables.iter().filter(|x| x.to as usize == a).count() == 1;
-    (vp.modules[a].code == P::T_AMP && only_input).then_some(a as u8)
+    (c.port == PORT_IN && vp.modules[a].code == P::T_AMP && only_input).then_some(a as u8)
 }
 
 fn parse_route_voice(w: &mut Words, vp: &VoicePatch, n_values: usize, n_lfos: usize) -> Result<Route, Malformed> {

@@ -4,10 +4,11 @@
 //! live inside the one fixed Klont voice, moved here unchanged so the classic
 //! patch sounds as it did. The smaller processors (click, filter, fold,
 //! clang, comb, amp) are thin wrappers in `voice.rs` around `dsp::fx`.
+//! The oscillator, noise and sampler sources are new in stage S3.
 
 use crate::voice::{MAX_PARTIALS, N_BANDS, TICK};
 use dsp::bands::band_centres;
-use dsp::fx::{Chaos, Lfo, fast_exp2, fast_log2, fast_sin_cos};
+use dsp::fx::{Chaos, Lfo, fast_exp2, fast_log2, fast_sin, fast_sin_cos};
 use dsp::noise::Noise;
 use std::f32::consts::{LOG2_E, TAU};
 
@@ -499,6 +500,309 @@ impl Partials {
             self.amp[k] = self.tgt[k];
             self.step[k] = 0.0;
         }
+    }
+}
+
+// ------------------------------------------------------------------ oscillator
+
+/// Two-sample polyBLEP: the residual of a unit step at phase 0, for phase `t` moving `dt` a sample.
+#[inline]
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x = t / dt;
+        x + x - x * x - 1.0
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt;
+        x * x + x + x + 1.0
+    } else {
+        0.0
+    }
+}
+
+/// Two-sample polyBLAMP: the integrated residual, for a change of slope at phase 0.
+#[inline]
+fn blamp(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x = t / dt - 1.0;
+        -1.0 / 3.0 * x * x * x
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt + 1.0;
+        1.0 / 3.0 * x * x * x
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn wrap01(x: f32) -> f32 {
+    x - x.floor()
+}
+
+/// Wave `w` (0 sine, 1 triangle, 2 saw, 3 pulse of width `pw`) at phase `t`, moving `dt` cycles a
+/// sample. Every wave starts at 0 and rises, except the pulse; the pulse has no DC.
+#[inline]
+fn osc_wave(w: u8, t: f32, dt: f32, pw: f32) -> f32 {
+    match w {
+        0 => fast_sin(TAU * t),
+        1 => {
+            let mut y = 4.0 * t;
+            if y >= 3.0 {
+                y -= 4.0;
+            } else if y > 1.0 {
+                y = 2.0 - y;
+            }
+            y + 4.0 * dt * (blamp(wrap01(t + 0.25), dt) - blamp(wrap01(t + 0.75), dt))
+        }
+        2 => {
+            let s = wrap01(t + 0.5);
+            2.0 * s - 1.0 - blep(s, dt)
+        }
+        _ => {
+            let y = if t < pw { 2.0 - 2.0 * pw } else { -2.0 * pw };
+            y + blep(t, dt) - blep(wrap01(t + 1.0 - pw), dt)
+        }
+    }
+}
+
+/// A band-limited oscillator (polyBLEP and polyBLAMP). The wave is a morph: sine at 0, triangle
+/// at 1/3, saw at 2/3, pulse at 1; between two waves it crossfades. A phase input (the `pm` port)
+/// moves the phase sample by sample, so one oscillator can frequency-modulate another.
+pub struct Osc {
+    phase: f32,
+    /// The phase actually played at the last sample (with the phase input), for its step size.
+    last: f32,
+}
+
+impl Default for Osc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Osc {
+    pub fn new() -> Self {
+        Osc { phase: 0.0, last: 0.0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.phase = 0.0;
+        self.last = 0.0;
+    }
+
+    /// Advance `m` samples without output.
+    pub fn skip(&mut self, inc: f32, m: usize) {
+        self.phase = wrap01(self.phase + inc * m as f32);
+        self.last = self.phase;
+    }
+
+    /// Write `out.len()` samples at `inc` cycles a sample, times a gain ramping by `step` a sample.
+    /// `pm`: the phase input and its depth in radians per unit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(&mut self, out: &mut [f32], inc: f32, wave: f32, pw: f32, pm: Option<(&[f32], f32)>, gain: &mut f32, step: f32) {
+        let s = wave.clamp(0.0, 1.0) * 3.0;
+        let seg = (s.floor() as u8).min(2);
+        let f = s - seg as f32;
+        let dt0 = inc.clamp(1e-7, 0.5);
+        for (i, y) in out.iter_mut().enumerate() {
+            let (t, dt) = match pm {
+                Some((x, d)) => {
+                    let t = wrap01(self.phase + x[i] * d * (1.0 / TAU));
+                    let moved = (wrap01(t - self.last + 0.5) - 0.5).abs();
+                    (t, moved.clamp(1e-7, 0.5))
+                }
+                None => (self.phase, dt0),
+            };
+            let a = osc_wave(seg, t, dt, pw);
+            let v = if f > 0.0 { a + (osc_wave(seg + 1, t, dt, pw) - a) * f } else { a };
+            *gain += step;
+            *y = v * *gain;
+            self.last = t;
+            self.phase += inc;
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ noise
+
+/// Pink and brown noise gains that bring each to white noise's level (rms 0.577).
+const PINK_GAIN: f32 = 0.335;
+const BROWN_GAIN: f32 = 10.0;
+
+/// Noise whose colour is a morph: white at 0, pink at 0.5 (Paul Kellet's filter), brown at 1 (a
+/// leaky integrator). All three run all the time, so moving the colour does not click.
+pub struct NoiseSrc {
+    rng: Noise,
+    b: [f32; 3],
+    brown: f32,
+}
+
+impl NoiseSrc {
+    pub fn new(seed: u32) -> Self {
+        NoiseSrc { rng: Noise::new(seed), b: [0.0; 3], brown: 0.0 }
+    }
+
+    pub fn render(&mut self, out: &mut [f32], colour: f32, gain: &mut f32, step: f32) {
+        let c = colour.clamp(0.0, 1.0);
+        for y in out.iter_mut() {
+            let w = self.rng.next();
+            self.b[0] = 0.99765 * self.b[0] + w * 0.099_046;
+            self.b[1] = 0.963 * self.b[1] + w * 0.296_516_4;
+            self.b[2] = 0.57 * self.b[2] + w * 1.052_691_3;
+            let pink = (self.b[0] + self.b[1] + self.b[2] + w * 0.1848) * PINK_GAIN;
+            self.brown = (self.brown + 0.02 * w) * (1.0 / 1.02);
+            let brown = self.brown * BROWN_GAIN;
+            let v = if c <= 0.5 {
+                let f = 2.0 * c;
+                w + (pink - w) * f
+            } else {
+                let f = 2.0 * c - 1.0;
+                pink + (brown - pink) * f
+            };
+            *gain += step;
+            *y = v * *gain;
+        }
+    }
+}
+
+// ------------------------------------------------------------------ sampler
+
+/// Plays a sample from the pool with a 4-point cubic read: from a start point to the end, or
+/// round a loop. The speed is set per span by the voice.
+pub struct SamplerSrc {
+    pos: f64,
+    start: f32,
+    fresh: bool,
+    on: bool,
+}
+
+impl Default for SamplerSrc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SamplerSrc {
+    pub fn new() -> Self {
+        SamplerSrc { pos: 0.0, start: 0.0, fresh: false, on: false }
+    }
+
+    /// Note start: play from `start` (a part of the sample's length) at the next render.
+    pub fn start(&mut self, start: f32) {
+        self.start = start;
+        self.fresh = true;
+        self.on = true;
+    }
+
+    pub fn stop(&mut self) {
+        self.on = false;
+    }
+
+    pub fn playing(&self) -> bool {
+        self.on
+    }
+
+    /// `inc`: sample frames per output sample. `lp`: loop start and length as parts of the length.
+    pub fn render(&mut self, out: &mut [f32], data: &[f32], inc: f32, lp: Option<(f32, f32)>, gain: &mut f32, step: f32) {
+        let n = data.len();
+        let last = (n - 1) as f64;
+        if self.fresh {
+            self.pos = self.start as f64 * last;
+            self.fresh = false;
+        }
+        let lp = lp.and_then(|(s, l)| {
+            let a = (s as f64 * last).floor();
+            let b = (a + (l as f64 * n as f64).max(2.0)).min(last);
+            (b - a >= 2.0).then_some((a, b))
+        });
+        let inc = if inc.is_finite() { inc.clamp(0.0, 64.0) as f64 } else { 0.0 };
+        for (i, y) in out.iter_mut().enumerate() {
+            match lp {
+                Some((a, b)) => {
+                    if self.pos >= b {
+                        self.pos = a + (self.pos - a) % (b - a);
+                    }
+                }
+                None if self.pos >= last => {
+                    self.on = false;
+                    out[i..].fill(0.0);
+                    return;
+                }
+                None => {}
+            }
+            *gain += step;
+            *y = cubic_read(data, self.pos) * *gain;
+            self.pos += inc;
+        }
+    }
+}
+
+/// 4-point cubic (Catmull-Rom) read at `pos`, holding the end samples past either end.
+#[inline]
+fn cubic_read(d: &[f32], pos: f64) -> f32 {
+    let n = d.len();
+    let i = pos as usize;
+    let f = (pos - i as f64) as f32;
+    let at = |k: isize| d[k.clamp(0, n as isize - 1) as usize];
+    let i = i as isize;
+    let (y0, y1, y2, y3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+    let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+    let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c = -0.5 * y0 + 0.5 * y2;
+    ((a * f + b) * f + c) * f + y1
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn noise_colours_have_about_the_same_level() {
+        for c in [0.0, 0.5, 1.0] {
+            let mut n = NoiseSrc::new(5);
+            let mut out = vec![0.0; 1 << 18];
+            let mut g = 1.0;
+            n.render(&mut out, c, &mut g, 0.0);
+            let r = rms(&out[4096..]);
+            assert!((r / 0.577 - 1.0).abs() < 0.2, "colour {c}: rms {r}");
+        }
+    }
+
+    #[test]
+    fn every_wave_stays_in_range_and_the_morph_is_continuous() {
+        for w in [0.0, 0.2, 1.0 / 3.0, 0.5, 2.0 / 3.0, 0.9, 1.0] {
+            let mut o = Osc::new();
+            let mut out = vec![0.0; 4800];
+            let mut g = 1.0;
+            o.render(&mut out, 220.0 / 48000.0, w, 0.3, None, &mut g, 0.0);
+            let peak = out.iter().fold(0.0f32, |a, x| a.max(x.abs()));
+            assert!(peak > 0.5 && peak < 1.8, "wave {w}: peak {peak}");
+        }
+        // The waves at their morph points start where the next segment starts.
+        let a = osc_wave(0, 0.3, 0.01, 0.5);
+        assert!((a - (TAU * 0.3).sin()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sampler_plays_to_the_end_or_loops() {
+        let data: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let mut s = SamplerSrc::new();
+        s.start(0.5);
+        let mut out = vec![0.0; 600];
+        let mut g = 1.0;
+        s.render(&mut out, &data, 1.0, None, &mut g, 0.0);
+        assert!((out[0] - 499.5).abs() < 1.0, "{}", out[0]);
+        assert!(!s.playing() && out[599] == 0.0);
+        s.start(0.0);
+        s.render(&mut out, &data, 2.0, Some((0.1, 0.2)), &mut g, 0.0);
+        assert!(s.playing());
+        assert!(out[300..].iter().all(|&x| (99.0..=301.0).contains(&x)), "the loop holds");
     }
 }
 

@@ -13,38 +13,60 @@ export const EXTRA_DESCS: readonly Desc[] = [
   { id: "voicing.depth", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "How far unvoiced sung frames swap the pitched sources for noise." },
   { id: "partials.octave", group: 'tone', scale: 'lin', min: -3.0, max: 3.0, neutral: 0.0, unit: "oct", smoothMs: 0.0, doc: "Octave of the partial bank against the voice pitch." },
   { id: "partials.fine", group: 'tone', scale: 'bipolar', min: -100.0, max: 100.0, neutral: 0.0, unit: "cents", smoothMs: 15.0, doc: "Fine tune of the partial bank against the voice pitch." },
+  { id: "osc.level", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.5, unit: "", smoothMs: 15.0, doc: "Level of an oscillator." },
+  { id: "osc.wave", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.6666667, unit: "", smoothMs: 15.0, doc: "Wave of an oscillator, a morph: sine at 0, triangle at 1/3, saw at 2/3, square (pulse) at 1." },
+  { id: "osc.pw", group: 'tone', scale: 'lin', min: 0.05, max: 0.95, neutral: 0.5, unit: "", smoothMs: 15.0, doc: "Pulse width of the square wave: the part of each cycle spent high." },
+  { id: "pitch.octave", group: 'tone', scale: 'lin', min: -3.0, max: 3.0, neutral: 0.0, unit: "oct", smoothMs: 0.0, doc: "Octave of a pitched module against the voice pitch." },
+  { id: "pitch.semi", group: 'tone', scale: 'lin', min: -12.0, max: 12.0, neutral: 0.0, unit: "st", smoothMs: 0.0, doc: "Semitones of a pitched module against the voice pitch." },
+  { id: "pitch.fine", group: 'tone', scale: 'bipolar', min: -100.0, max: 100.0, neutral: 0.0, unit: "cents", smoothMs: 15.0, doc: "Fine tune of a pitched module against the voice pitch." },
+  { id: "osc.pm", group: 'tone', scale: 'lin', min: 0.0, max: 4.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "Phase modulation depth: how many radians a full-scale signal on the pm input moves the phase." },
+  { id: "noise.level", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.5, unit: "", smoothMs: 15.0, doc: "Level of a noise module." },
+  { id: "noise.colour", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "Colour of the noise, a morph: white at 0, pink at 0.5, brown at 1." },
+  { id: "sampler.level", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.5, unit: "", smoothMs: 15.0, doc: "Level of a sampler." },
+  { id: "sampler.start", group: 'shape', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 0.0, doc: "Where a note starts playing the sample, as a part of its length. Read at note start." },
+  { id: "sampler.loop", group: 'shape', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 0.0, doc: "Loop off (0) or on (1)." },
+  { id: "sampler.loop_start", group: 'shape', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "Start of the loop, as a part of the sample's length." },
+  { id: "sampler.loop_len", group: 'shape', scale: 'log', min: 0.001, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "Length of the loop, as a part of the sample's length." },
+  { id: "sampler.follow", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "How far the playback speed follows the voice pitch. 0 plays the sample at its own speed for every note." },
 ];
 
 /** Every descriptor, by value descriptor id. */
 export const ALL_DESCS: readonly Desc[] = [...DESCS, ...EXTRA_DESCS];
-export const N_DESCS = 104;
+export const N_DESCS = 119;
 
 /** Descriptor id by descriptor name. */
 export const DESC_ID: Readonly<Record<string, number>> = Object.fromEntries(ALL_DESCS.map((d, i) => [d.id, i]));
 
-export const STEPS: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0];
-export const SCALABLE: readonly boolean[] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false];
+export const STEPS: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0, 0, 0, 0, 7, 25, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
+export const SCALABLE: readonly boolean[] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false, false, false, false, true, false, true, false, false, false, false, false];
 
 export type ModKind = 'voice' | 'source' | 'layer' | 'channel';
 export interface ModParam { name: string; desc: number; count: number }
-export interface ModuleType { type: string; code: number; kind: ModKind; nValues: number; params: readonly ModParam[] }
+export interface ModuleType { type: string; code: number; kind: ModKind; cost: number; nValues: number; params: readonly ModParam[] }
+
+/** Cost of one voice route per sample (ns), of a partial bank that rebuilds every tick, and the number of classic voices a layer may spend. */
+export const COST = { route: 0.0, rebuild: 0.0, voices: 8.0 } as const;
 
 export const MODULE_TYPES: Readonly<Record<string, ModuleType>> = {
-  partials: { type: 'partials', code: 1, kind: 'voice', nValues: 29, params: [{ name: 'level', desc: 0, count: 1 }, { name: 'tilt', desc: 3, count: 1 }, { name: 'oddeven', desc: 4, count: 1 }, { name: 'stretch', desc: 5, count: 1 }, { name: 'jitter', desc: 6, count: 1 }, { name: 'modal', desc: 7, count: 1 }, { name: 'damp', desc: 8, count: 1 }, { name: 'f1_freq', desc: 9, count: 1 }, { name: 'f1_gain', desc: 10, count: 1 }, { name: 'f2_freq', desc: 11, count: 1 }, { name: 'f2_gain', desc: 12, count: 1 }, { name: 'tone_bands', desc: 64, count: 16 }, { name: 'octave', desc: 102, count: 1 }, { name: 'fine', desc: 103, count: 1 }] },
-  click: { type: 'click', code: 5, kind: 'voice', nValues: 3, params: [{ name: 'start', desc: 42, count: 1 }, { name: 'end', desc: 44, count: 1 }, { name: 'colour', desc: 43, count: 1 }] },
-  filter: { type: 'filter', code: 6, kind: 'voice', nValues: 4, params: [{ name: 'cutoff', desc: 30, count: 1 }, { name: 'res', desc: 31, count: 1 }, { name: 'morph', desc: 32, count: 1 }, { name: 'track', desc: 33, count: 1 }] },
-  amp: { type: 'amp', code: 7, kind: 'voice', nValues: 1, params: [{ name: 'gain', desc: 96, count: 1 }] },
-  fold: { type: 'fold', code: 8, kind: 'voice', nValues: 2, params: [{ name: 'amount', desc: 18, count: 1 }, { name: 'bias', desc: 19, count: 1 }] },
-  clang: { type: 'clang', code: 9, kind: 'voice', nValues: 2, params: [{ name: 'amount', desc: 20, count: 1 }, { name: 'ratio', desc: 21, count: 1 }] },
-  comb: { type: 'comb', code: 10, kind: 'voice', nValues: 3, params: [{ name: 'amount', desc: 22, count: 1 }, { name: 'tune', desc: 23, count: 1 }, { name: 'decay', desc: 24, count: 1 }] },
-  env: { type: 'env', code: 30, kind: 'source', nValues: 6, params: [{ name: 'mode', desc: 97, count: 1 }, { name: 'attack', desc: 34, count: 1 }, { name: 'hold', desc: 35, count: 1 }, { name: 'decay', desc: 36, count: 1 }, { name: 'sustain', desc: 37, count: 1 }, { name: 'release', desc: 38, count: 1 }] },
-  lfo: { type: 'lfo', code: 31, kind: 'source', nValues: 3, params: [{ name: 'rate', desc: 45, count: 1 }, { name: 'wave', desc: 98, count: 1 }, { name: 'level', desc: 99, count: 1 }] },
-  shaped_noise: { type: 'shaped_noise', code: 40, kind: 'layer', nValues: 17, params: [{ name: 'level', desc: 1, count: 1 }, { name: 'bands', desc: 80, count: 16 }] },
-  grains: { type: 'grains', code: 41, kind: 'layer', nValues: 6, params: [{ name: 'level', desc: 2, count: 1 }, { name: 'size', desc: 13, count: 1 }, { name: 'density', desc: 14, count: 1 }, { name: 'pos', desc: 15, count: 1 }, { name: 'spray', desc: 16, count: 1 }, { name: 'scatter', desc: 17, count: 1 }] },
-  crush: { type: 'crush', code: 21, kind: 'channel', nValues: 2, params: [{ name: 'bits', desc: 27, count: 1 }, { name: 'rate', desc: 28, count: 1 }] },
-  tape: { type: 'tape', code: 22, kind: 'channel', nValues: 1, params: [{ name: 'amount', desc: 29, count: 1 }] },
-  delay: { type: 'delay', code: 23, kind: 'channel', nValues: 4, params: [{ name: 'time', desc: 55, count: 1 }, { name: 'feedback', desc: 56, count: 1 }, { name: 'shift', desc: 57, count: 1 }, { name: 'mix', desc: 58, count: 1 }] },
-  reverb: { type: 'reverb', code: 24, kind: 'channel', nValues: 4, params: [{ name: 'size', desc: 59, count: 1 }, { name: 'damp', desc: 60, count: 1 }, { name: 'mix', desc: 61, count: 1 }, { name: 'freeze', desc: 62, count: 1 }] },
+  partials: { type: 'partials', code: 1, kind: 'voice', cost: 0.0, nValues: 29, params: [{ name: 'level', desc: 0, count: 1 }, { name: 'tilt', desc: 3, count: 1 }, { name: 'oddeven', desc: 4, count: 1 }, { name: 'stretch', desc: 5, count: 1 }, { name: 'jitter', desc: 6, count: 1 }, { name: 'modal', desc: 7, count: 1 }, { name: 'damp', desc: 8, count: 1 }, { name: 'f1_freq', desc: 9, count: 1 }, { name: 'f1_gain', desc: 10, count: 1 }, { name: 'f2_freq', desc: 11, count: 1 }, { name: 'f2_gain', desc: 12, count: 1 }, { name: 'tone_bands', desc: 64, count: 16 }, { name: 'octave', desc: 102, count: 1 }, { name: 'fine', desc: 103, count: 1 }] },
+  osc: { type: 'osc', code: 2, kind: 'voice', cost: 0.0, nValues: 7, params: [{ name: 'level', desc: 104, count: 1 }, { name: 'wave', desc: 105, count: 1 }, { name: 'pw', desc: 106, count: 1 }, { name: 'octave', desc: 107, count: 1 }, { name: 'semi', desc: 108, count: 1 }, { name: 'fine', desc: 109, count: 1 }, { name: 'pm', desc: 110, count: 1 }] },
+  noise: { type: 'noise', code: 3, kind: 'voice', cost: 0.0, nValues: 2, params: [{ name: 'level', desc: 111, count: 1 }, { name: 'colour', desc: 112, count: 1 }] },
+  sampler: { type: 'sampler', code: 4, kind: 'voice', cost: 0.0, nValues: 8, params: [{ name: 'level', desc: 113, count: 1 }, { name: 'start', desc: 114, count: 1 }, { name: 'loop', desc: 115, count: 1 }, { name: 'loop_start', desc: 116, count: 1 }, { name: 'loop_len', desc: 117, count: 1 }, { name: 'follow', desc: 118, count: 1 }, { name: 'octave', desc: 107, count: 1 }, { name: 'fine', desc: 109, count: 1 }] },
+  click: { type: 'click', code: 5, kind: 'voice', cost: 0.0, nValues: 3, params: [{ name: 'start', desc: 42, count: 1 }, { name: 'end', desc: 44, count: 1 }, { name: 'colour', desc: 43, count: 1 }] },
+  filter: { type: 'filter', code: 6, kind: 'voice', cost: 0.0, nValues: 4, params: [{ name: 'cutoff', desc: 30, count: 1 }, { name: 'res', desc: 31, count: 1 }, { name: 'morph', desc: 32, count: 1 }, { name: 'track', desc: 33, count: 1 }] },
+  amp: { type: 'amp', code: 7, kind: 'voice', cost: 0.0, nValues: 1, params: [{ name: 'gain', desc: 96, count: 1 }] },
+  fold: { type: 'fold', code: 8, kind: 'voice', cost: 0.0, nValues: 2, params: [{ name: 'amount', desc: 18, count: 1 }, { name: 'bias', desc: 19, count: 1 }] },
+  clang: { type: 'clang', code: 9, kind: 'voice', cost: 0.0, nValues: 2, params: [{ name: 'amount', desc: 20, count: 1 }, { name: 'ratio', desc: 21, count: 1 }] },
+  comb: { type: 'comb', code: 10, kind: 'voice', cost: 0.0, nValues: 3, params: [{ name: 'amount', desc: 22, count: 1 }, { name: 'tune', desc: 23, count: 1 }, { name: 'decay', desc: 24, count: 1 }] },
+  env: { type: 'env', code: 30, kind: 'source', cost: 0.0, nValues: 6, params: [{ name: 'mode', desc: 97, count: 1 }, { name: 'attack', desc: 34, count: 1 }, { name: 'hold', desc: 35, count: 1 }, { name: 'decay', desc: 36, count: 1 }, { name: 'sustain', desc: 37, count: 1 }, { name: 'release', desc: 38, count: 1 }] },
+  lfo: { type: 'lfo', code: 31, kind: 'source', cost: 0.0, nValues: 3, params: [{ name: 'rate', desc: 45, count: 1 }, { name: 'wave', desc: 98, count: 1 }, { name: 'level', desc: 99, count: 1 }] },
+  shaped_noise: { type: 'shaped_noise', code: 40, kind: 'layer', cost: 0.0, nValues: 17, params: [{ name: 'level', desc: 1, count: 1 }, { name: 'bands', desc: 80, count: 16 }] },
+  grains: { type: 'grains', code: 41, kind: 'layer', cost: 0.0, nValues: 6, params: [{ name: 'level', desc: 2, count: 1 }, { name: 'size', desc: 13, count: 1 }, { name: 'density', desc: 14, count: 1 }, { name: 'pos', desc: 15, count: 1 }, { name: 'spray', desc: 16, count: 1 }, { name: 'scatter', desc: 17, count: 1 }] },
+  crush: { type: 'crush', code: 21, kind: 'channel', cost: 0.0, nValues: 2, params: [{ name: 'bits', desc: 27, count: 1 }, { name: 'rate', desc: 28, count: 1 }] },
+  tape: { type: 'tape', code: 22, kind: 'channel', cost: 0.0, nValues: 1, params: [{ name: 'amount', desc: 29, count: 1 }] },
+  delay: { type: 'delay', code: 23, kind: 'channel', cost: 0.0, nValues: 4, params: [{ name: 'time', desc: 55, count: 1 }, { name: 'feedback', desc: 56, count: 1 }, { name: 'shift', desc: 57, count: 1 }, { name: 'mix', desc: 58, count: 1 }] },
+  reverb: { type: 'reverb', code: 24, kind: 'channel', cost: 0.0, nValues: 4, params: [{ name: 'size', desc: 59, count: 1 }, { name: 'damp', desc: 60, count: 1 }, { name: 'mix', desc: 61, count: 1 }, { name: 'freeze', desc: 62, count: 1 }] },
+  cfilter: { type: 'cfilter', code: 25, kind: 'channel', cost: 0.0, nValues: 3, params: [{ name: 'cutoff', desc: 30, count: 1 }, { name: 'res', desc: 31, count: 1 }, { name: 'morph', desc: 32, count: 1 }] },
 };
 
 if (DESCS.length !== COUNT) throw new Error('modules.ts: vocabulary size changed; run pnpm gen:params');
