@@ -129,6 +129,12 @@ export function checkRoute(patch: Patch, r: Route, scope: Scope): void {
   const lay = layoutOf(patch);
   const key = targetKey(patch, r, scope);
   if (key !== null && !r.target.startsWith('k*.') && !lay.index.has(key)) fail(`there is no value ${key}`);
+  if (key !== null && scope !== 'layer') {
+    // A per-voice source reaches only its own voice patch's values; the channel is one per layer.
+    const i = lay.index.get(key)!;
+    const [lo, hi] = lay.ranges[scope];
+    if (i < lo || i >= hi) fail(`${key} is not in this voice patch: only a layer source (a macro, the wheel, a layer LFO, a layer feature) can reach it`);
+  }
   if (r.mode === 'scale' && r.target !== 'pitch') {
     // The engine multiplies only gains, levels and mixes.
     const d = lay.descs[lay.index.get(key!) ?? -1];
