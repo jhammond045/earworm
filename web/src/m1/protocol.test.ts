@@ -28,7 +28,7 @@ describe('protocol.rs vs protocol.ts', () => {
 
   it('parses the constants', () => {
     expect(consts.size).toBeGreaterThan(80);
-    expect(consts.get('METER_LEN')).toBe(280 + 2 * 1024);
+    expect(consts.get('METER_LEN')).toBe(280 + 2 * 1024 + 4 * 48 + 64);
   });
   it('every Rust constant exists in TS with the same value', () => {
     for (const [name, v] of consts) expect(ts[name], name).toBe(v);

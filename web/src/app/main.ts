@@ -1143,7 +1143,7 @@ async function main(): Promise<void> {
     const host = app.host;
     const i = app.doc.layers.findIndex((x) => x.id === l.id);
     if (!host || i < 0) return;
-    vocabIndices(l.kind).forEach((ix, k) => { for (const v of ix) host.setParam(i, v, target[k], SET_INFLUENCE); });
+    vocabIndices(l.kind, l.patch).forEach((ix, k) => { for (const v of ix) host.setParam(i, v, target[k], SET_INFLUENCE); });
     host.setLayer(i, LAYER_INFLUENCE_AMOUNT, amount);
     host.setLayer(i, LAYER_INFLUENCE_MASK, mask);
     if (layerUsesStates(app.doc, l)) {

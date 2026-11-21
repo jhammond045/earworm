@@ -64,7 +64,7 @@ export function layerBlob(l: Layer): ArrayBuffer {
   for (let k = 0; k < KIT_SLOTS; k++) fields[LAYER_KIT_CENTS + k] = l.kit[k]?.cents ?? DEFAULT_KIT_CENTS[k];
   const macros = Array.from({ length: N_MACROS }, (_, k) => st?.macros[k] ?? 0.5);
   if (isClassic(l.patch)) {
-    const v = classicVectors(l.kind, st?.values ?? {}, infl ? infl.target : null);
+    const v = classicVectors(l.kind, st?.values ?? {}, infl ? infl.target : null, l.patch);
     return encodeLayerBlob({ fields, values: v.values, macros, target: v.target, groups: v.groups });
   }
   const values = vector(l.patch, st?.values ?? {});

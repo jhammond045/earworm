@@ -8,7 +8,7 @@
 // The reference side does not use the current protocol or renderer: it loads the stored blobs
 // into klont-reference.wasm (a copy of the engine before S1) with its own copy of the old buffer
 // table layout, so it keeps working whatever the current engine becomes.
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { uploadsToSong } from '../app/mix';
@@ -88,8 +88,13 @@ const f32File = (p: string) => {
 
 function loadCase(dir: string): { doc: Project; curves: Map<string, Float32Array>; blobs: Map<string, Float32Array> } {
   const doc = JSON.parse(readFileSync(resolve(dir, 'doc.json'), 'utf8')) as Project;
-  const curves = new Map(readdirSync(resolve(dir, 'curves')).map((f) => [f.replace(/\.f32$/, ''), f32File(resolve(dir, 'curves', f))]));
-  const blobs = new Map(readdirSync(resolve(dir, 'blobs')).map((f) => [f.replace(/\.f32$/, ''), f32File(resolve(dir, 'blobs', f))]));
+  // A fixture with no takes has no curves or blobs folder (git does not keep empty folders).
+  const files = (sub: string) => {
+    const d = resolve(dir, sub);
+    return new Map((existsSync(d) ? readdirSync(d) : []).map((f) => [f.replace(/\.f32$/, ''), f32File(resolve(d, f))]));
+  };
+  const curves = files('curves');
+  const blobs = files('blobs');
   return { doc, curves, blobs };
 }
 

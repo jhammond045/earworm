@@ -17,7 +17,7 @@ describe('encodeLayer', () => {
     const b = encodeLayer({ kind: 'melody' });
     expect(b.layer.byteLength).toBe(pr.layerWords(melody.keys.length) * 4);
     expect(new Uint32Array(b.layer)[0]).toBe(pr.LAYER_MAGIC);
-    expect(new Uint32Array(b.patch)[0]).toBe(0x31505745);
+    expect(new Uint32Array(b.patch)[0]).toBe(0x32505745);
   });
 
   it('defaults to the neutral set and engine default fields', () => {

@@ -190,19 +190,25 @@ export interface Binding {
 }
 
 const bindingCache = new Map<string, (Binding | null)[]>();
+const patchBindings = new WeakMap<Patch, (Binding | null)[]>();
 
-/** For each value of a classic patch of `kind`, the old parameter it is bound to, if any. */
-export function bindingOf(kind: LayerKind): (Binding | null)[] {
+/** For each value of a classic patch of `kind` (or of `patch`, a classic patch with routes or layer
+ *  LFOs added), the old parameter it is bound to, if any. */
+export function bindingOf(kind: LayerKind, patch?: Patch): (Binding | null)[] {
   const key = kind === 'beat' ? 'beat' : 'melody';
-  let b = bindingCache.get(key);
+  let b = patch ? patchBindings.get(patch) : bindingCache.get(key);
   if (b) return b;
-  const lay = layoutOf(classicPatch(kind));
+  const lay = layoutOf(patch ?? classicPatch(kind));
   b = lay.keys.map(() => null);
   const sets = kind === 'beat' ? [0, 1, 2, 3, 4] : [0];
   DESCS.forEach((d, i) => {
-    for (const s of sets) for (const k of vocabKeys(kind, s, d.id)) b![lay.index.get(k)!] = { set: s, vocab: i };
+    for (const s of sets) for (const k of vocabKeys(kind, s, d.id)) {
+      const at = lay.index.get(k);
+      if (at !== undefined) b![at] = { set: s, vocab: i };
+    }
   });
-  bindingCache.set(key, b);
+  if (patch) patchBindings.set(patch, b);
+  else bindingCache.set(key, b);
   return b;
 }
 
@@ -245,10 +251,11 @@ export function withVocab(kind: LayerKind, values: Record<string, number>, set: 
 const neutralOf = (i: number) => toNorm(i, DESCS[i].neutral);
 
 /** Values, Influence target and group bits in layout order for a classic layer blob. `target` is
- *  the Influence target as an old normalized set (the layer's own set), or null for none. */
-export function classicVectors(kind: LayerKind, values: Record<string, number>, target: ArrayLike<number> | null): { values: number[]; target: number[]; groups: number[] } {
-  const lay = layoutOf(classicPatch(kind));
-  const bind = bindingOf(kind);
+ *  the Influence target as an old normalized set (the layer's own set), or null for none. `patch`:
+ *  the layer's patch when it is the classic one with routes or layer LFOs added. */
+export function classicVectors(kind: LayerKind, values: Record<string, number>, target: ArrayLike<number> | null, patch?: Patch): { values: number[]; target: number[]; groups: number[] } {
+  const lay = layoutOf(patch ?? classicPatch(kind));
+  const bind = bindingOf(kind, patch);
   const v = lay.keys.map((k, i) => values[k] ?? lay.init[i]);
   const t = v.map((x, i) => {
     const b = bind[i];
@@ -266,7 +273,7 @@ export function stateVocab(l: { kind: LayerKind }, st: { values: Record<string, 
 }
 
 /** Value indices of each old parameter in the layer's own set, for MSG_SET_PARAM. */
-export function vocabIndices(kind: LayerKind): number[][] {
-  const lay = layoutOf(classicPatch(kind));
-  return DESCS.map((d) => vocabKeys(kind, 0, d.id).map((k) => lay.index.get(k)!));
+export function vocabIndices(kind: LayerKind, patch?: Patch): number[][] {
+  const lay = layoutOf(patch ?? classicPatch(kind));
+  return DESCS.map((d) => vocabKeys(kind, 0, d.id).map((k) => lay.index.get(k)).filter((x): x is number => x !== undefined));
 }

@@ -32,6 +32,11 @@ export const MSG_SET_LIVE_KIT = 14;
 export const MSG_RESET_SINGER = 15;
 export const MSG_SET_METRO = 16;
 export const MSG_COUNT_IN = 17;
+/** layer (ALL_LAYERS: every layer), index 0 mod wheel (0..1), 1 pitch bend (-1..1), 2 pressure (0..1). */
+export const MSG_SET_PERF = 18;
+/** layer, value 1 = listen (its sung features come from the mic), 0 = stop. */
+export const MSG_LISTEN = 19;
+export const ALL_LAYERS = 255;
 
 export const METRO_ON = 0;
 export const METRO_LEVEL = 1;
@@ -143,6 +148,13 @@ export const M_SELECTED = 15;
 export const M_LAYER_PEAK = 16;
 export const M_LAYER_VOICES = 24;
 export const M_N_VALUES = 32;
+/** Live intensity of the mic, 0..1 (NaN while the gate is closed). */
+export const M_INTENSITY = 33;
+/** Bit per listening layer. */
+export const M_LISTEN = 34;
+/** The selected layer's sources (21): macros 8, wheel, bend, pressure, layer LFOs 2, features 8
+ *  (pitch cents, volume, openness, breath, hardness, onset, voicing, intensity). */
+export const M_LAYER_SRC = 40;
 export const M_MACRO_LIVE = 224;
 export const M_IN_DB = 240;
 export const M_FLOOR_DB = 241;
@@ -171,7 +183,10 @@ export const M_COUNT_SEQ = 263;
 export const M_VOWEL = 264;
 export const M_STORED = 280;
 export const M_LIVE = M_STORED + MAX_VALUES;
-export const METER_LEN = M_LIVE + MAX_VALUES;
+/** Route outputs (0..1, NaN without a value): voice patch k's route i at k * 48 + i, layer routes from 192. */
+export const M_ROUTES = M_LIVE + MAX_VALUES;
+export const N_ROUTE_METERS = KIT_SLOTS * 48 + 64;
+export const METER_LEN = M_ROUTES + N_ROUTE_METERS;
 
 // ---- buffer table (u32 fields, in this order; BT_* are field indices)
 export const BT_INPUT = 0;

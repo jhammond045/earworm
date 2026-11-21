@@ -5,7 +5,12 @@
 // shape gives 16 keys (`partials1.tone_bands.0` to `.15`). On a beat layer every key of kit slot
 // n's voice patch starts with `k<n>.`. The layout (the order of values in the engine's vector) is
 // fixed by the patch: for each voice patch its modules, mods, voicing depth, layer sources and
-// route amounts; then the channel's effects, width, and the layer routes' amounts.
+// route amounts; then the channel's effects, width, the layer LFOs and the layer routes' amounts.
+//
+// Sources (docs/synth.md "Sources"): per voice the voice patch's mods (`env1`, `lfo2`), `note.*` and
+// `voice.*`; per layer `macro1`..`macro8`, `wheel`, `bend`, `pressure`, `layer.lfo1`/`layer.lfo2` and
+// `layer.*` (the layer's sung features). A voice route takes a per-voice source; a route whose source
+// is per layer is a layer route (patch.routes). Either may take a layer source as its via.
 
 import { ALL_DESCS, DESC_ID, MODULE_TYPES } from '../gen/modules';
 import { toNorm } from './values';
@@ -14,7 +19,9 @@ export type VoiceModuleType = 'partials' | 'click' | 'filter' | 'amp' | 'fold' |
 export type ChannelFxType = 'crush' | 'tape' | 'delay' | 'reverb';
 export type Group = 'loud' | 'open' | 'hard' | 'breath' | 'mouth' | 'follow';
 
-export interface ModDef { id: string; type: 'env' | 'lfo' }
+/** An envelope or LFO. `trigger: 'onset'` also restarts an envelope at each sung onset. A layer
+ *  LFO's id is `layer.lfo1` or `layer.lfo2`. */
+export interface ModDef { id: string; type: 'env' | 'lfo'; trigger?: 'note' | 'onset' }
 
 export interface Route {
   id: string;
@@ -63,7 +70,7 @@ export interface Patch {
   layerSources: LayerSource[];
   /** Signal order. */
   channel: ChannelFx[];
-  /** Layer LFOs (arrive with the modulation matrix). */
+  /** Layer LFOs: at most two, ids `layer.lfo1` and `layer.lfo2`. */
   lfos: ModDef[];
   /** Layer routes. */
   routes: Route[];
@@ -78,19 +85,40 @@ export interface Patch {
 
 // ---- engine codes (crates/klont/src/patch.rs)
 
-export const PATCH_MAGIC = 0x31505745;
+export const PATCH_MAGIC = 0x32505745;
 export const MAX_POINTS = 8;
 export const MAX_TARGETS = 4;
 const NONE = 0xffffffff;
 
-const SRC: Record<string, number> = {
-  'note.pitch': 10, 'note.velocity': 11, 'note.hardness': 12, 'note.attack': 13, 'note.burst': 14, 'note.bend': 15,
-  'note.hold': 16, 'note.vowel': 17, 'note.tone': 18, 'note.endClick': 19,
-  'voice.pitch': 30, 'voice.volume': 31, 'voice.openness': 32, 'voice.breath': 33, 'voice.hardness': 34,
-  'voice.onset': 35, 'voice.voicing': 36, 'voice.vowel': 37,
+/** Sung features, in the engine's order (pitch to voicing, then the vowel, then intensity). */
+export const FEATURES = ['pitch', 'volume', 'openness', 'breath', 'hardness', 'onset', 'voicing', 'vowel', 'intensity'] as const;
+const NOTE_FIELDS = ['pitch', 'velocity', 'hardness', 'attack', 'burst', 'bend', 'hold', 'vowel', 'tone', 'endClick'] as const;
+
+/** Per-voice sources that are not the voice patch's own mods. */
+const VOICE_SRC: Record<string, number> = {
+  ...Object.fromEntries(NOTE_FIELDS.map((f, i) => [`note.${f}`, 10 + i])),
+  ...Object.fromEntries(FEATURES.map((f, i) => [`voice.${f}`, 30 + i])),
+};
+/** Per-layer sources: [code, arg]. */
+const LAYER_SRC: Record<string, [number, number]> = {
+  ...Object.fromEntries(Array.from({ length: 8 }, (_, k) => [`macro${k + 1}`, [50, k]])),
+  wheel: [51, 0], bend: [51, 1], pressure: [51, 2],
+  'layer.lfo1': [52, 0], 'layer.lfo2': [52, 1],
+  ...Object.fromEntries(FEATURES.map((f, i) => [`layer.${f}`, [60 + i, 0]])),
 };
 const SRC_MOD = 1;
-const SRC_MACRO = 50;
+/** Added to an envelope's type code: it also restarts at each sung onset. */
+const MOD_ONSET = 0x10000;
+
+/** Every per-voice source name (the voice patch's mods aside). */
+export const VOICE_SOURCES: readonly string[] = Object.keys(VOICE_SRC);
+/** Every per-layer source name. */
+export const LAYER_SOURCES: readonly string[] = Object.keys(LAYER_SRC);
+/** A source that is one per layer (its routes are layer routes). */
+export const isLayerSource = (s: string): boolean => s in LAYER_SRC;
+/** Sources whose value runs -1..1 (they enter the shaper as 0..1). */
+export const isBipolarSource = (s: string, mods: ModDef[] = []): boolean =>
+  s === 'bend' || /^layer\.lfo[12]$/.test(s) || mods.some((m) => m.id === s && m.type === 'lfo');
 const TGT = { value: 0, pitch: 1, bands: 2, oct: 3 } as const;
 const MODE = { add: 0, scale: 1, pull: 2 } as const;
 const POL = { up: 0, down: 1, both: 2 } as const;
@@ -111,7 +139,7 @@ export interface Layout {
 
 const prefix = (patch: Patch, vp: number) => (patch.voices.length > 1 ? `k${vp + 1}.` : '');
 
-function moduleKeys(id: string, type: string): { key: string; local: string; desc: number }[] {
+export function moduleKeys(id: string, type: string): { key: string; local: string; desc: number }[] {
   const t = MODULE_TYPES[type] ?? fail(`unknown module type ${type}`);
   const out: { key: string; local: string; desc: number }[] = [];
   for (const p of t.params) {
@@ -151,6 +179,7 @@ export function layoutOf(patch: Patch): Layout {
   });
   for (const fx of patch.channel) for (const x of moduleKeys(fx.id, fx.type)) add('', x.local, x.desc);
   add('', 'width', DESC_ID['width']);
+  for (const m of patch.lfos) for (const x of moduleKeys(m.id, m.type)) add('', x.local, x.desc);
   for (const r of patch.routes) add('', `route.${r.id}`, DESC_ID['route.amount']);
   const index = new Map(keys.map((k, i) => [k, i]));
   if (index.size !== keys.length) fail('two values have the same key');
@@ -186,13 +215,21 @@ function targets(lay: Layout, patch: Patch, key: string, vpPrefix: string): numb
 function writeRoute(w: Words, r: Route, lay: Layout, patch: Patch, vp: number | null): void {
   const pre = vp === null ? '' : prefix(patch, vp);
   const mods = vp === null ? [] : patch.voices[vp].mods;
-  const source = (s: string): [number, number] => {
+  const layerSource = (s: string): [number, number] | null => {
+    const l = LAYER_SRC[s];
+    if (!l) return null;
+    if (l[0] === 52 && !patch.lfos.some((m) => m.id === s)) fail(`route ${r.id}: the patch has no ${s}`);
+    return l[0] === 52 ? [52, patch.lfos.findIndex((m) => m.id === s)] : l;
+  };
+  const voiceSource = (s: string): [number, number] | null => {
     const m = mods.findIndex((x) => x.id === s);
     if (m >= 0) return [SRC_MOD, m];
-    const mac = /^macro([1-8])$/.exec(s);
-    if (mac) return [SRC_MACRO, Number(mac[1]) - 1];
-    return [SRC[s] ?? fail(`unknown source ${s}`), 0];
+    return s in VOICE_SRC ? [VOICE_SRC[s], 0] : null;
   };
+  const source = (s: string): [number, number] =>
+    (vp === null ? layerSource(s) : voiceSource(s))
+    ?? fail(isLayerSource(s) ? `route ${r.id}: ${s} is one per layer, so its route is a layer route` : vp === null ? `route ${r.id}: ${s} is per voice, so its route belongs to a voice patch` : `unknown source ${s}`);
+  const via = (s: string): [number, number] => voiceSource(s) ?? layerSource(s) ?? fail(`route ${r.id}: unknown via ${s}`);
   const [src, arg] = source(r.source);
   w.u(src);
   w.u(arg);
@@ -206,7 +243,7 @@ function writeRoute(w: Words, r: Route, lay: Layout, patch: Patch, vp: number | 
   w.u(ts.length);
   for (let t = 0; t < MAX_TARGETS; t++) w.u(ts[t] ?? 0);
   w.u(lay.index.get(`${pre}route.${r.id}`)!);
-  const [vs, va] = r.via ? source(r.via) : [0, 0];
+  const [vs, va] = r.via ? (vp === null ? (layerSource(r.via) ?? fail(`route ${r.id}: a layer route's via must be one per layer`)) : via(r.via)) : [0, 0];
   w.u(vs);
   w.u(va);
   w.u(MODE[r.mode]);
@@ -239,6 +276,8 @@ export function patchBlob(patch: Patch, sample: number): ArrayBuffer {
   w.u(channel.length);
   w.u(patch.routes.length);
   w.u(lay.index.get('width')!);
+  if (patch.lfos.length > 2 || patch.lfos.some((m) => m.type !== 'lfo' || !/^layer\.lfo[12]$/.test(m.id))) fail('layer LFOs are layer.lfo1 and layer.lfo2');
+  w.u(patch.lfos.length);
   lay.descs.forEach((d) => w.u(d));
   lay.init.forEach((x) => w.f(x));
   patch.voices.forEach((vp, k) => {
@@ -278,7 +317,7 @@ export function patchBlob(patch: Patch, sample: number): ArrayBuffer {
     }
     for (const o of vp.out) w.u(mi(o));
     for (const m of vp.mods) {
-      w.u(MODULE_TYPES[m.type].code);
+      w.u(MODULE_TYPES[m.type].code + (m.trigger === 'onset' ? MOD_ONSET : 0));
       w.u(first(m.id, m.type));
     }
     for (const r of vp.routes) writeRoute(w, r, lay, patch, k);
@@ -286,6 +325,10 @@ export function patchBlob(patch: Patch, sample: number): ArrayBuffer {
   for (const fx of channel) {
     w.u(MODULE_TYPES[fx.type].code);
     w.u(lay.index.get(moduleKeys(fx.id, fx.type)[0].local)!);
+  }
+  for (const m of patch.lfos) {
+    w.u(MODULE_TYPES.lfo.code);
+    w.u(lay.index.get(moduleKeys(m.id, m.type)[0].local)!);
   }
   for (const r of patch.routes) writeRoute(w, r, lay, patch, null);
   return w.done();
