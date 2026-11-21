@@ -24,3 +24,4 @@ Design: see docs/TDD.md.
 - Milestone M4 (Influence over the full parameter table with live match, the grain source, kit slots from a sound, sound states and the morph lane): see docs/M4.md for how to run it and how to judge its gate (blind match 70% at 100%).
 - Modular synth, stage S1 (the engine runs patches; the sound does not change): see docs/synth.md for the design and docs/S1.md for how to check it.
 - Modular synth, stage S2 (the modulation matrix: every source, the shaper, layer LFOs, listening layers; the Patch and Mod views in the Sound panel): see docs/S2.md for how to check it.
+- Modular synth, stage S3 (editing patches: oscillators, noise, a sampler, a channel filter; add, remove, rewire and reorder; the cost meter and voice count; preset save, load, import and export; a 5 ms fade on structure changes): see docs/S3.md for how to check it.

@@ -288,7 +288,16 @@ fn the_voice_count_follows_the_patch_cost() {
     let n = e.meter()[M_MAX_VOICES] as usize;
     let mut p = Patch::new_boxed();
     p.parse(&heavy).unwrap();
-    println!("heaviest patch: {:.1} ns a voice, {:.1} ns a layer: {n} voices", p.max_voice_cost(), p.layer_cost());
+    let classic = |k| {
+        let mut c = Patch::new_boxed();
+        c.parse(&klont::classic::patch_blob(k, 0)).unwrap();
+        c
+    };
+    let (m, b) = (classic(KIND_MELODY), classic(KIND_BEAT));
+    println!(
+        "budget {:.1} ns a layer; classic melody {:.1} a voice + {:.1}, classic kit {:.1} + {:.1}; heaviest patch {:.1} a voice + {:.1}: {n} voices",
+        layer_budget(&[&m, &b]), m.max_voice_cost(), m.layer_cost(), b.max_voice_cost(), b.layer_cost(), p.max_voice_cost(), p.layer_cost()
+    );
     assert!(n < 8 && n >= 4, "a heavier voice gets fewer voices: {n}");
     for k in 0..8 {
         e.push(MSG_NOTE_ON, 0, 0, 0, 4800.0 + 100.0 * k as f32, 0);

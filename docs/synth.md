@@ -1,6 +1,6 @@
 # Synth engine: patches and modulation
 
-Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page.
+Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page. Stage S3 is built; [S3.md](S3.md) does the same for it.
 
 Today a layer's sound is one fixed chain, the Klont voice, set by 96 numbers, and the app offers a short list of presets to pick from plus eight macros. This page turns that into an open patch: a small graph of modules the user can add, remove and wire, and one modulation system in which every envelope, LFO, knob and sung feature (pitch, intensity, volume, hardness) can drive any synth or channel-effect parameter. The aim is a tool that works as a real-time DAW and as an instrument for improvising.
 
@@ -76,7 +76,7 @@ Every module is built from code that exists today, except the four marked new.
 | Module | Scope | Inputs | Parameters | From |
 | --- | --- | --- | --- | --- |
 | `partials` | voice | none (plays the voice pitch) | level, tilt, odd/even, stretch, jitter, modal, damp, F1 and F2 frequency and gain, tone bands (16), octave, fine | Partial bank in `voice.rs` |
-| `osc` (new) | voice | `pm` (phase modulation) | level, wave (sine, triangle, saw, square as one morph value), pulse width, octave, semitone, fine, pm depth | New, band-limited with polyBLEP |
+| `osc` (new) | voice | `pm` (phase modulation) | level, wave (sine, triangle, saw, square as one morph value), pulse width, octave, semitone, fine, pm depth | New, band-limited with a four-sample polyBLEP and polyBLAMP |
 | `noise` (new) | voice | none | level, colour (white to pink to brown as one morph value) | `dsp::noise` |
 | `sampler` (new) | voice | none | level, start, loop (off or on), loop start, loop length, pitch follow, octave, fine | Cubic read from the grain code |
 | `click` | voice | none | start amount, end amount, colour | `dsp::fx::Click` |
@@ -87,7 +87,7 @@ Every module is built from code that exists today, except the four marked new.
 | `comb` | voice | `in` | amount, tune, decay | `dsp::fx::CombPair` |
 | `shaped_noise` | layer source | none | level (each voice's share of the bank), noise bands (16, per layer) | `ShapedNoise` in `layer.rs` |
 | `grains` | layer source | none | level (each voice's share), size, density, position, spray, scatter | `grain.rs` |
-| `filter` | channel | stereo | cutoff, resonance, morph | Two `Svf` |
+| `cfilter` | channel | mono or stereo, where it sits | cutoff, resonance, morph | Two `Svf` |
 | `crush` | channel | stereo | bits, rate, mix | `dsp::layer_fx::Crush` |
 | `tape` | channel | stereo | amount | `dsp::layer_fx::Tape` |
 | `delay` | channel | stereo | time (seconds or beats), feedback, shift, mix | `dsp::layer_fx::StereoDelay` |
@@ -95,18 +95,18 @@ Every module is built from code that exists today, except the four marked new.
 
 Level and pan sit between the mono and the stereo effects, and width ends every channel. Width is a value like any other, so it can be modulated and automated. Level and pan are still layer fields, not values: making them values belongs with automation (S5).
 
-`sampler` and `grains` read a **sample**: a mono buffer in the layer's sample slots (see "Engine changes"). A sample is an Influence source, a take's audio or an imported file.
+`sampler` and `grains` read a **sample**: a mono buffer in the sample pool (see "Engine changes"). In S3 each layer has one, its Influence source (a file, a recording or a saved source): both the grains and a sampler play it.
 
 Smear stays a v1 item, as in the TDD. When it is built it is a channel effect.
 
 ### Rules for the graph
 
-- **No cycles in the voice section.** Feedback lives inside modules (comb, delay), not in cables. The compiler sorts the modules once, and the engine runs them in that order.
+- **No cycles in the voice section.** Feedback lives inside modules (comb, delay), not in cables. The rack lists the modules in any order; the compiler sorts them so each runs after the modules that feed it, refuses a loop, and the engine runs them in that order (a cable may only run forward in the blob).
 - **One output per module, mono in the voice section.** An input with several cables sums them at unity. An `amp` sets a level.
 - **Audio-rate modulation only through cables.** An `osc` reads its `pm` input every sample, so one oscillator can frequency-modulate another. Every other modulation runs at the control rate (every 32 samples, 0.67 ms at 48 kHz).
 - **Pitch.** Each voice has one pitch: the note, the tuned curve or the live voice. Pitched modules play that pitch plus their own octave and fine values plus any pitch routes.
 - **Caps.** Per voice patch: at most 16 modules (at most 1 `partials`, 4 `osc`, 2 `noise`, 1 `sampler`, 1 `click`, 2 `filter`, 4 `amp`, 1 `fold`, 1 `clang`, 1 `comb`), 4 envelopes, 4 LFOs and 48 routes. Per layer: one `shaped_noise` per voice patch (so up to 4 on a beat layer, as today's five noise banks allow) and one `grains`, 8 channel effects (at most 2 delays and 1 reverb), 2 layer LFOs, 64 layer routes and 1,024 values. The engine allocates every instance at start-up, so a patch that fits the caps loads without allocating.
-- **Cost.** Each module type has a cost per sample, measured by the benchmark. A layer may spend what 8 classic voices cost. A patch that costs twice the classic voice gets 4 voices, not 8. The patch editor shows the cost and the voice count that follows from it. This keeps the M1 gate (8 layers, 4x real time on the reference laptop) true for any patch, not only for the classic one.
+- **Cost.** Each module type has a cost per sample (`cost` in `modules.toml`, measured by the benchmark's `costs` scene), counted for every module the patch holds whether its values switch it on or not. Voice modules, envelopes, LFOs, routes and a partial bank that some route makes rebuild every tick cost per voice; layer sources, channel effects, layer LFOs and layer routes once per layer. A layer may spend what the classic kit costs with 8 voices; a patch gets the voices its per-voice cost leaves room for after its layer cost, 1 to 8. The classic patches get 8. The patch editor shows the cost and the voice count. Measured in S3, this budget does not keep the M1 gate true for every patch: the classic structure with every module switched on already costs about 3.5x real time on the build machine (see [S3.md](S3.md)).
 
 ### Structure per layer, values per state
 
@@ -114,7 +114,7 @@ A layer has one patch structure. Each sound state holds a value for every key in
 
 - **Keys.** A value's key is `<id>.<param>`: `filter1.cutoff`, `env2.decay`, `delay1.mix`. Ids are unique within the layer. On a beat layer the editor names kit-slot modules with the slot, as in `k2.filter1`, and a layer route can target the same key in all four slots at once as `k*.filter1.cutoff`, counted as one route (today's macros act on every kit slot this way). A route's amount is the value `route.<id>`, so a state can hold a deeper or shallower modulation than another.
 - **Stepped values.** A few values are steps, not a continuum (sampler loop on or off, LFO sync on or off). A morph switches them at its midpoint. Filter type and oscillator wave stay continuous morphs, as the TDD intended.
-- **Changing the structure** (adding a module, rewiring, adding a route) is an edit to the layer, not to a state. Every state gets the new keys at their neutral values. It is not something a morph or a performance does. While the track plays, the engine fades the layer's sounding voices out over 5 ms and new notes use the new structure.
+- **Changing the structure** (adding a module, rewiring, adding a route) is an edit to the layer, not to a state. Every state gets the new keys at their neutral values. It is not something a morph or a performance does. While the layer sounds, the engine plays on with the old structure and fades the layer's output (voices and channel tails) to silence over 5 ms, then takes the new one; a note that starts during the fade starts when it is taken. Bypassing a channel effect and changing a route's shaper are not structure changes.
 
 ### Beat layers and kit slots
 
@@ -148,7 +148,7 @@ interface Patch {
   defaults?: Record<string, number>; // a key's starting value (real units) where it is not the neutral
 }
 interface VoicePatch {
-  modules: { id: string; type: VoiceModuleType; sample?: BlobRef }[];
+  modules: { id: string; type: VoiceModuleType }[];   // rack order; a sampler plays the layer's sample
   cables: { from: string; to: string; port: 'in' | 'pm' }[];
   out: string[];                   // modules summed into the voice output
   mods: ModDef[];                  // env1..env4, lfo1..lfo4
@@ -408,7 +408,7 @@ The live overload policy stays as it is: lower the partial budget first, then st
 
 | Change | Detail |
 | --- | --- |
-| `LOAD_PATCH` (new load kind) | Slot = layer. The compiled patch: module list with types and value offsets, the voice program in run order, cable buffer assignments, channel chain, mod sources, routes with their shaper fields and curve points. Swapped at a block boundary like other tables. |
+| `LOAD_PATCH` (new load kind) | Slot = layer. Patch blob v3 since S3. The compiled patch: module list with types and value offsets, the voice program in run order, cable buffer assignments, channel chain, mod sources, routes with their shaper fields and curve points. Swapped at a block boundary like other tables. |
 | Layer blob v2 | Fields as today, then the layer's value vector (up to 1,024), macros, the Influence target as a value vector with one group bit per value. The compiler does the Klont-vocabulary binding, so the engine gets aligned vectors. Kit sets disappear: the kit's values are in the vector. |
 | States blob v2 | `n_states` vectors of the layer's value length, plus macros and Influence amount each. |
 | `MSG_SET_PARAM` | `param` is an index into the layer's value vector. `index` is unused. |
