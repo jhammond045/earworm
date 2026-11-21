@@ -1,0 +1,58 @@
+{
+ "sung-melody": {
+  "seconds": 9.130666666666666,
+  "peak": 0.3436271846294403,
+  "stop": "silence",
+  "layers": 2,
+  "takes": 1
+ },
+ "beat-take": {
+  "seconds": 14.506666666666666,
+  "peak": 0.47836607694625854,
+  "stop": "tail",
+  "layers": 2,
+  "takes": 1
+ },
+ "states-influence": {
+  "seconds": 9.898666666666667,
+  "peak": 0.517163097858429,
+  "stop": "silence",
+  "layers": 3,
+  "takes": 0
+ },
+ "arrangement": {
+  "seconds": 10.837333333333333,
+  "peak": 0.7974302768707275,
+  "stop": "silence",
+  "layers": 4,
+  "takes": 0
+ },
+ "gestures": {
+  "seconds": 6.997333333333334,
+  "peak": 0.5018299221992493,
+  "stop": "silence",
+  "layers": 2,
+  "takes": 1
+ },
+ "demo-melody": {
+  "seconds": 6.912,
+  "peak": 0.32470807433128357,
+  "stop": "silence",
+  "layers": 2,
+  "takes": 0
+ },
+ "demo-beat": {
+  "seconds": 3.4133333333333336,
+  "peak": 0.4023148715496063,
+  "stop": "silence",
+  "layers": 2,
+  "takes": 0
+ },
+ "demo-states": {
+  "seconds": 7.68,
+  "peak": 0.5914707183837891,
+  "stop": "silence",
+  "layers": 3,
+  "takes": 0
+ }
+}

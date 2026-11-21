@@ -1,0 +1,26 @@
+[
+ {
+  "kind": 2,
+  "slot": 0,
+  "what": "layer 0 \"Melody\"",
+  "file": "00-2-0.bin"
+ },
+ {
+  "kind": 2,
+  "slot": 1,
+  "what": "layer 1 \"Beat\"",
+  "file": "01-2-1.bin"
+ },
+ {
+  "kind": 3,
+  "slot": 0,
+  "what": "curve 0 (take take_golden3)",
+  "file": "02-3-0.bin"
+ },
+ {
+  "kind": 1,
+  "slot": 0,
+  "what": "track",
+  "file": "03-1-0.bin"
+ }
+]

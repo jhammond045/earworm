@@ -1,0 +1,32 @@
+[
+ {
+  "kind": 2,
+  "slot": 0,
+  "what": "layer 0 \"Melody\"",
+  "file": "00-2-0.bin"
+ },
+ {
+  "kind": 2,
+  "slot": 1,
+  "what": "layer 1 \"Beat\"",
+  "file": "01-2-1.bin"
+ },
+ {
+  "kind": 2,
+  "slot": 2,
+  "what": "layer 2 \"Bass\"",
+  "file": "02-2-2.bin"
+ },
+ {
+  "kind": 2,
+  "slot": 3,
+  "what": "layer 3 \"Air\"",
+  "file": "03-2-3.bin"
+ },
+ {
+  "kind": 1,
+  "slot": 0,
+  "what": "track",
+  "file": "04-1-0.bin"
+ }
+]

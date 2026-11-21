@@ -1,0 +1,44 @@
+[
+ {
+  "kind": 2,
+  "slot": 0,
+  "what": "layer 0 \"Melody\"",
+  "file": "00-2-0.bin"
+ },
+ {
+  "kind": 5,
+  "slot": 0,
+  "what": "states 0 \"Melody\" (2)",
+  "file": "01-5-0.bin"
+ },
+ {
+  "kind": 2,
+  "slot": 1,
+  "what": "layer 1 \"Beat\"",
+  "file": "02-2-1.bin"
+ },
+ {
+  "kind": 2,
+  "slot": 2,
+  "what": "layer 2 \"Pad\"",
+  "file": "03-2-2.bin"
+ },
+ {
+  "kind": 4,
+  "slot": 2,
+  "what": "grain 2 \"Golden tone\"",
+  "file": "04-4-2.bin"
+ },
+ {
+  "kind": 5,
+  "slot": 2,
+  "what": "states 2 \"Pad\" (3)",
+  "file": "05-5-2.bin"
+ },
+ {
+  "kind": 1,
+  "slot": 0,
+  "what": "track",
+  "file": "06-1-0.bin"
+ }
+]
