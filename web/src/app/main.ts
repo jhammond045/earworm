@@ -5,7 +5,6 @@ import { decodeBytes, decodeFile, loadSources, MAX_SOURCE_S, trimAndCap, type Sa
 import { stateVocab, vocabIndices } from '../synth/classic';
 import { download, encodeWav } from '../common/wav';
 import { KlontHost, wantsFallback } from '../m1/klont-host';
-import { soundToSet } from '../m1/layer';
 import { OfflineRenderer } from '../m1/offline';
 import {
   LAYER_DEPTH_BREATH, LAYER_DEPTH_HARD, LAYER_DEPTH_LOUD, LAYER_DEPTH_MOUTH, LAYER_DEPTH_OPEN, LAYER_FOLLOW,
@@ -16,7 +15,7 @@ import {
 import { SCALES } from '../host/protocol';
 import { snapChoices } from '../m3/geometry';
 import { Analysis, teach, type Hit as AnalysisHit } from '../m2/analysis';
-import { BEAT_KITS, MELODY_SOUNDS, SLOT_NAMES } from '../m2/sounds';
+import { SLOT_NAMES } from '../m2/sounds';
 import { meanLive } from '../m2/take';
 import { $, App } from '../m3/app';
 import { holdButton, MicClip, typingIn } from '../m3/hold';
@@ -48,6 +47,7 @@ import { KlontGlyph } from './klont-glyph';
 import { recordFromFrame } from './live-ribbon';
 import { songSeconds, uploadsToSong } from './mix';
 import { tuneFromTake } from './tune';
+import { factoryPresets, parsePreset, presetFileName, presetFromLayer, presetMatches, presetText, type PresetFile } from '../presets/presets';
 import { Ribbon } from '../live/ribbon';
 import { SynthPanel } from './synth-ui';
 
@@ -73,6 +73,16 @@ async function main(): Promise<void> {
   const db = new ProjectDb(kv);
   const session = new Session(kv, db);
   const app = new App(session);
+  // Presets (stage S3): the factory ones, then the user's own from the settings store.
+  const factory = factoryPresets();
+  let userPresets: PresetFile[] = [];
+  try {
+    const saved = (await kv.get('settings', 'presets')) as unknown[] | undefined;
+    userPresets = (saved ?? []).flatMap((x) => { try { return [parsePreset(x)]; } catch { return []; } });
+  } catch { userPresets = []; }
+  const keepPresets = async () => {
+    try { await kv.put('settings', 'presets', userPresets); } catch (e) { app.fail(`The preset could not be saved: ${e instanceof Error ? e.message : String(e)}`); }
+  };
   app.stopFlushOnHide = flushOnHide(db);
   if (storageNote) app.fail(storageNote);
   const tutorial = new TutorialRunner();
@@ -253,15 +263,33 @@ async function main(): Promise<void> {
     const preset = $<HTMLSelectElement>('preset');
     const state = $<HTMLSelectElement>('state');
     if (!l) return;
-    const sounds = l.kind === 'beat' ? BEAT_KITS : MELODY_SOUNDS;
-    if (preset.options.length !== sounds.length) {
-      preset.replaceChildren();
-      sounds.forEach((s, i) => {
-        const o = document.createElement('option');
-        o.value = String(i);
-        o.textContent = s.name;
-        preset.append(o);
-      });
+    {
+      // Factory presets, then the user's, for this kind of layer; "Custom" when the sound matches none.
+      const fits = (p: PresetFile) => (p.kind === 'beat') === (l.kind === 'beat');
+      const st = app.ui.editState(l);
+      const groups: [string, string, PresetFile[]][] = [['Factory', 'f', factory], ['Yours', 'u', userPresets]];
+      let current = '';
+      for (const [, tag, list] of groups) list.forEach((p, i) => { if (!current && fits(p) && presetMatches(l, st, p)) current = `${tag}${i}`; });
+      const sig = `${l.kind}|${userPresets.map((p) => p.name).join('/')}`;
+      if (preset.dataset.sig !== sig) {
+        preset.dataset.sig = sig;
+        const custom = document.createElement('option');
+        custom.value = '';
+        custom.textContent = 'Custom';
+        preset.replaceChildren(custom, ...groups.filter(([, , list]) => list.some(fits)).map(([name, tag, list]) => {
+          const g = document.createElement('optgroup');
+          g.label = name;
+          list.forEach((p, i) => {
+            if (!fits(p)) return;
+            const o = document.createElement('option');
+            o.value = `${tag}${i}`;
+            o.textContent = p.name;
+            g.append(o);
+          });
+          return g;
+        }));
+      }
+      if (document.activeElement !== preset) preset.value = current;
     }
     if (state.options.length !== l.states.length || [...state.options].some((o, i) => o.value !== l.states[i].id)) {
       const cur = app.ui.editState(l).id;
@@ -864,18 +892,49 @@ async function main(): Promise<void> {
 
   $<HTMLSelectElement>('preset').addEventListener('change', () => {
     const l = layer();
+    const v = $<HTMLSelectElement>('preset').value;
+    if (!l || !v) return;
+    const p = (v[0] === 'f' ? factory : userPresets)[Number(v.slice(1))];
+    if (p) app.run(() => app.store.dispatch('loadPreset', { layer: l.id, state: app.ui.editState(l).id, preset: p }));
+  });
+  btn('savePreset').addEventListener('click', () => {
+    const l = layer();
     if (!l) return;
-    const index = Number($<HTMLSelectElement>('preset').value);
-    const sound = l.kind === 'beat' ? BEAT_KITS[index].base : MELODY_SOUNDS[index].sound;
-    const base = Array.from(soundToSet(sound));
-    const st = app.ui.editState(l);
-    app.run(() => app.store.batch('Set sound', (run) => {
-      run('setState', { layer: l.id, id: st.id, base });
-      if (l.kind === 'beat') {
-        const kit = BEAT_KITS[index].kit.map((s, i) => ({ params: Array.from(soundToSet(s)), cents: BEAT_KITS[index].kitCents[i] }));
-        run('setLayerSound', { id: l.id, kit });
-      }
-    }));
+    const name = prompt('Name of the preset', l.name)?.trim();
+    if (!name) return;
+    const p = presetFromLayer(l, app.ui.editState(l), name);
+    const same = userPresets.findIndex((x) => x.name === name && x.kind === p.kind);
+    if (same >= 0 && !confirm(`Replace your preset "${name}"?`)) return;
+    if (same >= 0) userPresets[same] = p;
+    else userPresets.push(p);
+    void keepPresets().then(() => app.refreshAll());
+  });
+  btn('exportPreset').addEventListener('click', () => {
+    const l = layer();
+    if (!l) return;
+    const v = $<HTMLSelectElement>('preset').value;
+    const named = v ? (v[0] === 'f' ? factory : userPresets)[Number(v.slice(1))]?.name : undefined;
+    const p = presetFromLayer(l, app.ui.editState(l), named ?? l.name);
+    download(new Blob([presetText(p)], { type: 'application/json' }), presetFileName(p.name).replace(/\.json$/, '.earworm-patch.json'));
+  });
+  $<HTMLInputElement>('importPreset').addEventListener('change', async () => {
+    const input = $<HTMLInputElement>('importPreset');
+    const file = input.files?.[0];
+    input.value = '';
+    const l = layer();
+    if (!file || !l) return;
+    let p: PresetFile;
+    try {
+      p = parsePreset(JSON.parse(await file.text()));
+    } catch (e) {
+      app.fail(e instanceof SyntaxError ? `${file.name} is not a preset file.` : e instanceof Error ? e.message : String(e));
+      return;
+    }
+    userPresets = [...userPresets.filter((x) => !(x.name === p.name && x.kind === p.kind)), p];
+    await keepPresets();
+    if ((p.kind === 'beat') === (l.kind === 'beat')) app.run(() => app.store.dispatch('loadPreset', { layer: l.id, state: app.ui.editState(l).id, preset: p }));
+    else app.fail(`"${p.name}" is saved under Yours; it is ${p.kind === 'beat' ? 'a kit, for a beat layer' : 'for a melody or texture layer'}.`);
+    app.refreshAll();
   });
   num('level').addEventListener('input', () => {
     const l = layer();

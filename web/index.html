@@ -164,6 +164,9 @@
           <legend>Layer</legend>
           <div class="row">
             <label>Preset <select id="preset" aria-label="Sound preset"></select></label>
+            <button type="button" id="savePreset" title="Keep this layer's sound (its patch and this state's values) as one of your presets">Save preset</button>
+            <button type="button" id="exportPreset" title="Download this layer's sound as a preset file">Export</button>
+            <label class="filebtn">Import <input id="importPreset" type="file" accept=".json,application/json" aria-label="Preset file to import"></label>
             <label>Level <input id="level" type="range" min="-60" max="12" step="1" value="0" aria-label="Layer level"></label>
             <label data-tour="pan">Pan <input id="pan" type="range" min="-100" max="100" step="1" value="0" aria-label="Layer pan, left to right"> <output id="panRead">C</output></label>
             <button type="button" id="mute" aria-pressed="false">Mute</button>

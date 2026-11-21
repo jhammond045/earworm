@@ -7,7 +7,11 @@
 // Mod: the matrix (every route of the kit slot's voice patch and of the layer, with its live
 // output), the shaper editor for the selected route, the sung-feature meters and Listen.
 //
-// The structure stays the classic patch's; only routes and values change here.
+// Stage S3: the Patch view also edits the structure. A bar on top shows the patch's cost against
+// the layer's budget and the voice count that follows, and adds modules, envelopes, LFOs and
+// channel effects; each card can be rewired (its inputs, an oscillator's phase input, the voice
+// output), moved in the rack and removed; a channel effect can be bypassed. Layer sources (shaped
+// noise, grains) keep their place.
 
 import { ALL_DESCS } from '../gen/modules';
 import { M_LAYER_SRC, M_LIVE, M_LISTEN, M_ROUTES, M_STORED, MSG_LISTEN } from '../m1/protocol';
@@ -15,7 +19,9 @@ import type { App } from '../m3/app';
 import { applyOps } from '../project/patch';
 import { commands } from '../project/commands';
 import type { Layer, Project } from '../project/types';
-import { FEATURES, LAYER_SOURCES, VOICE_SOURCES, isBipolarSource, isLayerSource, layoutOf, moduleKeys, type Layout, type Patch, type Route } from '../synth/patch';
+import { CAPS, FEATURES, LAYER_SOURCES, SOURCE_TYPES, VOICE_SOURCES, isBipolarSource, isLayerSource, layerBudget, layerCost, layoutOf, maxVoiceCost, moduleKeys, voiceCount,
+  type ChannelFxType, type Layout, type Patch, type Port, type Route, type VoiceModuleType } from '../synth/patch';
+import { classicPatch } from '../synth/classic';
 import { allRoutes, amountKey, amountNorm, findRoute, kitPrefix, routesInto, type RouteFields, type Scope } from '../synth/routes';
 import { toNorm, toReal } from '../synth/values';
 import type { Advance } from './tutorials';
@@ -66,7 +72,18 @@ function keyLabel(key: string): string {
 const SCOPE_METER = (scope: Scope, i: number) => (scope === 'layer' ? 192 + i : scope * 48 + i);
 const LS_FEATURE = 8 + 3 + 2;
 
-interface Card { title: string; keys: string[]; env?: string }
+/** A card of the Patch view; `module`, `mod` and `fx` name what its structure controls edit. */
+interface Card { title: string; keys: string[]; env?: string; module?: string; mod?: string; fx?: string }
+
+/** What one layer may spend (docs/synth.md "Rules for the graph"), from the classic patches. */
+let budget = 0;
+const layerBudgetNow = () => budget || (budget = layerBudget([classicPatch('melody'), classicPatch('beat')]));
+
+const MODULE_NAMES: Record<VoiceModuleType, string> = {
+  partials: 'partial bank', osc: 'oscillator', noise: 'noise', sampler: 'sampler (plays the layer\'s sound source)', click: 'click',
+  filter: 'filter', amp: 'amp', fold: 'fold', clang: 'clang', comb: 'comb',
+};
+const FX_NAMES: Record<ChannelFxType, string> = { crush: 'crush', tape: 'tape', cfilter: 'filter', delay: 'delay', reverb: 'reverb' };
 
 export class SynthPanel {
   view: SoundView = 'simple';
@@ -176,13 +193,12 @@ export class SynthPanel {
     const keysOf = (id: string, type: string) => moduleKeys(id, type).map((x) => pre + x.local).filter((k) => lay.index.has(k));
     const out: Card[] = [];
     vp.modules.forEach((m, i) => {
-      const ins = vp.cables.filter((c) => c.to === m.id).map((c) => c.from);
-      out.push({ title: `${i + 1}. ${m.id}${ins.length ? ` (in: ${ins.join(', ')})` : ''}`, keys: keysOf(m.id, m.type) });
+      out.push({ title: `${i + 1}. ${m.id}`, keys: keysOf(m.id, m.type), module: m.id });
     });
-    for (const m of vp.mods) out.push({ title: m.id, keys: keysOf(m.id, m.type), env: m.type === 'env' ? m.id : undefined });
+    for (const m of vp.mods) out.push({ title: m.id, keys: keysOf(m.id, m.type), env: m.type === 'env' ? m.id : undefined, mod: m.id });
     out.push({ title: 'voicing swap', keys: [pre + 'voicing.depth'] });
     for (const s of p.layerSources.filter((x) => x.voice === this.slot)) out.push({ title: `${s.id} (driven by ${s.drive})`, keys: keysOf(s.id, s.type) });
-    for (const fx of p.channel) out.push({ title: `channel: ${fx.id}`, keys: moduleKeys(fx.id, fx.type).map((x) => x.local) });
+    for (const fx of p.channel) out.push({ title: `channel: ${fx.id}${fx.bypass ? ' (bypassed)' : ''}`, keys: moduleKeys(fx.id, fx.type).map((x) => x.local), fx: fx.id });
     out.push({ title: 'channel: width', keys: ['width'] });
     for (const m of p.lfos) out.push({ title: m.id, keys: moduleKeys(m.id, m.type).map((x) => x.local) });
     return out;
@@ -195,7 +211,7 @@ export class SynthPanel {
       this.built = { patch: p, slot: this.slot };
       this.knobs.clear();
       box.replaceChildren();
-      box.append(this.slotPicker(l));
+      box.append(this.slotPicker(l), this.structureBar(l));
       for (const c of this.cards(l)) box.append(this.card(l, c));
       const hint = document.createElement('p');
       hint.className = 'hint';
@@ -262,6 +278,8 @@ export class SynthPanel {
       d.append(s, ...bands.map((k) => this.knob(l, k)));
       f.append(d);
     }
+    const wiring = this.wiring(l, c);
+    if (wiring) f.append(wiring);
     if (c.env) {
       const lab = document.createElement('label');
       const box = document.createElement('input');
@@ -376,6 +394,151 @@ export class SynthPanel {
     ring.hidden = false;
     ring.style.left = `${lo * 100}%`;
     ring.style.width = `${Math.max(0.5, (hi - lo) * 100)}%`;
+  }
+
+  // ---- structure (stage S3)
+
+  private edit(name: Parameters<App['store']['dispatch']>[0], args: Record<string, unknown>): void {
+    const l = this.layer();
+    if (l) this.app.run(() => this.app.store.dispatch(name, { layer: l.id, ...args } as never));
+  }
+
+  /** The cost meter and the add menus. */
+  private structureBar(l: Layer): HTMLElement {
+    const p = l.patch;
+    const f = document.createElement('fieldset');
+    f.className = 'structure';
+    f.dataset.tour = 'structure';
+    const lg = document.createElement('legend');
+    lg.textContent = 'Structure';
+    const b = layerBudgetNow();
+    const voices = voiceCount(p, b);
+    const share = (layerCost(p) + 8 * maxVoiceCost(p)) / b;
+    const cost = document.createElement('div');
+    cost.className = 'row cost';
+    const label = document.createElement('label');
+    label.textContent = 'Cost ';
+    const meter = document.createElement('meter');
+    meter.min = 0;
+    meter.max = 2;
+    meter.low = 1;
+    meter.high = 1.5;
+    meter.optimum = 0.5;
+    meter.value = share;
+    meter.setAttribute('aria-label', 'Cost of this patch at 8 voices, against what a layer may spend');
+    label.append(meter);
+    const text = document.createElement('span');
+    text.textContent = `${Math.round(share * 100)}% · ${voices} voice${voices === 1 ? '' : 's'}`;
+    text.title = 'A layer may spend what the classic patch spends with 8 voices. A heavier patch plays fewer voices at once.';
+    cost.append(label, text);
+    const add = document.createElement('div');
+    add.className = 'row';
+    const vp = p.voices[this.slot];
+    const menu = (aria: string, first: string, items: [string, string, boolean][], pick: (v: string) => void) => {
+      const s = document.createElement('select');
+      s.setAttribute('aria-label', aria);
+      const o0 = document.createElement('option');
+      o0.value = '';
+      o0.textContent = first;
+      s.append(o0, ...items.map(([v, t, ok]) => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = t;
+        o.disabled = !ok;
+        return o;
+      }));
+      s.addEventListener('change', () => { if (s.value) pick(s.value); s.value = ''; });
+      return s;
+    };
+    const room = vp.modules.length < CAPS.modules;
+    add.append(menu('Add a module to the voice', '+ module', (Object.keys(CAPS.voice) as VoiceModuleType[]).map((t) => [t, MODULE_NAMES[t], room && vp.modules.filter((m) => m.type === t).length < CAPS.voice[t]]),
+      (t) => this.edit('addModule', { slot: this.slot, type: t })));
+    const envs = vp.mods.filter((m) => m.type === 'env').length;
+    add.append(menu('Add an envelope or LFO to the voice', '+ envelope or LFO', [['env', 'envelope', envs < CAPS.envs], ['lfo', 'LFO', vp.mods.length - envs < CAPS.lfos]],
+      (t) => this.edit('addMod', { slot: this.slot, type: t })));
+    add.append(menu('Add an effect to the channel', '+ channel effect', (Object.keys(FX_NAMES) as ChannelFxType[]).map((t) => [t, FX_NAMES[t],
+      p.channel.length < CAPS.channel && (t !== 'delay' || p.channel.filter((x) => x.type === 'delay').length < CAPS.delay) && (t !== 'reverb' || !p.channel.some((x) => x.type === 'reverb'))]),
+    (t) => this.edit('addChannelFx', { type: t })));
+    f.append(lg, cost, add);
+    return f;
+  }
+
+  /** A card's structure controls: inputs, phase input and output (modules), bypass (effects), move
+   *  and remove. */
+  private wiring(l: Layer, c: Card): HTMLElement | null {
+    const p = l.patch;
+    const vp = p.voices[this.slot];
+    const row = document.createElement('div');
+    row.className = 'row wiring';
+    const button = (text: string, aria: string, fn: () => void, off = false) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = text;
+      b.setAttribute('aria-label', aria);
+      b.disabled = off;
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const check = (text: string, on: boolean, fn: (on: boolean) => void) => {
+      const lab = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = on;
+      box.addEventListener('change', () => fn(box.checked));
+      lab.append(box, ` ${text}`);
+      return lab;
+    };
+    if (c.module) {
+      const id = c.module;
+      const m = vp.modules.find((x) => x.id === id)!;
+      const inputs = (port: Port) => {
+        const g = document.createElement('span');
+        g.className = 'inputs';
+        g.setAttribute('role', 'group');
+        g.setAttribute('aria-label', `${port === 'pm' ? 'Phase input' : 'Input'} of ${id}`);
+        g.append(port === 'pm' ? 'phase in:' : 'in:');
+        const from = vp.cables.filter((x) => x.to === id && x.port === port).map((x) => x.from);
+        for (const o of vp.modules.filter((x) => x.id !== id)) {
+          g.append(check(o.id, from.includes(o.id), (on) => this.edit('setInputs', { slot: this.slot, id, port, from: on ? [...from, o.id] : from.filter((x) => x !== o.id) })));
+        }
+        return g;
+      };
+      if (!SOURCE_TYPES.includes(m.type)) row.append(inputs('in'));
+      if (m.type === 'osc') row.append(inputs('pm'));
+      row.append(check('to output', vp.out.includes(id), (on) => this.edit('setOutputs', { slot: this.slot, ids: on ? [...vp.out, id] : vp.out.filter((x) => x !== id) })));
+      const i = vp.modules.findIndex((x) => x.id === id);
+      row.append(
+        button('↑', `Move ${id} up the rack`, () => this.edit('moveModule', { slot: this.slot, id, to: i - 1 }), i === 0),
+        button('↓', `Move ${id} down the rack`, () => this.edit('moveModule', { slot: this.slot, id, to: i + 1 }), i === vp.modules.length - 1),
+        button('Remove', `Remove ${id} and the routes into it`, () => this.edit('removeModule', { slot: this.slot, id }), vp.modules.length === 1),
+      );
+      if (m.type === 'sampler' && !l.influence?.grain) {
+        const hint = document.createElement('span');
+        hint.className = 'dim';
+        hint.textContent = 'Silent until the layer has a sound source (Influence: File or Listen).';
+        row.append(hint);
+      }
+      return row;
+    }
+    if (c.mod) {
+      const id = c.mod;
+      if (vp.mods[0]?.id === id) return null;
+      row.append(button('Remove', `Remove ${id} and its routes`, () => this.edit('removeMod', { slot: this.slot, id })));
+      return row;
+    }
+    if (c.fx) {
+      const id = c.fx;
+      const i = p.channel.findIndex((x) => x.id === id);
+      const fx = p.channel[i];
+      row.append(
+        check('bypass', fx.bypass, (on) => this.edit('setBypass', { id, bypass: on })),
+        button('←', `Move ${id} earlier in the chain`, () => this.edit('moveChannelFx', { id, to: i - 1 }), i === 0),
+        button('→', `Move ${id} later in the chain`, () => this.edit('moveChannelFx', { id, to: i + 1 }), i === p.channel.length - 1),
+        button('Remove', `Remove ${id} and the routes into it`, () => this.edit('removeChannelFx', { id })),
+      );
+      return row;
+    }
+    return null;
   }
 
   // ---- Mod view
