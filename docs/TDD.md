@@ -4,6 +4,8 @@ Nov 16, 2026 · @Jacob Hammond
 
 This document specifies how each part of the [Earworm PRD](https://claude.ai/artifact/3ZXQPGZdEtMPEqWRHxcQvi) is built. It covers the MVP in full and marks v1 items where they shape MVP design.
 
+The synth engine is being revised from one fixed chain into modular patches with a general modulation system. [synth.md](synth.md) is that design. Where it and this document disagree, synth.md wins; the sections it changes say so.
+
 ## Summary
 
 Earworm is a local-first web app: a Rust audio engine compiled to WebAssembly on the audio thread, Rust analysis code in workers, a TypeScript interface, and one small server function for LLM calls. Nothing else runs on a server.
@@ -23,8 +25,8 @@ Earworm is a local-first web app: a Rust audio engine compiled to WebAssembly on
 Five design decisions shape everything below:
 
 1. **One engine binary, three hosts.** The same WebAssembly module plays live in the worklet, renders exports in a worker, and renders candidates for Influence matching. What you hear is what exports and what gets matched.
-2. **One parameter table.** A single source file defines every parameter. The Rust enum, the TypeScript types, the slider UI and the LLM's JSON schema are all generated from it.
-3. **One fixed resolution order.** State morph, Influence, macros, voice gesture, hit shape and modulators always apply in that order. Section 5 specifies it.
+2. **One module table.** A single source file defines every module type and its parameters. The Rust descriptors, the TypeScript types and the slider UI are generated from it. A sound is a patch of those modules ([synth.md](synth.md)).
+3. **One fixed resolution order.** State morph, automation, Influence, layer routes (macros and other layer sources), then one sum of every per-voice route (envelopes, LFOs, note and hit data, sung features), always in that order. [synth.md](synth.md) "Order of evaluation" specifies it.
 4. **One feature-frame format.** All analysis first reduces audio to frames at 100 per second. Melody, beats, gestures, hit shapes and Influence are all computed from those frames. The same frames drive the synth live during capture, so Live follow and playback are one code path.
 5. **The sequencer lives in the engine.** The interface never schedules a note. It edits data; the engine plays it against the sample clock.
 
@@ -119,20 +121,21 @@ interface Project  { schema: number; id: string; name: string; sections: Section
 interface Section  { id: string; feel: 'grid' | 'free'; beats?: number; seconds?: number;
                      bpm: number; repeats: number; rampMs: number; clips: Record<string, Clip> }
 interface Layer    { id: string; kind: 'melody' | 'beat' | 'texture'; color: number;
-                     level: number; pan: number; mute: boolean;
+                     level: number; pan: number; mute: boolean; patch: Patch;
                      states: State[]; influence?: Influence; tune: Tune; depth: GestureDepth;
-                     kit?: KitSlot[] }                       // beat layers: four slots
-interface State    { id: string; base: ParamSet; macros: number[]; influenceAmount: number }
+                     kit?: KitSlot[] }                       // beat layers: four slots, each with its own voice patch
+interface State    { id: string; values: Values; macros: number[]; influenceAmount: number }
 interface Influence{ target: ParamSet; mask: number; source: BlobRef; grain?: BlobRef }
 interface Tune     { snap: number; speed: number; slides: 'glide' | 'gliss' | 'jump';
                      vibrato: number; levelOut: number; scale: Scale; refCents: number }
 interface GestureDepth { loud: number; open: number; hard: number; breath: number; mouth: number }
 
 type Clip = MelodyClip | BeatClip | TextureClip;
-interface ClipBase   { take: string; takes: string[]; loopLen: number; timeSnap: number; morph: MorphMarker[] }
+interface ClipBase   { take: string; takes: string[]; loopLen: number; timeSnap: number; morph: MorphMarker[];
+                       auto: AutoLane[] }
 interface MelodyClip extends ClipBase { notes: Note[]; warp: WarpAnchor[]; edits: CurveEdit[] }
 interface BeatClip   extends ClipBase { hits: Hit[]; follow: number; kinds: number }
-interface Note { id: string; t: number; dur: number; cents: number; hard: number }
+interface Note { id: string; t: number; dur: number; cents: number; hard: number; vel: number }
 interface Hit  { id: string; t: number; slot: number; strength: number; shape: HitShape }
 interface HitShape { attack: number; burst: number; cents: number | null; bend: number;
                      hold: number; vowel: number; tone: number; endStop: number; endClick: number }
@@ -140,6 +143,8 @@ interface Take { id: string; audio: BlobRef; frames: BlobRef; rate: number; late
 interface MorphMarker { t: number; state: string; lenMs: number; shape: 'line' | 'ease' | 'late' | 'step' | 'wobble' }
 interface WarpAnchor  { takeSec: number; clipT: number }
 ```
+
+`Patch`, `Values` (normalized values keyed `<module>.<param>`) and `AutoLane` are defined in [synth.md](synth.md) "Serialization". `ParamSet` remains the 96-value Klont vocabulary that Influence targets use.
 
 ### Feature frames
 
@@ -157,6 +162,8 @@ A take's `frames` blob holds one 24-float record per 10 ms. Every analysis and e
 | 7 | Voiced, unvoiced or silent | 0, 1 or 2 |
 | 8 to 23 | Vowel shape: 16 band levels with loudness and the singer's average removed | dB |
 
+Intensity, the vocal-effort feature the modulation system uses, is not a slot. It is derived from the band slots whenever a frame is read ([synth.md](synth.md) "Sources"), so the format and every stored take stay as they are.
+
 ### Time
 
 - **Notes and hits live in ticks** in gridded sections, so a tempo change re-times them with no data change.
@@ -171,6 +178,8 @@ A take's `frames` blob holds one 24-float record per 10 ms. Every analysis and e
 - **Previews skip the document.** While a slider or note is being dragged, values go straight to the control ring. The command is committed on release.
 
 ## Parameter system
+
+This section describes the fixed parameter table the engine was built on through M5. Under the modular revision ([synth.md](synth.md)) a sound is a patch of modules, each module's parameters come from one module table, and these 96 parameters remain as the **Klont vocabulary**: the values of the classic patch, which Influence matching measures and old projects migrate from. The resolution order below is replaced by synth.md "Order of evaluation".
 
 Every sound is 64 scalar parameters plus two 16-band shapes: 96 numbers, each stored normalized from 0 to 1. One table defines them, and one fixed order turns stored values into what the DSP uses.
 
@@ -204,6 +213,8 @@ macros    = { bright = 0.6, body = -0.2 }   # weights into the macro matrix
 
 There are no switches. Filter type is a morph value, and each LFO has a depth per destination instead of a destination selector. That keeps every pair of sounds interpolable.
 
+Under the modular revision interpolation is kept a different way: the states of one layer share one patch structure, so a morph blends values with the same keys. Modulation destinations become routes in a matrix, and a few stepped values switch at the midpoint of a morph ([synth.md](synth.md) "Structure per layer, values per state").
+
 ### Resolution order
 
 Stored values become DSP values through eight steps, always in this order.
@@ -227,13 +238,13 @@ p^{(2)}_i = (1 - a\,m_{g(i)})\,b_i + a\,m_{g(i)}\,t_i
 p^{(3)}_i = \operatorname{clamp}\!\Big(p^{(2)}_i + \sum_{k=1}^{8} W_{k,i}\,(2u_k - 1),\; 0,\; 1\Big)
 ```
 
-Here b is the morphed base, t the Influence target, a the amount, m the 0-or-1 mask for the parameter's aspect group, u the eight macro values and W the sparse macro weight matrix from the table.
+Here b is the morphed base, t the Influence target, a the amount, m the 0-or-1 mask for the parameter's aspect group, u the eight macro values and W the sparse macro weight matrix from the table. Under the modular revision W is the set of amounts of the layer's macro routes, and the same projection drives the macro sliders.
 
 ### What the sliders show
 
 "All the sliders move as it captures" is implemented from the meter block, not by changing stored values.
 
-- **Two snapshots per block.** The engine publishes the selected layer's values after step 3 (the stored sound) and after step 5 (the sound with the voice applied).
+- **Two snapshots per block.** The engine publishes the selected layer's values after step 3 (the stored sound) and after step 5 (the sound with the voice applied). Under the modular revision these are steps 4 and 6 of synth.md's order, over the layer's whole value vector.
 - **Parameter sliders** draw a fixed thumb at the stored value and a live thumb at the step-5 value.
 - **Macro sliders** show the gesture projected back onto each macro's weight vector:
 
@@ -246,6 +257,8 @@ u^{\text{live}}_k = u_k + \frac{W_k \cdot (p^{(5)} - p^{(3)})}{2\,\lVert W_k \rV
 ## Klont DSP
 
 Each layer runs up to 8 voices through per-voice modules and then one set of per-layer modules. Control values update every 32 samples; audio-rate loops are written for 128-bit SIMD.
+
+The table below is the fixed chain the engine was built with. Under the modular revision these modules become the module catalog, and this chain becomes the **classic patch**: one patch among many, wired as listed here ([synth.md](synth.md) "Module catalog" and "The classic patch"). Envelopes and Motion become modulation sources rather than modules.
 
 | Module | Runs | Algorithm |
 | --- | --- | --- |
@@ -367,7 +380,7 @@ The voice plays the synth while it is being sung. So every quantity that shapes 
 | 9 | Silence must be silent | An adaptive noise floor and a gate with hysteresis, 5 ms attack and 60 ms release |
 | 10 | The mic must hear only the voice | Browser echo cancellation is off, so speaker playback would enter the analysis. M0 prompts for wired headphones; the bleed detector it first used was removed because it muted Live follow with headphones on |
 | 11 | Channels arrive with different delays | Level and vowel shape lead; pitch trails by about 12 ms. Live uses each as soon as it exists. Stored frames are shifted so channels line up |
-| 12 | Output is parameters, not features | Frames map to parameter offsets through fixed linear maps, which is what lets every slider move |
+| 12 | Output is parameters, not features | Frames reach parameters through modulation routes, which is what lets every slider move. The default routes of every patch reproduce the original fixed linear maps; the user can change them ([synth.md](synth.md) "Today's fixed maps, as default routes") |
 | 13 | Tuning must be causal | Section 7's autotune uses only past frames. Glissando is free; Jump costs 60 ms |
 | 14 | Some things cannot be known live | Note boundaries, scale, tempo, vibrato rate and kit grouping need the whole take. Live follow does not need them, because the synth follows the continuous voice |
 
@@ -516,6 +529,7 @@ Controls are Svelte components over one full-window WebGL2 canvas. Anything that
 ### Input
 
 - **Pointer events** for everything, with capture on drag.
+- **MIDI.** Web MIDI on the main thread plays notes and sets mapped values; mod wheel, pitch bend and pressure are modulation sources. Messages go through the control ring and apply at the next block ([synth.md](synth.md) "Live use").
 - **Drags preview through the control ring** and commit one command on release.
 - **Hold to capture.** Key down arms the layer and starts Live follow in the same frame. Key up closes the take and queues the second pass.
 - **Klont gestures.** Pull maps to Bright, squash to Body, shake speed to Wobble. Each is a macro drag underneath.
@@ -540,7 +554,7 @@ OPFS
 IndexedDB
   projects      latest snapshot of each project document
   journal       append-only patch groups since the snapshot
-  settings      device calibrations, taught kit, per-mic memory
+  settings      device calibrations, taught kit, per-mic memory, user presets, MIDI mappings
 ```
 
 - **Why a worker.** The fast synchronous file handles exist only in workers. The [origin private file system](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) has been available across browsers since March 2023.
@@ -556,6 +570,7 @@ IndexedDB
 - `schema` is an integer on the document. Migrations are pure functions from version n to n + 1, run in order on load and on import.
 - Parameter ids are stable strings. A parameter added later takes its `neutral` value in old projects, so they sound the same.
 - A removed parameter stays in a tombstone list so its id is never reused.
+- The move to schema 4 (modular patches) rewrites each layer as the classic patch with the same sound, and starts a fresh undo history, because old journal entries name paths that no longer exist ([synth.md](synth.md) "Existing projects and presets").
 
 ## LLM service
 
@@ -570,7 +585,7 @@ One stateless function on the app's own origin holds the OpenAI key and exposes 
 ### Implementation
 
 - **API.** The OpenAI Responses API with a strict JSON Schema in `text.format`, per the [Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
-- **Schema for `/api/sound`.** Generated by `paramgen`: one number per scalar parameter id and two 16-number arrays, all required, no additional properties.
+- **Schema for `/api/sound`.** Generated per request from the keys of the layer's patch ([synth.md](synth.md) "Influence and the LLM function"): one number per value key, all required, no additional properties. For the classic patch that is the 96-parameter table.
 - **Schema for `/api/next`.** A discriminated union over about 20 command names with typed arguments. These are the same commands the interface dispatches, so every suggestion is undoable.
 - **Validation.** The function re-validates the reply, clamps every number to 0..1, and maps a refusal or incomplete reply to a typed error the interface shows as "no idea, try other words".
 - **Prompt.** A fixed prefix with the generated parameter dictionary and twelve presets as description-to-values examples, then the user's text and current values. The fixed prefix is identical across calls so it can be cached.
@@ -595,7 +610,7 @@ Prices are from [OpenAI's pricing page](https://developers.openai.com/api/docs/p
 Export runs the same engine module in a worker, calling `ew_render` in a loop instead of being driven by the audio clock.
 
 - **Audio file.** The export worker loads the compiled tables, renders 48 kHz stereo in 4,096-frame chunks, and stops when the track has ended and output has stayed below -80 dB for one second, or 10 s after the end. Output is 24-bit WAV with dither, written to the origin private file system and then offered as a download.
-- **Same sound.** Noise generators are seeded and LFO phases reset at render start, so two exports of one project are bit-identical and match live playback apart from free-running LFO phase.
+- **Same sound.** Noise generators are seeded and LFO phases reset at render start, so two exports of one project are bit-identical. Play does the same reset, so live playback without live input matches an export from the same point ([synth.md](synth.md) "Deterministic playback").
 - **Freeze (v1).** One layer is rendered solo for the section's loop length into `freeze/`. The engine swaps that layer for a streaming player and frees its voices. Unfreeze swaps back.
 - **Stems (v1).** One solo pass per layer, same code.
 - **MIDI (v1).** A type 1 file with one track per layer. Notes come from the tuned note list. Pitch bend carries glides, controller 11 carries loudness and controller 74 carries openness. Beat slots map to four fixed drum notes on channel 10.
@@ -654,7 +669,7 @@ Audio never leaves the device, and the only network calls after load are the thr
 
 ## Build order
 
-Six milestones lead to the MVP, each closed by one measurable gate, and nothing past M0 starts until both prototypes pass.
+Six milestones lead to the MVP, each closed by one measurable gate, and nothing past M0 starts until both prototypes pass. The modular synth revision adds five stages after them, S1 to S5, each with its own checks ([synth.md](synth.md) "Build plan").
 
 &#91;embedded content: build roadmap · six milestones, one gate each\]
 
