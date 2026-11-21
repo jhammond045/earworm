@@ -862,6 +862,20 @@ export const commands = {
     return [{ op: 'set', path: ['layers', i, 'patch'], value: next }];
   },
 
+  /** An envelope of voice patch `slot` restarts at each sung onset (`onset`) or only at the note. */
+  setEnvTrigger(doc: Project, a: { layer: string; slot: number; env: string; trigger: 'note' | 'onset' }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const vp = l.patch.voices[a.slot] ?? fail(`no voice patch ${a.slot}`);
+    const k = vp.mods.findIndex((m) => m.id === a.env && m.type === 'env');
+    if (k < 0) fail(`no envelope ${a.env}`);
+    if (a.trigger !== 'note' && a.trigger !== 'onset') fail('trigger must be note or onset');
+    if ((vp.mods[k].trigger ?? 'note') === a.trigger) return [];
+    const mods = vp.mods.map((m, j) => (j === k ? { ...m, trigger: a.trigger } : m));
+    const patch = { ...l.patch, voices: l.patch.voices.map((v, j) => (j === a.slot ? { ...v, mods } : v)) };
+    return [{ op: 'set', path: ['layers', i, 'patch'], value: patch }];
+  },
+
   /** Remove a route and its amount from every state. */
   removeRoute(doc: Project, a: { layer: string; scope: Scope; id: string }): Op[] {
     const i = layIdx(doc, a.layer);

@@ -676,7 +676,7 @@ impl Layer {
             };
         }
         match frame {
-            Some(f) if self.lr_features => {
+            Some(f) if self.lr_features || self.metered => {
                 let mut x = features(f);
                 if x[0].is_finite() {
                     self.held_pitch = x[0];
@@ -1267,9 +1267,9 @@ impl Layer {
         &self.lsrc
     }
 
-    /// Wants its sung features each tick (a layer route reads them).
+    /// Wants its sung features each tick: a layer route reads them, or the meters show them.
     pub fn wants_features(&self) -> bool {
-        self.lr_features
+        self.lr_features || self.metered
     }
 
     /// Route outputs for the meters: voice patch k's route i at k * MAX_ROUTES + i (from the

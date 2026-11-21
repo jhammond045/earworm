@@ -49,6 +49,7 @@ import { recordFromFrame } from './live-ribbon';
 import { songSeconds, uploadsToSong } from './mix';
 import { tuneFromTake } from './tune';
 import { Ribbon } from '../live/ribbon';
+import { SynthPanel } from './synth-ui';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SHAPE: HitShape = { attack: 0.004, burst: 0.4, cents: null, bend: 0, hold: 0.05, vowel: 0.4, tone: 0.6, endStop: 0, endClick: 0 };
@@ -108,6 +109,10 @@ async function main(): Promise<void> {
   function acted(kind: Advance): void {
     if (tutorial.event(kind)) paintTour();
   }
+  const synth = new SynthPanel(app, () => layer(), (k) => acted(k), {
+    patch: $('soundPatch'), mod: $('soundMod'), pick: $<HTMLSelectElement>('modPick'), pickBox: $('modPickBox'),
+    views: [...document.querySelectorAll<HTMLButtonElement>('[data-view]')], simple: $('soundSimple'),
+  });
 
   function paintTour(): void {
     document.querySelectorAll('[data-tour].tour-on').forEach((e) => e.classList.remove('tour-on'));
@@ -119,7 +124,12 @@ async function main(): Promise<void> {
     $('tourBody').textContent = step.body;
     btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
     document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
-    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'state-name' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'teach' || step.target === 'pan' || step.target === 'tune' || step.target === 'source' || step.target === 'hold-note';
+    const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'state-name' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'teach' || step.target === 'pan' || step.target === 'tune' || step.target === 'source' || step.target === 'hold-note'
+      || ['sound-views', 'patch-view', 'mod-view', 'mod-pick', 'env1', 'route-amount', 'matrix', 'shaper', 'features'].includes(step.target);
+    if (['env1', 'route-amount', 'matrix', 'shaper', 'features'].includes(step.target)) {
+      const want = step.target === 'env1' ? 'patch' : 'mod';
+      if (synth.view !== want) synth.setView(want);
+    }
     const panel = step.target === 'layers' || step.target === 'section-edit' || step.target === 'feel' || step.target === 'layer-edit' ? 'layers' : soundish ? 'sound' : step.target === 'pattern' || step.target === 'morph' || step.target === 'timeline' || step.target === 'quantize' || step.target === 'takes' ? 'pattern' : '';
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
@@ -325,6 +335,7 @@ async function main(): Promise<void> {
       follow.parentElement!.hidden = l.kind !== 'beat';
       if (document.activeElement !== follow) follow.value = String(Math.round(l.follow * 100));
     }
+    synth.render();
   }
 
   function renderChrome(): void {
@@ -1639,6 +1650,7 @@ async function main(): Promise<void> {
         singing?.tune.scale ?? 0, singing?.tune.root ?? 0, ribbonColors, true);
     }
     const m = app.readMeters();
+    synth.frame(m);
     const secNow = section();
     if (m && secNow) {
       const playing = m[M_PLAYING] === 1;

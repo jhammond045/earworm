@@ -27,7 +27,11 @@ export type Advance =
   | 'teach'
   | 'take'
   | 'wav'
-  | 'bands';
+  | 'bands'
+  | 'view'
+  | 'pick'
+  | 'route'
+  | 'amount';
 
 export interface LessonStep {
   id: string;
@@ -178,6 +182,22 @@ export const LESSONS: Lesson[] = [
         body: 'Export downloads one zip: the project and the audio it uses. Import reads that zip back, including a project saved by an older version of Earworm. Clean up drops takes and sources nothing in the song or the undo stack still needs.' },
       { id: 'demo', title: 'Demos', target: 'help', advance: 'next', action: 'Done',
         body: 'Demos are small songs you can open and edit: a melody, a beat, and a texture with states. They are ordinary projects, so Save as keeps your changes without replacing the built-in one.' },
+    ],
+  },
+  {
+    id: 'hardness',
+    title: 'Make hardness set the attack',
+    blurb: 'Route a source to a knob, then shape the route.',
+    demo: 'melody',
+    steps: [
+      { id: 'patch', title: 'Open the Patch view', target: 'patch-view', advance: 'view', action: 'Press Patch',
+        body: 'The Sound panel has three views. Simple is the preset, the states and the macros. Patch shows every knob of the selected layer’s sound. Mod lists the routes that move those knobs.' },
+      { id: 'pick', title: 'Pick hardness', target: 'mod-pick', advance: 'pick', action: 'Choose Note hardness',
+        body: 'Modulate with picks a source. Note hardness is how hard each note starts: the strength of a sung onset, or a written note’s hardness. A + appears beside every knob it can reach.' },
+      { id: 'route', title: 'Route it to the attack', target: 'env1', advance: 'route', action: 'Press + beside attack in env1',
+        body: 'env1 is the envelope that shapes each note’s level. Press + beside its attack. The slider gets a bar showing how far the route can move it, and a badge naming the source.' },
+      { id: 'amount', title: 'Harder means quicker', target: 'route-amount', advance: 'amount', action: 'Drag the amount below 0',
+        body: 'The Mod view shows the new route. Drag Amount left of the middle: the harder a note starts, the shorter its attack. The curve above it shapes how hardness maps onto the attack.' },
     ],
   },
 ];

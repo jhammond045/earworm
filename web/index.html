@@ -149,7 +149,17 @@
     </main>
     <aside class="panel" id="panel-sound">
       <h2>Sound</h2>
-      <div class="sound">
+      <div class="row views" data-tour="sound-views">
+        <span role="tablist" aria-label="Sound views" class="row">
+          <button type="button" role="tab" data-view="simple" aria-selected="true">Simple</button>
+          <button type="button" role="tab" data-view="patch" aria-selected="false" data-tour="patch-view">Patch</button>
+          <button type="button" role="tab" data-view="mod" aria-selected="false" data-tour="mod-view">Mod</button>
+        </span>
+        <label id="modPickBox" data-tour="mod-pick" hidden>Modulate with <select id="modPick" aria-label="Source to route: pick one, then press + beside a slider"></select></label>
+      </div>
+      <div class="sound patchview" id="soundPatch" hidden></div>
+      <div class="sound modview" id="soundMod" hidden></div>
+      <div class="sound" id="soundSimple">
         <fieldset>
           <legend>Layer</legend>
           <div class="row">

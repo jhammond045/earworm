@@ -143,3 +143,26 @@ fn the_benchmark_routes_all_run_every_tick() {
     assert!(seen.iter().all(|&s| s), "{seen:?}");
     assert!(e.meter()[M_PEAK_L] > 0.01);
 }
+
+#[test]
+fn a_shaper_edit_keeps_the_notes_sounding() {
+    let mut e = Engine::new(SR, 128);
+    let a = Extra { pol: POL_BOTH, ..Extra::new(SRC_MOD, 3, ExtraTarget::V("filter1", P::filter::RES), 0.3) };
+    let bent = Extra { bend: 0.5, rise_ms: 20.0, ..a };
+    let load = |e: &mut Engine, x: &[Extra]| assert_eq!(e.load_bytes(0, LOAD_PATCH, &classic::patch_blob_ext(KIND_MELODY, 0, x, &[], 0, true)), LOAD_OK);
+    load(&mut e, &[a]);
+    e.push(MSG_NOTE_ON, 0, 0, 0, 5700.0, 0);
+    for _ in 0..40 {
+        e.render(128);
+    }
+    assert_eq!(e.meter()[M_LAYER_VOICES], 1.0);
+    // Only the shaper changed: the note keeps sounding.
+    load(&mut e, &[bent]);
+    e.render(128);
+    assert_eq!(e.meter()[M_LAYER_VOICES], 1.0, "a shaper edit silenced the layer");
+    assert!(e.meter()[M_PEAK_L] > 1e-3);
+    // Another route is a structure change: the layer starts over.
+    load(&mut e, &[bent, a]);
+    e.render(128);
+    assert_eq!(e.meter()[M_LAYER_VOICES], 0.0);
+}
