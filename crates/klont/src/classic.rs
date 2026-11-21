@@ -375,25 +375,86 @@ impl Blob {
     }
 }
 
+/// A route added to the classic patch (tests and the benchmark): its source,
+/// target (a module or mod name of the voice patch and a value offset, a
+/// layer LFO's value, or pitch), shaper and starting amount (real units).
+#[derive(Clone, Copy, Debug)]
+pub struct Extra {
+    pub src: u16,
+    pub arg: u16,
+    pub target: ExtraTarget,
+    pub mode: u8,
+    pub pol: u8,
+    pub amount: f32,
+    pub unit: f32,
+    pub in_lo: f32,
+    pub in_hi: f32,
+    pub via: (u16, u16),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ExtraTarget {
+    /// (module name, value offset) in the voice patch (kit slot 1's on a beat layer, for a layer route).
+    V(&'static str, usize),
+    Pitch,
+}
+
+impl Extra {
+    pub const fn new(src: u16, arg: u16, target: ExtraTarget, amount: f32) -> Extra {
+        Extra { src, arg, target, mode: MODE_ADD, pol: POL_UP, amount, unit: 1.0, in_lo: 0.0, in_hi: 1.0, via: (SRC_NONE, 0) }
+    }
+}
+
 /// The LOAD_PATCH blob of the classic patch for a layer kind. Its grains
 /// read sample `sample` (the app gives layer i sample i).
 pub fn patch_blob(kind: u32, sample: u32) -> Vec<u8> {
+    patch_blob_ext(kind, sample, &[], &[], 0)
+}
+
+/// The classic patch with `voice` routes added to every voice patch, `layer`
+/// routes added to the layer, and `lfos` layer LFOs (sine, 1 Hz). The added
+/// routes' amounts and the LFOs' values follow the classic values.
+pub fn patch_blob_ext(kind: u32, sample: u32, voice: &[Extra], layer: &[Extra], lfos: usize) -> Vec<u8> {
     let l = layout(kind);
     let rs = routes();
     let n_vp = l.ranges.len();
+    let classic_n = l.vals.len();
+    let lfo_base = classic_n;
+    let voice_amt = |vp: usize, i: usize| lfo_base + lfos * P::lfo::N + vp * voice.len() + i;
+    let layer_amt = |i: usize| lfo_base + lfos * P::lfo::N + n_vp * voice.len() + i;
+    let n_values = layer_amt(layer.len());
+    let mut descs: Vec<usize> = l.vals.iter().map(|v| v.desc).collect();
+    let mut init: Vec<f32> = l.vals.iter().map(|v| P::to_norm(v.desc, v.fixed)).collect();
+    for _ in 0..lfos {
+        let t = P::module_type(P::T_LFO).unwrap();
+        for p in t.params {
+            descs.push(p.desc as usize);
+            init.push(if p.name == "rate" { P::to_norm(p.desc as usize, 1.0) } else { P::to_norm(p.desc as usize, P::desc(p.desc as usize).neutral) });
+        }
+    }
+    for _ in 0..n_vp {
+        for x in voice {
+            descs.push(P::D_ROUTE_AMOUNT);
+            init.push(P::to_norm(P::D_ROUTE_AMOUNT, x.amount));
+        }
+    }
+    for x in layer {
+        descs.push(P::D_ROUTE_AMOUNT);
+        init.push(P::to_norm(P::D_ROUTE_AMOUNT, x.amount));
+    }
     let mut b = Blob(Vec::new());
     b.u(PATCH_MAGIC);
-    b.u(l.vals.len() as u32);
+    b.u(n_values as u32);
     b.u(n_vp as u32);
     b.u(CHANNEL.len() as u32);
-    b.u(l.macro_routes.len() as u32);
+    b.u((l.macro_routes.len() + layer.len()) as u32);
     b.u(l.width as u32);
-    b.u(0); // no layer LFOs
-    for v in &l.vals {
-        b.u(v.desc as u32);
+    b.u(lfos as u32);
+    for &d in &descs {
+        b.u(d as u32);
     }
-    for v in &l.vals {
-        b.f(P::to_norm(v.desc, v.fixed));
+    for &x in &init {
+        b.f(x);
     }
     for vp in 0..n_vp {
         let (lo, hi) = l.ranges[vp];
@@ -401,7 +462,7 @@ pub fn patch_blob(kind: u32, sample: u32) -> Vec<u8> {
         b.u(CABLES.len() as u32);
         b.u(1);
         b.u(MODS.len() as u32);
-        b.u(rs.len() as u32);
+        b.u((rs.len() + voice.len()) as u32);
         b.u(lo as u32);
         b.u(hi as u32);
         b.u(l.voicing[vp] as u32);
@@ -464,10 +525,17 @@ pub fn patch_blob(kind: u32, sample: u32) -> Vec<u8> {
                 b.f(p[1]);
             }
         }
+        for (i, x) in voice.iter().enumerate() {
+            extra_route(&mut b, x, |m, off| l.base(vp, m) + off, voice_amt(vp, i));
+        }
     }
     for (name, code) in CHANNEL {
         b.u(code);
         b.u(l.base(0, name) as u32);
+    }
+    for k in 0..lfos {
+        b.u(P::T_LFO);
+        b.u((lfo_base + k * P::lfo::N) as u32);
     }
     for (k, _, targets, amount, w) in &l.macro_routes {
         b.u(SRC_MACRO as u32);
@@ -495,7 +563,47 @@ pub fn patch_blob(kind: u32, sample: u32) -> Vec<u8> {
             b.f(0.0);
         }
     }
+    for (i, x) in layer.iter().enumerate() {
+        extra_route(&mut b, x, |m, off| l.base(0, m) + off, layer_amt(i));
+    }
     b.0
+}
+
+fn extra_route(b: &mut Blob, x: &Extra, at: impl Fn(&'static str, usize) -> usize, amount: usize) {
+    b.u(x.src as u32);
+    b.u(x.arg as u32);
+    match x.target {
+        ExtraTarget::V(m, off) => {
+            b.u(TGT_VALUE as u32);
+            b.u(1);
+            b.u(at(m, off) as u32);
+        }
+        ExtraTarget::Pitch => {
+            b.u(TGT_PITCH as u32);
+            b.u(0);
+            b.u(0);
+        }
+    }
+    for _ in 1..MAX_TARGETS {
+        b.u(0);
+    }
+    b.u(amount as u32);
+    b.u(x.via.0 as u32);
+    b.u(x.via.1 as u32);
+    b.u(x.mode as u32);
+    b.u(x.pol as u32);
+    b.u(0);
+    b.u(GROUP_NONE as u32);
+    b.f(x.unit);
+    b.f(x.in_lo);
+    b.f(x.in_hi);
+    b.f(0.0);
+    b.f(0.0);
+    b.f(0.0);
+    b.u(0);
+    for _ in 0..2 * MAX_POINTS {
+        b.f(0.0);
+    }
 }
 
 /// Influence group bit of each value: the bound parameter's aspect group
