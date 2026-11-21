@@ -1223,40 +1223,8 @@ impl Layer {
         }
         self.update_sources(frame);
         // During a fade the old patch plays on its values as they stand; the new values wait.
-        let frozen = self.pending;
-        if frozen {
-        } else if self.dirty {
-            self.resolve();
-        } else if self.lr_dynamic {
-            self.layer_routes(false);
-        }
-        let n = self.patch.n_values;
-        if frozen {
-        } else if !self.settled {
-            let mut moving = false;
-            for i in 0..n {
-                let d = self.target[i] - self.norm[i];
-                if d.abs() > 1e-6 {
-                    self.norm[i] += self.smooth[i] * d;
-                    moving = true;
-                } else {
-                    self.norm[i] = self.target[i];
-                }
-            }
-            self.map_all();
-            self.settled = !moving;
-        } else if self.lr_dynamic {
-            // Settled apart from what the layer routes move: smooth and map only those.
-            for x in 0..self.lr_n {
-                let i = self.lr_list[x] as usize;
-                let d = self.target[i] - self.norm[i];
-                if d.abs() > 1e-6 {
-                    self.norm[i] += self.smooth[i] * d;
-                } else {
-                    self.norm[i] = self.target[i];
-                }
-                self.real[i] = P::to_real(self.patch.descs[i] as usize, self.norm[i]);
-            }
+        if !self.pending {
+            self.advance_values();
         }
         let p = &*self.patch;
         let r = &self.real;
@@ -1303,6 +1271,42 @@ impl Layer {
         // Fixed per tick so the ramp does not depend on how the tick is split.
         self.gl_step = (self.gl_t - self.gl) / TICK as f32;
         self.gr_step = (self.gr_t - self.gr) / TICK as f32;
+    }
+
+    /// Steps 3 and 4 when needed, then the per-tick smoothing and mapping of the values.
+    fn advance_values(&mut self) {
+        if self.dirty {
+            self.resolve();
+        } else if self.lr_dynamic {
+            self.layer_routes(false);
+        }
+        let n = self.patch.n_values;
+        if !self.settled {
+            let mut moving = false;
+            for i in 0..n {
+                let d = self.target[i] - self.norm[i];
+                if d.abs() > 1e-6 {
+                    self.norm[i] += self.smooth[i] * d;
+                    moving = true;
+                } else {
+                    self.norm[i] = self.target[i];
+                }
+            }
+            self.map_all();
+            self.settled = !moving;
+        } else if self.lr_dynamic {
+            // Settled apart from what the layer routes move: smooth and map only those.
+            for x in 0..self.lr_n {
+                let i = self.lr_list[x] as usize;
+                let d = self.target[i] - self.norm[i];
+                if d.abs() > 1e-6 {
+                    self.norm[i] += self.smooth[i] * d;
+                } else {
+                    self.norm[i] = self.target[i];
+                }
+                self.real[i] = P::to_real(self.patch.descs[i] as usize, self.norm[i]);
+            }
+        }
     }
 
     /// Read voice `v`'s curve frame at its clip time (held after the note's
