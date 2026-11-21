@@ -415,6 +415,9 @@ fn listen_scene() -> [f64; 4] {
             let t = Instant::now();
             run(&mut e, 20_000);
             best[i] = best[i].min(t.elapsed().as_secs_f64() * 1e6 / 20_000.0);
+            // Layer 0 (the metered one) listens in the last two cases: its sung volume must come from the mic.
+            let volume = e.meter()[M_LAYER_SRC + 8 + 3 + 2 + 1];
+            assert_eq!(n > 0, volume.is_finite() && volume > 0.0, "listening {n}: layer 0's sung volume {volume}");
         }
     }
     let block_us = BLOCK as f64 / SR as f64 * 1e6;
