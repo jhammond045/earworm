@@ -12,6 +12,9 @@ import { classicPatch, valuesFromVocab, vocabFromValues, withVocab } from '../sy
 import { isLayerSource, layoutOf, patchBlob, type Patch, type Route } from '../synth/patch';
 import { amountKey, amountNorm, checkRoute, defaultAmount, findRoute, makeRoute, nextRouteId, withRoute, withRouteFields, withoutRoute,
   type RouteFields, type Scope } from '../synth/routes';
+import * as S from '../synth/structure';
+import type { ChannelFxType, Port, VoiceModuleType } from '../synth/patch';
+import { parsePreset, type PresetFile } from '../presets/presets';
 import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro } from './types';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MorphShape, Note, Project, Section, State, Take, Tune } from './types';
@@ -893,6 +896,68 @@ export const commands = {
     ];
   },
 
+  // ---- structure (stage S3): an edit to the layer, shared by every state
+
+  /** Add a voice module to voice patch `slot`; it gets its starting values in every state. */
+  addModule(doc: Project, a: { layer: string; slot: number; type: VoiceModuleType }): Op[] {
+    return structure(doc, a.layer, (p) => S.addModule(p, a.slot, a.type).patch);
+  },
+  /** Remove a voice module, its cables, the routes into its values, and its values. */
+  removeModule(doc: Project, a: { layer: string; slot: number; id: string }): Op[] {
+    return structure(doc, a.layer, (p) => S.removeModule(p, a.slot, a.id));
+  },
+  /** The modules that feed `id`'s input (`in`) or an oscillator's phase input (`pm`). */
+  setInputs(doc: Project, a: { layer: string; slot: number; id: string; port: Port; from: string[] }): Op[] {
+    return structure(doc, a.layer, (p) => S.setInputs(p, a.slot, a.id, a.port, a.from));
+  },
+  /** The modules summed into the voice output. */
+  setOutputs(doc: Project, a: { layer: string; slot: number; ids: string[] }): Op[] {
+    return structure(doc, a.layer, (p) => S.setOutputs(p, a.slot, a.ids));
+  },
+  /** Move a voice module in the rack. */
+  moveModule(doc: Project, a: { layer: string; slot: number; id: string; to: number }): Op[] {
+    return structure(doc, a.layer, (p) => S.moveModule(p, a.slot, a.id, a.to));
+  },
+  addMod(doc: Project, a: { layer: string; slot: number; type: 'env' | 'lfo' }): Op[] {
+    return structure(doc, a.layer, (p) => S.addMod(p, a.slot, a.type).patch);
+  },
+  removeMod(doc: Project, a: { layer: string; slot: number; id: string }): Op[] {
+    return structure(doc, a.layer, (p) => S.removeMod(p, a.slot, a.id));
+  },
+  addChannelFx(doc: Project, a: { layer: string; type: ChannelFxType }): Op[] {
+    return structure(doc, a.layer, (p) => S.addChannelFx(p, a.type).patch);
+  },
+  removeChannelFx(doc: Project, a: { layer: string; id: string }): Op[] {
+    return structure(doc, a.layer, (p) => S.removeChannelFx(p, a.id));
+  },
+  moveChannelFx(doc: Project, a: { layer: string; id: string; to: number }): Op[] {
+    return structure(doc, a.layer, (p) => S.moveChannelFx(p, a.id, a.to));
+  },
+  /** Bypass a channel effect: not a structure change in the engine, so notes keep sounding. */
+  setBypass(doc: Project, a: { layer: string; id: string; bypass: boolean }): Op[] {
+    if (typeof a.bypass !== 'boolean') fail('bypass must be true or false');
+    return structure(doc, a.layer, (p) => S.setBypass(p, a.id, a.bypass));
+  },
+
+  /** Load a preset (docs/synth.md "Serialization"): its patch replaces the layer's, every state
+   *  takes its values (a key it lacks at its starting value), the edited state its macros, and a
+   *  beat layer its kit pitches. A kit preset needs a beat layer and the others one that is not. */
+  loadPreset(doc: Project, a: { layer: string; state: string; preset: PresetFile }): Op[] {
+    const i = layIdx(doc, a.layer);
+    const l = doc.layers[i];
+    const si = stateIdx(l, a.state);
+    const pr = parsePreset(a.preset);
+    if ((pr.kind === 'beat') !== (l.kind === 'beat')) fail(pr.kind === 'beat' ? `"${pr.name}" is a kit and needs a beat layer` : `"${pr.name}" is not a kit, so it does not fit the beat layer "${l.name}"`);
+    const values = S.revalue(pr.patch, pr.values);
+    const ops: Op[] = [{ op: 'set', path: ['layers', i, 'patch'], value: pr.patch }];
+    l.states.forEach((st, k) => {
+      ops.push({ op: 'set', path: ['layers', i, 'states', k, 'values'], value: { ...values } });
+      if (k === si) ops.push({ op: 'set', path: ['layers', i, 'states', k, 'macros'], value: [...pr.macros] });
+    });
+    if (l.kind === 'beat' && pr.kitCents) ops.push({ op: 'set', path: ['layers', i, 'kit'], value: pr.kitCents.map((cents) => ({ cents })) });
+    return ops;
+  },
+
   /** Switch to an older take in the clip's stack. The caller rebuilds notes/hits (setClip). */
   selectTake(doc: Project, a: { section: string; layer: string; take: string }): Op[] {
     const w = where(doc, a.section, a.layer);
@@ -901,6 +966,23 @@ export const commands = {
     return c.take === a.take ? [] : [{ op: 'set', path: [...w.clipPath, 'take'], value: a.take }];
   },
 };
+
+/** A structure edit to layer `layerId`: the new patch, and every state's values for it (new keys at
+ *  their starting values, keys that went dropped). [] when nothing changed. */
+function structure(doc: Project, layerId: string, edit: (p: Patch) => Patch): Op[] {
+  const i = layIdx(doc, layerId);
+  const l = doc.layers[i];
+  const next = edit(l.patch);
+  if (JSON.stringify(next) === JSON.stringify(l.patch)) return [];
+  compiles(next);
+  const ops: Op[] = [{ op: 'set', path: ['layers', i, 'patch'], value: next }];
+  l.states.forEach((st, k) => {
+    const values = S.revalue(next, st.values);
+    const same = Object.keys(values).length === Object.keys(st.values).length && Object.keys(values).every((x) => values[x] === st.values[x]);
+    if (!same) ops.push({ op: 'set', path: ['layers', i, 'states', k, 'values'], value: values });
+  });
+  return ops;
+}
 
 /** The patch compiles (the compiler's own checks: known sources, targets, caps on route targets). */
 function compiles(p: Patch): void {

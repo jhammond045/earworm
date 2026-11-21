@@ -691,7 +691,8 @@ impl Patch {
         if v <= 0.0 {
             return VOICES;
         }
-        (((budget - self.layer_cost()) / v).floor().max(1.0) as usize).min(VOICES)
+        // A thousandth of a voice of slack, so float rounding never splits the app and the engine.
+        (((budget - self.layer_cost()) / v + 1e-3).floor().max(1.0) as usize).min(VOICES)
     }
 }
 

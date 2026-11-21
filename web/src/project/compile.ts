@@ -99,7 +99,7 @@ function hitEvents(hits: Hit[]): TrackEvent[] {
 
 export type CurveFor = (take: Take, layer: Layer) => Float32Array | null;
 
-/** The grain source of a layer, ready to send as its sample (layer i's grains read sample i): the steady
+/** The grain source of a layer, ready to send as its sample (layer i's grains and sampler read sample i): the steady
  *  region of its Influence source, at the source's rate, with the region's reference pitch. null: the data
  *  is not loaded yet. The array's identity is the cache key (same array, not sent again), so return the
  *  same array until the source changes. */
@@ -250,7 +250,9 @@ export class Compiler {
 
   private compileGrain(out: Upload[], l: Layer, i: number, grainFor: GrainFor | undefined): void {
     const infl = l.influence;
-    const wanted = !!infl && infl.useSound && infl.grain !== null;
+    // The grains play the source when "Use the sound itself" is on; a sampler always plays it.
+    const sampler = l.patch.voices.some((v) => v.modules.some((m) => m.type === 'sampler'));
+    const wanted = !!infl && (infl.useSound || sampler) && infl.grain !== null;
     if (!wanted) {
       if (this.grainSent[i]) {
         out.push({ kind: LOAD_SAMPLE, slot: i, blob: emptySample(), what: `sample ${i} (cleared)` });
