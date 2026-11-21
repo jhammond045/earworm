@@ -221,6 +221,8 @@ pub struct Route {
     pub points: [[f32; 2]; MAX_POINTS],
     /// in 0..1, no bend, no points, no smoothing: y = clamp(x).
     pub identity: bool,
+    /// The via is bipolar (an LFO or the bend): it scales by its distance from the centre.
+    pub via_bipolar: bool,
 }
 
 impl Route {
@@ -247,6 +249,7 @@ impl Route {
         n_points: 0,
         points: [[0.0; 2]; MAX_POINTS],
         identity: true,
+        via_bipolar: false,
     };
 
     /// The source is bipolar (-1..1 enters the shaper as 0..1): an LFO or the pitch bend.
@@ -724,6 +727,8 @@ fn parse_route_voice(w: &mut Words, vp: &VoicePatch, n_values: usize, n_lfos: us
     // Layer LFOs are checked against the patch's count once it is known.
     let layer_via = layer_source_index(r.via, r.via_arg).is_some() && (r.via != SRC_LAYER_LFO || (r.via_arg as usize) < n_lfos);
     check(r.via == SRC_NONE || voice_src(r.via, r.via_arg) || layer_via)?;
+    let mut r = r;
+    r.via_bipolar = (r.via == SRC_MOD && vp.mods[r.via_arg as usize].code == P::T_LFO) || r.via == SRC_LAYER_LFO || (r.via == SRC_PERF && r.via_arg == 1);
     check(!vowel || (r.target_kind == TGT_BANDS && r.mode == MODE_PULL))?;
     let in_voice = |t: usize, n: usize| t >= vp.lo && t + n <= vp.hi;
     let mod_value = |t: usize| {
@@ -754,6 +759,8 @@ fn parse_layer_route(w: &mut Words, n_values: usize, n_lfos: usize) -> Result<Ro
     let vowel = r.source == SRC_LAYER_VOWEL;
     check(layer_src(r.source, r.arg) || vowel)?;
     check(r.via == SRC_NONE || layer_src(r.via, r.via_arg))?;
+    let mut r = r;
+    r.via_bipolar = r.via == SRC_LAYER_LFO || (r.via == SRC_PERF && r.via_arg == 1);
     // No note to latch to, and no single pitch: pitch routes are per voice.
     check(!r.latch && r.target_kind != TGT_PITCH)?;
     check(!vowel || (r.target_kind == TGT_BANDS && r.mode == MODE_PULL))?;

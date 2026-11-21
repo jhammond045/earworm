@@ -713,7 +713,7 @@ impl Layer {
             let a = r.amount as usize;
             // An amount another layer route moves is read as it stands now (those routes come first).
             let amt = P::to_real(p.descs[a] as usize, self.target[a].clamp(0.0, 1.0));
-            let via = if r.via == SRC_NONE { 1.0 } else { via_value(r.via, r.via_arg, src(r.via, r.via_arg)) };
+            let via = if r.via == SRC_NONE { 1.0 } else { via_value(r.via_bipolar, src(r.via, r.via_arg)) };
             let depth = if r.group == GROUP_NONE { 1.0 } else { dep[r.group as usize - 1] };
             let k = amt * r.unit * via * depth;
             if !k.is_finite() {

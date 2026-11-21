@@ -294,8 +294,7 @@ pub fn features(f: &[f32; CURVE_STRIDE]) -> [f32; N_FEATURES] {
 
 /// A via scales an amount by its source in 0..1 (a bipolar source by its distance from centre).
 #[inline]
-pub fn via_value(src: u16, arg: u16, x: f32) -> f32 {
-    let bipolar = src == SRC_LAYER_LFO || (src == SRC_PERF && arg == 1);
+pub fn via_value(bipolar: bool, x: f32) -> f32 {
     if !x.is_finite() {
         0.0
     } else if bipolar {
@@ -766,7 +765,7 @@ impl Voice {
             lv.real[a]
         };
         let depth = if r.group == GROUP_NONE { 1.0 } else { lv.depth[r.group as usize - 1] };
-        let via = if r.via == SRC_NONE { 1.0 } else { via_value(r.via, r.via_arg, self.raw(r.via, r.via_arg, s)) };
+        let via = if r.via == SRC_NONE { 1.0 } else { via_value(r.via_bipolar, self.raw(r.via, r.via_arg, s)) };
         (amount * r.unit, if via == 1.0 { depth } else { depth * via })
     }
 
