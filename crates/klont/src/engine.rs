@@ -390,6 +390,7 @@ impl Engine {
                     }
                 }
                 MSG_LISTEN if lay => self.layers[layer].listen = value > 0.5,
+                MSG_MORPH_TO if lay => self.layers[layer].morph_to(index as u32, value),
                 MSG_NOTE_ON | MSG_NOTE_OFF if lay => {
                     let velocity = if param == 0 {
                         1.0
@@ -849,9 +850,11 @@ impl Engine {
     }
 
     /// Resolution step 1: tell each layer with states which two to blend,
-    /// from the morph lane of its clip in the current section. No clip or no
-    /// marker: state 0.
+    /// from the morph lane of its clip in the current section. A scene
+    /// (MSG_MORPH_TO) acts when the clip has no marker or the transport is
+    /// stopped. No clip, no marker and no scene: state 0.
     fn update_morph(&mut self) {
+        let playing = self.transport.playing();
         let section = self.transport.section();
         let pos = self.transport.pos();
         let ups = self.transport.units_per_sample();
@@ -869,8 +872,9 @@ impl Engine {
                 .clip_index_for(section, li)
                 .and_then(|ci| self.track.morph_blend(ci, pos, ms_per_unit));
             match b {
-                Some(b) => l.set_morph(b.from, b.to, b.x),
-                None => l.set_morph(0, 0, 0.0),
+                Some(b) if playing || !l.has_scene() => l.set_morph(b.from, b.to, b.x),
+                _ if l.has_scene() => l.scene_tick(),
+                _ => l.set_morph(0, 0, 0.0),
             }
         }
     }

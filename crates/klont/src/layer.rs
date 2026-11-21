@@ -161,6 +161,22 @@ impl ShapedNoise {
         self.on = any;
     }
 
+    /// Move toward a new level from where the ramp is now, over the `len` samples left in
+    /// the tick (a voice that started inside it).
+    fn retarget(&mut self, level: f32, bands_db: &[f32; N_BANDS], len: usize) {
+        let inv = 1.0 / len.max(1) as f32;
+        let mut any = false;
+        for i in 0..N_BANDS {
+            let t = dsp::db_to_lin(bands_db[i]) * level * self.norm;
+            let t = if t.is_finite() { t } else { 0.0 };
+            let now = self.target[i] - self.step[i] * len as f32;
+            self.step[i] = (t - now) * inv;
+            self.target[i] = t;
+            any |= t > 1e-7 || now > 1e-7;
+        }
+        self.on |= any;
+    }
+
     fn render(&mut self, out: &mut [f32]) {
         if !self.on {
             return;
@@ -352,6 +368,11 @@ pub struct Layer {
     state_amount: [f32; MAX_STATES],
     n_states: usize,
     morph_applied: Option<(u32, u32, f32)>,
+    /// Scene (MSG_MORPH_TO): the blend the layer had when it was asked, and the move to a state.
+    scene: Option<Scene>,
+    scene_from: Box<[f32; MAX_VALUES]>,
+    scene_from_macros: [f32; N_MACROS],
+    scene_from_amount: f32,
     pub grain: GrainCloud,
     /// Partial budget share per voice, set by the engine before each tick.
     pub max_partials: [usize; VOICES_PER_LAYER],
@@ -392,6 +413,16 @@ pub struct Layer {
     lr_out: [f32; MAX_LAYER_ROUTES],
     /// The voice the meters show (the loudest), or usize::MAX.
     meter_voice: usize,
+}
+
+/// A scene move: to state `to` over `len` samples, `done` so far; `applied` is the blend
+/// last written (NaN: write it again, because a lane or new states wrote over it).
+#[derive(Clone, Copy)]
+struct Scene {
+    to: u32,
+    len: u32,
+    done: u32,
+    applied: f32,
 }
 
 /// Salt of the layer LFOs' random sequences.
@@ -473,6 +504,10 @@ impl Layer {
             state_amount: [0.0; MAX_STATES],
             n_states: 0,
             morph_applied: None,
+            scene: None,
+            scene_from: Box::new([0.0; MAX_VALUES]),
+            scene_from_macros: [0.5; N_MACROS],
+            scene_from_amount: 0.0,
             grain: GrainCloud::new(sr, seed ^ 0x7f4a_7c15),
             max_partials: [crate::voice::MAX_PARTIALS; VOICES_PER_LAYER],
             age: 0,
@@ -566,6 +601,7 @@ impl Layer {
         }
         self.n_states = 0;
         self.morph_applied = None;
+        self.scene = None;
     }
 
     /// The patch that values, states and layer blobs are for: the one waiting, if any.
@@ -781,6 +817,9 @@ impl Layer {
         }
         self.n_states = n.min(MAX_STATES);
         self.morph_applied = None;
+        if let Some(sc) = self.scene.as_mut() {
+            sc.applied = f32::NAN;
+        }
     }
 
     pub fn has_states(&self) -> bool {
@@ -801,6 +840,9 @@ impl Layer {
             return;
         }
         self.morph_applied = Some((a, b, x));
+        if let Some(sc) = self.scene.as_mut() {
+            sc.applied = f32::NAN;
+        }
         let (a, b) = (a as usize, b as usize);
         // Exact at the ends, so a settled morph sits on the state's own values.
         let mix = |p: f32, q: f32| if x <= 0.0 { p } else if x >= 1.0 { q } else { p + (q - p) * x };
@@ -811,6 +853,51 @@ impl Layer {
             self.macros[m] = mix(self.state_macros[a][m], self.state_macros[b][m]);
         }
         self.infl_amount = mix(self.state_amount[a], self.state_amount[b]);
+        self.dirty = true;
+    }
+
+    /// MSG_MORPH_TO: move from the blend the layer has now to state `to` over `ms`. Does
+    /// nothing without states.
+    pub fn morph_to(&mut self, to: u32, ms: f32) {
+        if self.n_states == 0 {
+            return;
+        }
+        let n = self.n_values();
+        self.scene_from[..n].copy_from_slice(&self.base[..n]);
+        self.scene_from_macros = self.macros;
+        self.scene_from_amount = self.infl_amount;
+        let ms = if ms.is_finite() { ms.clamp(0.0, 60_000.0) } else { 0.0 };
+        let len = (ms * 0.001 * self.sr).round() as u32;
+        self.scene = Some(Scene { to: to.min(self.n_states as u32 - 1), len, done: 0, applied: f32::NAN });
+    }
+
+    /// Whether a scene has been asked for since the states were last replaced by a new patch.
+    pub fn has_scene(&self) -> bool {
+        self.scene.is_some()
+    }
+
+    /// Step 1 from the scene: advance it one control tick and write its blend. Marks nothing
+    /// dirty once it has arrived and nothing wrote over it.
+    pub fn scene_tick(&mut self) {
+        let Some(mut sc) = self.scene else { return };
+        sc.done = sc.done.saturating_add(TICK as u32).min(sc.len);
+        let x = if sc.len == 0 { 1.0 } else { sc.done as f32 / sc.len as f32 };
+        if sc.applied == x {
+            self.scene = Some(sc);
+            return;
+        }
+        sc.applied = x;
+        self.scene = Some(sc);
+        self.morph_applied = None;
+        let b = sc.to as usize;
+        let mix = |p: f32, q: f32| if x >= 1.0 { q } else { p + (q - p) * x };
+        for i in 0..self.n_values() {
+            self.base[i] = mix(self.scene_from[i], self.states[b * MAX_VALUES + i]);
+        }
+        for m in 0..N_MACROS {
+            self.macros[m] = mix(self.scene_from_macros[m], self.state_macros[b][m]);
+        }
+        self.infl_amount = mix(self.scene_from_amount, self.state_amount[b]);
         self.dirty = true;
     }
 
@@ -1074,6 +1161,28 @@ impl Layer {
         let e = Event { hard: 0.0, ..Event::default() };
         self.shape_note(&mut note, &e);
         self.start_voice(slot, &note, track, curves, len);
+        self.noise_now(slot.vp.min(self.patch.n_voices - 1), len);
+    }
+
+    /// A played note's shaped noise starts with the note, not at the next tick: the noise bank
+    /// of voice patch `k` moves to its voices' level over the `len` samples left in this tick.
+    /// Only for notes played live, so that song playback stays as it was.
+    fn noise_now(&mut self, k: usize, len: usize) {
+        if self.pending || len == 0 || len > TICK {
+            return;
+        }
+        let Some((nb, _)) = self.patch.voices[k].noise else { return };
+        let mut lvl = 0.0;
+        for v in 0..VOICES_PER_LAYER {
+            if self.voice_on[v] && self.slots[v].vp == k {
+                lvl += self.voices[v].noise_level();
+            }
+        }
+        let mut b = [0.0f32; N_BANDS];
+        for (j, x) in b.iter_mut().enumerate() {
+            *x = self.real[nb as usize + P::shaped_noise::BANDS + j];
+        }
+        self.noise_banks[k].retarget(lvl, &b, len);
     }
 
     /// Live follow: the mic starts a voice. Beat layers play a hit on

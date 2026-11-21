@@ -36,6 +36,8 @@ export const MSG_COUNT_IN = 17;
 export const MSG_SET_PERF = 18;
 /** layer, value 1 = listen (its sung features come from the mic), 0 = stop. */
 export const MSG_LISTEN = 19;
+/** Scene: layer, index = state, value = ms. Morph from where the layer is now to that state. */
+export const MSG_MORPH_TO = 20;
 export const ALL_LAYERS = 255;
 
 export const METRO_ON = 0;

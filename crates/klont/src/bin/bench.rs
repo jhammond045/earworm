@@ -27,6 +27,12 @@
 //! Scene "worst allowed" (stage S3): 8 layers, each with the heaviest patch the caps allow (every
 //! voice module at its cap, all on, 48 routes moving the partial bank, a full channel), playing
 //! as many voices as its cost leaves room for, beside the classic worst case.
+//!
+//! Scene "listening" (stage S4, also `--listen` alone): the live tier with a sung input and
+//! three melody layers holding a note, each with a layer route from its sung volume to its
+//! filter cutoff, while none, one or all three listen. The live tier runs once whatever the
+//! number, so the three-listener figure should exceed the none figure by about what the
+//! listeners' own routes cost, not by three tiers.
 
 use klont::build::{self, FxSpec, VoiceSpec, fullest_channel, heaviest_voice, voice};
 use klont::Engine;
@@ -228,6 +234,10 @@ fn main() {
         costs(seconds.min(2.0));
         return;
     }
+    if args.iter().any(|a| a == "--listen") {
+        listen_scene();
+        return;
+    }
     println!("Earworm M1 native benchmark, {SR} Hz, {BLOCK}-frame blocks, {seconds} s of audio per run");
     println!("worst case: 8 layers x 8 voices x 64 partials, vibrato, delay and reverb on every layer");
     println!("{:>8} {:>10} {:>10} {:>14} {:>12}", "budget", "partials", "x realtime", "ns/partial/s", "core load");
@@ -312,6 +322,8 @@ fn main() {
         live_us[0], live_us[1], budget_us
     );
 
+    let listen_us = listen_scene();
+
     let mut demo_json = String::from("null");
     let read = |f: &str| std::fs::read(format!("{demo}/{f}"));
     match read("track.bin") {
@@ -343,10 +355,78 @@ fn main() {
     }
     if json {
         println!(
-            "{{\"worst_case\":[{}],\"routes48\":{{\"realtime\":{best_routes:.3},\"heavy\":{best_heavy:.3},\"classic\":{best_classic:.3}}},\"worst_allowed\":{{\"realtime\":{best_worst:.3},\"voices\":{allowed},\"classic\":{best_classic3:.3}}},\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}}}}",
+            "{{\"worst_case\":[{}],\"routes48\":{{\"realtime\":{best_routes:.3},\"heavy\":{best_heavy:.3},\"classic\":{best_classic:.3}}},\"worst_allowed\":{{\"realtime\":{best_worst:.3},\"voices\":{allowed},\"classic\":{best_classic3:.3}}},\"demo\":{demo_json},\"live_block_us\":{{\"disarmed\":{:.2},\"armed\":{:.2}}},\"listen_block_us\":[{:.2},{:.2},{:.2},{:.2}]}}",
             rows.join(","),
             live_us[0],
-            live_us[1]
+            live_us[1],
+            listen_us[0],
+            listen_us[1],
+            listen_us[2],
+            listen_us[3]
         );
     }
+}
+
+/// A sung "ah" at 220 Hz with a slow swell, one second, looped by the caller.
+fn sung() -> Vec<f32> {
+    (0..(SR as usize))
+        .map(|i| {
+            let t = i as f32 / SR;
+            let swell = 0.6 + 0.4 * (std::f32::consts::TAU * 2.0 * t).sin();
+            (1..=12).map(|k| (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() / k as f32).sum::<f32>() * 0.15 * swell
+        })
+        .collect()
+}
+
+/// Stage S4: microseconds per block of `process` with a sung input, three melody layers
+/// holding a note with a route from their sung volume, and 0, 1 or 3 of them listening; and
+/// the live tier alone (no layer sounding). Best of 3 runs of 20,000 blocks each.
+fn listen_scene() -> [f64; 4] {
+    use klont::classic::{self, Extra, ExtraTarget};
+    let hum = sung();
+    let make = |listeners: usize, sounding: bool| {
+        let mut e = Engine::new(SR, BLOCK);
+        let route = Extra::new(klont::patch::SRC_LAYER_VOLUME, 0, ExtraTarget::V("filter1", P::filter::CUTOFF), 0.6);
+        for l in 0..3u8 {
+            let blob = classic::patch_blob_ext(KIND_MELODY, l as u32, &[], &[route], 0, true);
+            assert_eq!(e.load_bytes(l as u32, LOAD_PATCH, &blob), LOAD_OK);
+            if sounding {
+                e.push(MSG_NOTE_ON, l, 0, 0, 4800.0 + 400.0 * l as f32, 0);
+            }
+            if (l as usize) < listeners {
+                e.push(MSG_LISTEN, l, 0, 0, 1.0, 0);
+            }
+        }
+        e
+    };
+    let run = |e: &mut Engine, count: usize| {
+        for b in 0..count {
+            let o = (b * BLOCK) % (hum.len() - BLOCK);
+            e.input_mut()[..BLOCK].copy_from_slice(&hum[o..o + BLOCK]);
+            e.process(BLOCK);
+        }
+    };
+    let cases = [(0usize, false), (0, true), (1, true), (3, true)];
+    let mut best = [f64::INFINITY; 4];
+    for _ in 0..3 {
+        for (i, &(n, sounding)) in cases.iter().enumerate() {
+            let mut e = make(n, sounding);
+            run(&mut e, 2000);
+            let t = Instant::now();
+            run(&mut e, 20_000);
+            best[i] = best[i].min(t.elapsed().as_secs_f64() * 1e6 / 20_000.0);
+        }
+    }
+    let block_us = BLOCK as f64 / SR as f64 * 1e6;
+    println!(
+        "listening, us per {BLOCK}-sample block with a sung input (block is {block_us:.0} us), best of 3: live tier alone {:.1}; three layers holding a note, none listening {:.1}, one {:.1}, three {:.1}",
+        best[0], best[1], best[2], best[3]
+    );
+    println!(
+        "  three listeners cost {:.1} us a block more than none; the live tier alone is {:.1} us (three tiers would add {:.1})",
+        best[3] - best[1],
+        best[0],
+        2.0 * best[0]
+    );
+    best
 }

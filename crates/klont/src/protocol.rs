@@ -85,6 +85,11 @@ pub const MSG_SET_PERF: u16 = 18;
 /// while its notes come from elsewhere), 0 = stop. Any number of layers may
 /// listen; the live tier runs once whatever the number.
 pub const MSG_LISTEN: u16 = 19;
+/// Scene (docs/synth.md "Live use"): layer, index = state, value = ms. The
+/// layer morphs from where it is now to that state over `value` ms. A clip
+/// with morph markers wins while the transport plays; the scene holds when it
+/// stops. Needs states (LOAD_STATES).
+pub const MSG_MORPH_TO: u16 = 20;
 /// MSG_SET_PERF layer meaning every layer.
 pub const ALL_LAYERS: u8 = 255;
 
