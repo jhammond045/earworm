@@ -105,8 +105,8 @@ fn run_case(c: &Case, wav: &Option<String>, p: Params) -> (Vec<Moved>, Vec<(f64,
     if c.ideal {
         write_wav(wav, &format!("{}-0-ideal", c.file), &take.ideal);
     }
-    let mut head = String::from("| Method | Onsets found in the output | Off where the map puts them: mean / p95 / max ms |");
-    let mut rule = String::from("| --- | --- | --- |");
+    let mut head = String::from("| Method | Onsets found in the output | Off where the map puts them: mean / p95 / max ms | Attacks matched at hard anchors: off mean / max ms, correlation |");
+    let mut rule = String::from("| --- | --- | --- | --- |");
     if c.ideal {
         head += " Spectral distance to ideal, dB |";
         rule += " --- |";
@@ -139,6 +139,13 @@ fn run_case(c: &Case, wav: &Option<String>, p: Params) -> (Vec<Moved>, Vec<(f64,
         }
         let s = stats(&errs);
         let mut row = format!("| {name} | {}/{} | {} / {} / {} |", s.n, expect.len(), ms(s.mean), ms(s.p95), ms(s.max));
+        if secs > 0.0 {
+            let (lags, corr) = metrics::attack_offsets(&take.audio, out, &map, SR);
+            let st = stats(&lags);
+            row += &format!(" {} / {} ({:.3}) |", ms(st.mean), ms(st.max), corr);
+        } else {
+            row += " - |";
+        }
         if c.ideal {
             row += &format!(" {:.2} |", lsd(out, &take.ideal, SR));
         }
@@ -395,7 +402,7 @@ fn main() {
     // ------------------------------------------------------------ quantizing
     println!("\n## Quantizing and stretching\n");
     println!(
-        "Each case quantizes the anchors, builds the warp map and plays the take through it four ways. The line above each table says how close the warp map itself puts every true onset to where it should land: that is the anchors' accuracy, whatever plays the audio. The table then checks the audio: it finds the onsets in the output with the same detector that found the anchors and compares them with where the map puts the onsets that detector finds in the input (within 50 ms), so the detector's own bias cancels. Spectral distance compares third-octave band levels with the take rendered with every event exactly on the grid (lower is closer; the input row is what the timing alone costs). Pitch error is the median YIN pitch 60 to 210 ms into each note against the sung pitch. Attack rows compare the 10 ms after each kick and snare, and the 15 to 2 ms before it, with the ideal render: smeared or doubled attacks show as a lower peak and more level before the attack. CPU is the best of five whole-take renders on one core of the build machine."
+        "Each case quantizes the anchors, builds the warp map and plays the take through it four ways. The line above each table says how close the warp map itself puts every true onset to where it should land: that is the anchors' accuracy, whatever plays the audio. The table then checks the audio. \"Attacks matched\" looks for the 22 ms of take audio around each hard anchor (2 ms before, 20 ms after) in the output, within 30 ms of where the map puts it, and gives the offset and the correlation where it matches best. The onset columns find the onsets in the output with the same detector that found the anchors and compares them with where the map puts the onsets that detector finds in the input (within 50 ms), so the detector's own bias cancels. Spectral distance compares third-octave band levels with the take rendered with every event exactly on the grid (lower is closer; the input row is what the timing alone costs). Pitch error is the median YIN pitch 60 to 210 ms into each note against the sung pitch. Attack rows compare the 10 ms after each kick and snare, and the 15 to 2 ms before it, with the ideal render: smeared or doubled attacks show as a lower peak and more level before the attack. CPU is the best of five whole-take renders on one core of the build machine."
     );
     let full = |_: f64| 1.0;
     let ramp = |beat: f64| (beat / 16.0).clamp(0.0, 1.0);

@@ -129,3 +129,52 @@ pub fn attack_db(x: &[f32], sr: f32, t: f64) -> (f32, f32) {
     let pre: f32 = (s - ms(15.0)..s - ms(2.0)).map(|i| get(i) * get(i)).sum::<f32>() / ms(13.0) as f32;
     (dsp::lin_to_db(peak), 10.0 * (pre + 1e-12).log10())
 }
+
+/// For each hard warp point (output sample, take sample) other than the two ends: the lag in ms,
+/// within 30 ms, at which the output best matches the take's audio from 2 ms before the anchor
+/// to 20 ms after it, and the mean normalized correlation at those lags. A stretcher that copies
+/// attacks verbatim gives lag 0 and correlation 1.
+pub fn attack_offsets(input: &[f32], out: &[f32], map: &[(f64, f64, bool)], sr: f32) -> (Vec<f64>, f64) {
+    let ms = |m: f64| (m * sr as f64 / 1000.0) as i64;
+    let (pre, len, reach) = (ms(2.0), ms(22.0), ms(30.0));
+    let get = |x: &[f32], i: i64| if i >= 0 && (i as usize) < x.len() { x[i as usize] } else { 0.0 };
+    let mut lags = Vec::new();
+    let mut corr_sum = 0.0f64;
+    for &(u, s, hard) in &map[1..map.len() - 1] {
+        if !hard {
+            continue;
+        }
+        let (u, s) = (u.round() as i64, s.round() as i64);
+        let xs: Vec<f32> = (0..len).map(|i| get(input, s - pre + i)).collect();
+        let xx: f32 = xs.iter().map(|v| v * v).sum();
+        let score = |lag: i64| -> f32 {
+            let (mut xy, mut yy) = (0.0f32, 1e-12f32);
+            for (i, &x) in xs.iter().enumerate() {
+                let y = get(out, u - pre + lag + i as i64);
+                xy += x * y;
+                yy += y * y;
+            }
+            xy / (xx * yy).sqrt().max(1e-12)
+        };
+        let mut best = (f32::NEG_INFINITY, 0i64);
+        let mut lag = -reach;
+        while lag <= reach {
+            let c = score(lag);
+            if c > best.0 {
+                best = (c, lag);
+            }
+            lag += 4;
+        }
+        let centre = best.1;
+        for lag in centre - 4..=centre + 4 {
+            let c = score(lag);
+            if c > best.0 {
+                best = (c, lag);
+            }
+        }
+        lags.push(best.1 as f64 * 1000.0 / sr as f64);
+        corr_sum += best.0 as f64;
+    }
+    let n = lags.len().max(1) as f64;
+    (lags, corr_sum / n)
+}

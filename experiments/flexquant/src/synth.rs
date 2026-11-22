@@ -140,7 +140,8 @@ pub fn drums(seed: u64, bpm: f64, bars: usize, feel: &Feel) -> Take {
         }
         class |= 4;
         let beat = s as f64 * 0.25;
-        let swing = if step % 2 == 1 { (feel.swing - 0.5) * spb } else { 0.0 };
+        // The second 16th of each 8th falls at `swing` of the 8th (spb / 2).
+        let swing = if step % 2 == 1 { (feel.swing - 0.5) * spb / 2.0 } else { 0.0 };
         let late = if class & 2 != 0 { feel.snare_ms / 1000.0 } else { 0.0 };
         let drift = feel.drift_ms / 1000.0 * (std::f64::consts::TAU * s as f64 / steps as f64).sin();
         let jit = feel.jitter_ms / 1000.0 * r.normal() as f64;
@@ -158,6 +159,13 @@ pub fn drums(seed: u64, bpm: f64, bars: usize, feel: &Feel) -> Take {
             }
         }
         events.push(Event { t, beat, class, cents: 0.0 });
+    }
+    // Room noise at about -66 dB, the same in both renders, as a real take always has some.
+    let mut nr = Rng::new(seed ^ 0x5eed);
+    for (a, b) in audio.iter_mut().zip(ideal.iter_mut()) {
+        let v = 0.0005 * nr.normal();
+        *a += v;
+        *b += v;
     }
     Take { audio, ideal, events, bpm, lead }
 }
