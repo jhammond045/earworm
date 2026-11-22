@@ -128,32 +128,51 @@ export function removeMod(p: Patch, slot: number, id: string): Patch {
 }
 
 /** Add a channel effect: crush and tape before the first delay or reverb (they run on the voice
- *  sum), the others at the end. */
+ *  sum), the others at the end. The `input` element goes first, so every effect runs on the blend
+ *  of the synth and the raw input until one is moved before it. */
 export function addChannelFx(p: Patch, type: ChannelFxType): { patch: Patch; id: string } {
-  if (!['crush', 'tape', 'cfilter', 'delay', 'reverb'].includes(type)) fail(`unknown channel effect ${type}`);
+  if (!['crush', 'tape', 'cfilter', 'delay', 'reverb', 'input'].includes(type)) fail(`unknown channel effect ${type}`);
   if (p.channel.length >= CAPS.channel) fail(`a channel has at most ${CAPS.channel} effects`);
+  if (type === 'input' && p.channel.some((x) => x.type === 'input')) fail('a channel has at most one input');
   const id = freshId(type, p.channel.map((x) => x.id));
   const fx = { id, type, bypass: false };
   const stereo = p.channel.findIndex((x) => x.type === 'delay' || x.type === 'reverb');
-  const at = MONO_FX.includes(type) && stereo >= 0 ? stereo : p.channel.length;
+  const at = type === 'input' ? 0 : MONO_FX.includes(type) && stereo >= 0 ? stereo : p.channel.length;
   return { patch: { ...p, channel: [...p.channel.slice(0, at), fx, ...p.channel.slice(at)] }, id };
+}
+
+/** Effects after the `input` element run on the blend: they lose a path they had before it. */
+function blendPaths(channel: Patch['channel']): Patch['channel'] {
+  const input = channel.findIndex((x) => x.type === 'input');
+  return channel.map((x, i) => (x.path && (input < 0 || i > input) ? (({ path: _p, ...rest }) => rest)(x) : x));
+}
+
+/** Run an effect before the `input` element on the synth or on the raw input alone. */
+export function setFxPath(p: Patch, id: string, path: 'synth' | 'raw'): Patch {
+  const i = p.channel.findIndex((x) => x.id === id);
+  if (i < 0) fail(`no channel effect ${id}`);
+  const input = p.channel.findIndex((x) => x.type === 'input');
+  if (input < 0 || i > input) fail(`${id} runs after the input, on the blend; move it before the input first`);
+  if (p.channel[i].type === 'input') fail('the input has no path');
+  return { ...p, channel: p.channel.map((x) => (x.id !== id ? x : path === 'raw' ? { ...x, path } : (({ path: _p, ...rest }) => rest)(x))) };
 }
 
 /** Remove a channel effect and the routes into it. */
 export function removeChannelFx(p: Patch, id: string): Patch {
   if (!p.channel.some((x) => x.id === id)) fail(`no channel effect ${id}`);
   const into = (r: Route) => r.target.replace(/^(bands|oct):/, '').startsWith(`${id}.`);
-  return { ...p, channel: p.channel.filter((x) => x.id !== id), routes: p.routes.filter((r) => !into(r)) };
+  return { ...p, channel: blendPaths(p.channel.filter((x) => x.id !== id)), routes: p.routes.filter((r) => !into(r)) };
 }
 
 export function moveChannelFx(p: Patch, id: string, to: number): Patch {
   const i = p.channel.findIndex((x) => x.id === id);
   if (i < 0) fail(`no channel effect ${id}`);
-  return { ...p, channel: move(p.channel, i, to) };
+  return { ...p, channel: blendPaths(move(p.channel, i, to)) };
 }
 
 export function setBypass(p: Patch, id: string, bypass: boolean): Patch {
   if (!p.channel.some((x) => x.id === id)) fail(`no channel effect ${id}`);
+  if (bypass && p.channel.some((x) => x.id === id && x.type === 'input')) fail('the input cannot be bypassed');
   return { ...p, channel: p.channel.map((x) => (x.id === id ? { ...x, bypass } : x)) };
 }
 

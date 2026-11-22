@@ -15,7 +15,8 @@ import { amountKey, amountNorm, checkRoute, defaultAmount, findRoute, makeRoute,
 import * as S from '../synth/structure';
 import type { ChannelFxType, Port, VoiceModuleType } from '../synth/patch';
 import { parsePreset, type PresetFile } from '../presets/presets';
-import { KIT_SLOTS, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
+import { KIT_SLOTS, LANE_FIXED, LANE_SHAPES, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
+import type { AutoLane, LanePoint } from './types';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MidiMapping, MorphShape, Note, Perform, PerfTarget, Project, Section, State, Take, Tune } from './types';
 
@@ -171,6 +172,28 @@ function normMarker(m: MorphMarker, len: number, grid: boolean, states: Set<stri
 }
 
 const sortByT = <T extends { t: number }>(a: T[]): T[] => a.slice().sort((x, y) => x.t - y.t);
+
+/** Check a lane's target against the layer and its points against the loop: times inside it, shapes
+ *  known, values clamped to the target's range, sorted by t. */
+function normLane(lane: AutoLane, len: number, grid: boolean, layer: Layer | null): AutoLane {
+  if (typeof lane.target !== 'string' || lane.target === '') fail('lane target must be a key');
+  const fixed = LANE_FIXED[lane.target];
+  if (!fixed && layer && !layoutOf(layer.patch).index.has(lane.target)) fail(`the layer has no value ${lane.target}`);
+  const [lo, hi] = fixed ?? [0, 1];
+  if (!Array.isArray(lane.points)) fail('lane points must be a list');
+  let same = true;
+  const points = lane.points.map((p): LanePoint => {
+    fin(p.t, 'lane point t'); fin(p.v, 'lane point v');
+    if (!LANE_SHAPES.includes(p.shape)) fail(`lane shape must be one of ${LANE_SHAPES.join(', ')}`);
+    const t = wrapT(p.t, len, grid), v = clamp(p.v, lo, hi);
+    if (t === p.t && v === p.v) return p;
+    same = false;
+    return { ...p, t, v };
+  });
+  const sorted = points.every((p, i) => i === 0 || points[i - 1].t <= p.t);
+  if (same && sorted) return lane;
+  return { ...lane, points: sorted ? points : sortByT(points) };
+}
 const sameItems = <T>(a: T[], b: T[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 function insertSorted<T extends { t: number }>(a: T[], item: T): number {
@@ -190,7 +213,11 @@ function normClip(clip: Clip, section: Section, states: Set<string> | null = nul
   let morph = clip.morph ?? [];
   const wrapped = morph.map((m) => normMarker(m, clip.loopLen, grid, states));
   if (!clip.morph || !sameItems(wrapped, morph)) morph = sortByT(wrapped);
-  const withMorph = morph === clip.morph ? clip : { ...clip, morph };
+  let withMorph = morph === clip.morph ? clip : { ...clip, morph };
+  if (clip.auto) {
+    const auto = clip.auto.map((x) => normLane(x, clip.loopLen, grid, null));
+    if (!sameItems(auto, clip.auto)) withMorph = { ...withMorph, auto };
+  }
   if (withMorph.kind === 'beat') {
     const hits = withMorph.hits.map((h) => normHit(h, withMorph.loopLen, grid, min));
     return sameItems(hits, withMorph.hits) ? withMorph : { ...withMorph, hits };
@@ -205,7 +232,8 @@ function convertClip(clip: Clip, factor: number, toGrid: boolean): Clip {
   const min = toGrid ? 1 : MIN_FREE_DUR;
   const loopLen = Math.max(min, conv(clip.loopLen));
   const morph = (clip.morph ?? []).map((m) => ({ ...m, t: wrapT(conv(m.t), loopLen, toGrid) }));
-  const base = { loopLen, timeSnap: conv(clip.timeSnap), morph: sortByT(morph) };
+  const auto = clip.auto?.map((x) => ({ ...x, points: sortByT(x.points.map((p) => ({ ...p, t: wrapT(conv(p.t), loopLen, toGrid) }))) }));
+  const base = { loopLen, timeSnap: conv(clip.timeSnap), morph: sortByT(morph), ...(auto ? { auto } : {}) };
   if (clip.kind === 'beat') {
     const hits = clip.hits.map((h) => ({ ...h, t: wrapT(conv(h.t), loopLen, toGrid), dur: Math.max(min, conv(h.dur)) }));
     return { ...clip, ...base, hits };
@@ -982,6 +1010,34 @@ export const commands = {
   moveChannelFx(doc: Project, a: { layer: string; id: string; to: number }): Op[] {
     return structure(doc, a.layer, (p) => S.moveChannelFx(p, a.id, a.to));
   },
+  /** Run an effect before the input element on the synth or on the raw input alone. */
+  setFxPath(doc: Project, a: { layer: string; id: string; path: 'synth' | 'raw' }): Op[] {
+    if (a.path !== 'synth' && a.path !== 'raw') fail('path must be synth or raw');
+    return structure(doc, a.layer, (p) => S.setFxPath(p, a.id, a.path));
+  },
+  /** Replace a clip's automation lane for one target (`points` null or empty removes it). Creates
+   *  an empty clip as long as the section when the lane has none. */
+  setLane(doc: Project, a: { section: string; layer: string; target: string; points: LanePoint[] | null }): Op[] {
+    const w = where(doc, a.section, a.layer);
+    const c = hasClip(w.section, a.layer) ? (w.section.clips[a.layer] as Clip) : undefined;
+    const len = c ? c.loopLen : sectionLength(w.section);
+    const grid = w.section.feel === 'grid';
+    const lanes = c?.auto ?? [];
+    const at = lanes.findIndex((x) => x.target === a.target);
+    if (!a.points || a.points.length === 0) {
+      if (at < 0) return [];
+      return [{ op: 'set', path: [...w.clipPath, 'auto'], value: lanes.filter((_, i) => i !== at) }];
+    }
+    const lane = normLane({ target: a.target, points: a.points }, len, grid, w.layer);
+    const auto = at < 0 ? [...lanes, lane] : lanes.map((x, i) => (i === at ? lane : x));
+    if (!c) {
+      const base = { take: '', takes: [] as string[], loopLen: len, timeSnap: 0, morph: [], auto };
+      const clip: Clip = w.layer.kind === 'beat' ? { kind: 'beat', ...base, hits: [] } : { kind: w.layer.kind, ...base, notes: [], warp: [] };
+      return [{ op: 'set', path: w.clipPath, value: clip }];
+    }
+    return [{ op: 'set', path: [...w.clipPath, 'auto'], value: auto }];
+  },
+
   /** Bypass a channel effect: not a structure change in the engine, so notes keep sounding. */
   setBypass(doc: Project, a: { layer: string; id: string; bypass: boolean }): Op[] {
     if (typeof a.bypass !== 'boolean') fail('bypass must be true or false');

@@ -6,15 +6,18 @@
 // object as last time" means "same content". That keeps a compile cheap while playing.
 
 import { encodeLayerBlob, encodeSample, encodeStates } from '../m1/blobs';
-import { encodeCurve, encodeTrack, MAX_CURVES, type TrackClip, type TrackEvent, type TrackInput } from '../m1/track';
+import {
+  encodeCurve, encodeTrack, LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE, MAX_CURVES, MAX_SAMPLES,
+  type TrackClip, type TrackEvent, type TrackInput, type TrackLane,
+} from '../m1/track';
 import {
   KIND_BEAT, KIND_MELODY, KIND_TEXTURE, LAYER_DEPTH_LOUD, LAYER_FIELDS, LAYER_FOLLOW, LAYER_INFLUENCE_AMOUNT,
   LAYER_INFLUENCE_MASK, LAYER_KIND, LAYER_KIT_CENTS, LAYER_LEVEL, LAYER_MUTE, LAYER_PAN,
   LOAD_CURVE, LOAD_LAYER, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TRACK, MAX_LAYERS, N_MACROS, SAMPLE_POOL_FLOATS,
 } from '../m1/protocol';
 import { classicPatch, classicVectors, isClassic } from '../synth/classic';
-import { layoutOf, patchBlob, type Patch } from '../synth/patch';
-import { KIT_SLOTS, MORPH_SHAPES, PPQ, type Hit, type Layer, type MorphMarker, type Project, type Section, type Take } from './types';
+import { inputAt, layoutOf, patchBlob, type Patch } from '../synth/patch';
+import { KIT_SLOTS, LANE_SHAPES, MORPH_SHAPES, PPQ, type AutoLane, type Hit, type Layer, type MorphMarker, type Project, type Section, type Take } from './types';
 
 export interface Upload {
   /** LOAD_TRACK, LOAD_PATCH, LOAD_LAYER, LOAD_CURVE, LOAD_SAMPLE or LOAD_STATES (m1/protocol.ts). */
@@ -105,7 +108,14 @@ export type CurveFor = (take: Take, layer: Layer) => Float32Array | null;
  *  same array until the source changes. */
 export type GrainFor = (layer: Layer) => { data: Float32Array; rate: number; refCents: number | null } | null;
 
-export interface CompileOptions { grainFor?: GrainFor }
+/** A take's audio (mono, at the take's rate), for a layer whose patch has an `input` element: its
+ *  raw input on playback. null: not loaded yet. Same array until the take changes. */
+export type AudioFor = (take: Take) => Float32Array | null;
+
+export interface CompileOptions { grainFor?: GrainFor; audioFor?: AudioFor }
+
+/** Take audio goes in the sample pool from this id up (ids below are the layers' grain samples). */
+export const FIRST_AUDIO_SAMPLE = 8;
 
 const SHAPE_CODE: Record<string, number> = Object.fromEntries(MORPH_SHAPES.map((n, i) => [n, i]));
 
@@ -146,6 +156,9 @@ export class Compiler {
   private statesSent: ({ states: Layer['states']; infl: boolean } | 'silent' | undefined)[] = [];
   private lastSections: Section[] | null = null;
   private lastTrackKey: string | null = null;
+  /** Take id -> sample id of its audio, and the array last sent there. */
+  private audioOf = new Map<string, number>();
+  private audioSent = new Map<number, Float32Array>();
 
   /** Blobs that changed since the last compile, layers and curves before the track. */
   compile(doc: Project, curveFor: CurveFor, opts: CompileOptions = {}): Upload[] {
@@ -225,11 +238,15 @@ export class Compiler {
       }
     }
 
-    // Track. It depends on the sections, loop flag, layer order and octave, the curve slots, and which
-    // state index each morph marker points at (state edits that keep the order do not touch the track).
+    this.compileAudio(out, doc, opts.audioFor);
+
+    // Track. It depends on the sections, loop flag, layer order and octave, the curve slots, the take
+    // audio's samples, which state index each morph marker points at (state edits that keep the order
+    // do not touch the track), and the layout of every patch that a lane names a value of.
     const layerSig = doc.layers.map((l) => `${l.id}:${l.tune.octave}`).join(',');
     const slotSig = [...this.slotOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
-    const key = `${doc.loop}|${layerSig}|${slotSig}|${morphSig(doc)}`;
+    const audioSig = [...this.audioOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
+    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${morphSig(doc)}|${laneSig(doc)}`;
     if (doc.sections !== this.lastSections || key !== this.lastTrackKey) {
       out.push({ kind: LOAD_TRACK, slot: 0, blob: encodeTrack(this.trackInput(doc)), what: 'track' });
       this.lastSections = doc.sections;
@@ -270,8 +287,44 @@ export class Compiler {
     this.grainSent[i] = g.data;
   }
 
+  /** Take audio for every clip whose layer has an `input` element, in sample ids from
+   *  FIRST_AUDIO_SAMPLE. A take no clip needs any more has its sample cleared. */
+  private compileAudio(out: Upload[], doc: Project, audioFor: AudioFor | undefined): void {
+    const wanted = new Map<string, Take>();
+    doc.sections.forEach((s) => doc.layers.forEach((l) => {
+      const c = s.clips[l.id];
+      if (!c?.take || inputAt(l.patch) < 0) return;
+      const take = doc.takes[c.take];
+      if (take) wanted.set(take.id, take);
+    }));
+    for (const [id, slot] of [...this.audioOf]) {
+      if (wanted.has(id)) continue;
+      this.audioOf.delete(id);
+      this.audioSent.delete(slot);
+      out.push({ kind: LOAD_SAMPLE, slot, blob: emptySample(), what: `sample ${slot} (take ${id} no longer used)` });
+    }
+    const used = new Set(this.audioOf.values());
+    for (const [id, take] of wanted) {
+      const data = audioFor?.(take);
+      if (!data) continue;
+      let slot = this.audioOf.get(id);
+      if (slot === undefined) {
+        slot = FIRST_AUDIO_SAMPLE;
+        while (used.has(slot)) slot++;
+        if (slot >= MAX_SAMPLES) continue;
+        used.add(slot);
+        this.audioOf.set(id, slot);
+      }
+      if (this.audioSent.get(slot) === data) continue;
+      out.push({ kind: LOAD_SAMPLE, slot, blob: encodeSample(take.rate, null, data), what: `sample ${slot} (take ${id} audio)` });
+      this.audioSent.set(slot, data);
+    }
+  }
+
   /** The engine restarted: everything is sent again on the next compile. */
   reset(): void {
+    this.audioOf.clear();
+    this.audioSent.clear();
     this.patches = [];
     this.grainSent = [];
     this.statesSent = [];
@@ -296,8 +349,10 @@ export class Compiler {
       doc.layers.forEach((l, li) => {
         const c = s.clips[l.id];
         if (!c) return;
+        const audio = c.take ? (this.audioOf.get(c.take) ?? -1) : -1;
+        const lanes = lanesFor(c.auto, l);
         if (c.kind === 'beat') {
-          clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(c.hits), morph: morphFor(c.morph, l) });
+          clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(c.hits), morph: morphFor(c.morph, l), audio, lanes });
           return;
         }
         const oct = 1200 * l.tune.octave;
@@ -306,8 +361,10 @@ export class Compiler {
         clips.push({
           section: si, layer: li, loopLen: c.loopLen, curve,
           events: c.notes.map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1 })),
-          warp: curve >= 0 ? c.warp : [],
+          warp: curve >= 0 || audio >= 0 ? c.warp : [],
           morph,
+          audio,
+          lanes,
         });
       });
     });
@@ -325,6 +382,43 @@ function morphFor(markers: MorphMarker[] | undefined, l: Layer): { t: number; st
     if (state >= 0) out.push({ t: m.t, state, lenMs: m.lenMs, shape: SHAPE_CODE[m.shape] ?? 0 });
   }
   return out.length ? out : undefined;
+}
+
+const PERF_INDEX: Record<string, number> = { wheel: 0, bend: 1, pressure: 2 };
+const LANE_SHAPE_CODE: Record<string, number> = Object.fromEntries(LANE_SHAPES.map((n, i) => [n, i]));
+
+/** A lane's target for the engine: a value of the layer's patch (by its place in the layout), a
+ *  macro, the level, the pan or a performance source. null: the patch has no such value. */
+export function laneTarget(target: string, l: Layer): { kind: number; index: number } | null {
+  const m = /^macro([1-8])$/.exec(target);
+  if (m) return { kind: LANE_MACRO, index: Number(m[1]) - 1 };
+  if (target === 'layer.level') return { kind: LANE_LEVEL, index: 0 };
+  if (target === 'layer.pan') return { kind: LANE_PAN, index: 0 };
+  if (target in PERF_INDEX) return { kind: LANE_PERF, index: PERF_INDEX[target] };
+  const i = layoutOf(l.patch).index.get(target);
+  return i === undefined ? null : { kind: LANE_VALUE, index: i };
+}
+
+/** Automation lanes for the engine. A lane whose value the patch no longer has is skipped. */
+function lanesFor(auto: AutoLane[] | undefined, l: Layer): TrackLane[] | undefined {
+  const out: TrackLane[] = [];
+  for (const lane of auto ?? []) {
+    const t = laneTarget(lane.target, l);
+    if (!t || !lane.points.length) continue;
+    out.push({ ...t, points: lane.points.map((p) => ({ t: p.t, v: p.v, shape: LANE_SHAPE_CODE[p.shape] ?? 0 })) });
+  }
+  return out.length ? out : undefined;
+}
+
+/** The value indices lanes name change when a patch's layout does. */
+function laneSig(doc: Project): string {
+  const parts: string[] = [];
+  doc.layers.forEach((l) => {
+    const keys = new Set<string>();
+    for (const s of doc.sections) for (const lane of s.clips[l.id]?.auto ?? []) keys.add(lane.target);
+    if (keys.size) parts.push(`${l.id}:${[...keys].map((k) => laneTarget(k, l)?.index ?? 'x').join('.')}`);
+  });
+  return parts.join(';');
 }
 
 function morphSig(doc: Project): string {

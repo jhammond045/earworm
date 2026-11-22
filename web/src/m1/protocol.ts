@@ -38,6 +38,8 @@ export const MSG_SET_PERF = 18;
 export const MSG_LISTEN = 19;
 /** Scene: layer, index = state, value = ms. Morph from where the layer is now to that state. */
 export const MSG_MORPH_TO = 20;
+/** Recording (S5): 1 while a pass records; a hand move then takes its target from its lane until the transport stops. */
+export const MSG_RECORD = 21;
 export const ALL_LAYERS = 255;
 
 export const METRO_ON = 0;

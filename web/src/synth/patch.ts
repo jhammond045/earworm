@@ -22,8 +22,10 @@ import { ALL_DESCS, COST, DESC_ID, MODULE_TYPES } from '../gen/modules';
 import { toNorm } from './values';
 
 export type VoiceModuleType = 'partials' | 'osc' | 'noise' | 'sampler' | 'click' | 'filter' | 'amp' | 'fold' | 'clang' | 'comb';
-/** `cfilter` is the channel's filter (two state-variable filters, mono or stereo where it sits). */
-export type ChannelFxType = 'crush' | 'tape' | 'cfilter' | 'delay' | 'reverb';
+/** `cfilter` is the channel's filter (two state-variable filters, mono or stereo where it sits).
+ *  `input` is not an effect but the point where the raw input (the mic, or the take on playback)
+ *  joins the synth (docs/synth.md "The raw input beside the synth", stage S5). */
+export type ChannelFxType = 'crush' | 'tape' | 'cfilter' | 'delay' | 'reverb' | 'input';
 /** `in` sums into a processor's input; `pm` is an oscillator's phase input. */
 export type Port = 'in' | 'pm';
 export type Group = 'loud' | 'open' | 'hard' | 'breath' | 'mouth' | 'follow';
@@ -73,7 +75,9 @@ export interface LayerSource {
   drive: string;
 }
 
-export interface ChannelFx { id: string; type: ChannelFxType; bypass: boolean }
+/** `path`: an effect before the `input` element runs on the synth (the default) or on the raw
+ *  input alone; one after it runs on the blend, and has no path. */
+export interface ChannelFx { id: string; type: ChannelFxType; bypass: boolean; path?: 'synth' | 'raw' }
 
 export interface Patch {
   /** 1 for melody and texture, 4 for beat (one per kit slot). */
@@ -122,6 +126,8 @@ const SRC_MOD = 1;
 const MOD_ONSET = 0x10000;
 /** Added to a channel effect's type code: it is bypassed. */
 const CH_BYPASS = 0x10000;
+/** Added to a channel effect's type code: before the `input` element, it runs on the raw input. */
+const CH_RAW = 0x20000;
 
 // ---- caps (docs/synth.md "Rules for the graph"; crates/klont/src/patch.rs)
 
@@ -353,7 +359,7 @@ export function patchBlob(patch: Patch, sample: number): ArrayBuffer {
     for (const r of vp.routes) writeRoute(w, r, lay, patch, k);
   });
   for (const fx of channel) {
-    w.u(MODULE_TYPES[fx.type].code + (fx.bypass ? CH_BYPASS : 0));
+    w.u(MODULE_TYPES[fx.type].code + (fx.bypass ? CH_BYPASS : 0) + (fx.path === 'raw' ? CH_RAW : 0));
     w.u(lay.index.get(moduleKeys(fx.id, fx.type)[0].local)!);
   }
   for (const m of patch.lfos) {
@@ -421,7 +427,14 @@ export function checkCaps(patch: Patch): void {
   if (stereo >= 0 && ch.slice(stereo).some((x) => MONO_FX.includes(x.type))) {
     fail('crush and tape run on the voices before level and pan, so they come before any delay or reverb');
   }
+  const input = ch.findIndex((x) => x.type === 'input');
+  if (ch.filter((x) => x.type === 'input').length > 1) fail('a channel has at most one input');
+  if (input >= 0 && ch[input].bypass) fail('the input is where the raw input joins; it cannot be bypassed');
+  if (ch.some((x, i) => x.path === 'raw' && (input < 0 || i > input))) fail('only an effect before the input can run on the raw input alone');
 }
+
+/** Index of the `input` element in a patch's channel, -1 without one. */
+export const inputAt = (p: Patch): number => p.channel.findIndex((x) => x.type === 'input');
 
 // ---- cost (crates/klont/src/patch.rs "cost")
 

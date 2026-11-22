@@ -218,6 +218,25 @@ export interface MorphMarker {
   shape: MorphShape;
 }
 
+export type LaneShape = 'line' | 'ease' | 'step';
+export const LANE_SHAPES: readonly LaneShape[] = ['line', 'ease', 'step'];
+
+/** One point of an automation lane: from `t` (section units, inside [0, loopLen)) the target is
+ *  `v`, moving to the next point's value by `shape`. */
+export interface LanePoint { t: number; v: number; shape: LaneShape }
+
+/** An automation lane (docs/synth.md "DAW use"). `target` is a value key of the layer's patch, a
+ *  macro (`macro1` to `macro8`), `layer.level`, `layer.pan`, or one of the `wheel`, `bend` and
+ *  `pressure` sources. `v` is in the target's units: 0..1 for a value, a macro, the wheel and
+ *  pressure; dB (-60..12) for the level; -1..1 for the pan and the bend. Points sorted by t. */
+export interface AutoLane { target: string; points: LanePoint[] }
+
+/** Lane targets that are not value keys, with their range. */
+export const LANE_FIXED: Record<string, [number, number]> = {
+  'layer.level': [-60, 12], 'layer.pan': [-1, 1], wheel: [0, 1], bend: [-1, 1], pressure: [0, 1],
+  ...Object.fromEntries(Array.from({ length: 8 }, (_, k) => [`macro${k + 1}`, [0, 1] as [number, number]])),
+};
+
 export interface ClipBase {
   /** Current take id, or '' for a clip with no take (drawn notes only). */
   take: string;
@@ -229,6 +248,8 @@ export interface ClipBase {
   timeSnap: number;
   /** The morph lane, sorted by t. */
   morph: MorphMarker[];
+  /** Automation lanes, one per target (stage S5). Missing means none. */
+  auto?: AutoLane[];
 }
 
 export interface MelodyClip extends ClipBase {

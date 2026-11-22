@@ -96,7 +96,7 @@ const MODULE_NAMES: Record<VoiceModuleType, string> = {
   partials: 'partial bank', osc: 'oscillator', noise: 'noise', sampler: 'sampler (plays the layer\'s sound source)', click: 'click',
   filter: 'filter', amp: 'amp', fold: 'fold', clang: 'clang', comb: 'comb',
 };
-const FX_NAMES: Record<ChannelFxType, string> = { crush: 'crush', tape: 'tape', cfilter: 'filter', delay: 'delay', reverb: 'reverb' };
+const FX_NAMES: Record<ChannelFxType, string> = { crush: 'crush', tape: 'tape', cfilter: 'filter', delay: 'delay', reverb: 'reverb', input: 'input (the raw mic or take beside the synth)' };
 
 export class SynthPanel {
   view: SoundView = 'simple';
@@ -483,7 +483,7 @@ export class SynthPanel {
     add.append(menu('Add an envelope or LFO to the voice', '+ envelope or LFO', [['env', 'envelope', envs < CAPS.envs], ['lfo', 'LFO', vp.mods.length - envs < CAPS.lfos]],
       (t) => this.edit('addMod', { slot: this.slot, type: t })));
     add.append(menu('Add an effect to the channel', '+ channel effect', (Object.keys(FX_NAMES) as ChannelFxType[]).map((t) => [t, FX_NAMES[t],
-      p.channel.length < CAPS.channel && (t !== 'delay' || p.channel.filter((x) => x.type === 'delay').length < CAPS.delay) && (t !== 'reverb' || !p.channel.some((x) => x.type === 'reverb'))]),
+      p.channel.length < CAPS.channel && (t !== 'delay' || p.channel.filter((x) => x.type === 'delay').length < CAPS.delay) && (t !== 'reverb' || !p.channel.some((x) => x.type === 'reverb')) && (t !== 'input' || !p.channel.some((x) => x.type === 'input'))]),
     (t) => this.edit('addChannelFx', { type: t })));
     f.append(lg, cost, add);
     return f;
@@ -556,8 +556,21 @@ export class SynthPanel {
       const id = c.fx;
       const i = p.channel.findIndex((x) => x.id === id);
       const fx = p.channel[i];
+      const input = p.channel.findIndex((x) => x.type === 'input');
+      if (fx.type !== 'input') row.append(check('bypass', fx.bypass, (on) => this.edit('setBypass', { id, bypass: on })));
+      if (fx.type !== 'input' && input > i) {
+        // Before the input: this effect runs on one path, the synth or the raw input.
+        row.append(check('raw input only', fx.path === 'raw', (on) => this.edit('setFxPath', { id, path: on ? 'raw' : 'synth' })));
+      }
+      if (fx.type === 'input' || input >= 0) {
+        const hint = document.createElement('span');
+        hint.className = 'dim';
+        hint.textContent = fx.type === 'input'
+          ? 'The raw input joins the synth here: the mic while the layer listens or is armed, the take on playback. Effects after it run on the blend.'
+          : i > input ? 'Runs on the blend.' : fx.path === 'raw' ? 'Runs on the raw input before the blend.' : 'Runs on the synth before the blend.';
+        row.append(hint);
+      }
       row.append(
-        check('bypass', fx.bypass, (on) => this.edit('setBypass', { id, bypass: on })),
         button('←', `Move ${id} earlier in the chain`, () => this.edit('moveChannelFx', { id, to: i - 1 }), i === 0),
         button('→', `Move ${id} later in the chain`, () => this.edit('moveChannelFx', { id, to: i + 1 }), i === p.channel.length - 1),
         button('Remove', `Remove ${id} and the routes into it`, () => this.edit('removeChannelFx', { id })),

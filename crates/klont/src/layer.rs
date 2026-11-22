@@ -509,6 +509,10 @@ pub struct Layer {
     auto_perf: [f32; 3],
     /// Which of the macro, level, pan and perf lanes were set this tick.
     auto_other: [bool; N_MACROS + 5],
+    /// Targets a hand moved while recording (MSG_RECORD): their lanes are ignored until released.
+    hold: Box<[bool; MAX_VALUES]>,
+    hold_other: [bool; N_MACROS + 5],
+    any_hold: bool,
 
     /// The raw input this tick, its read position in the take, whether it sounds, and the
     /// blend's gains (synth, raw).
@@ -644,6 +648,9 @@ impl Layer {
             auto_pan: f32::NAN,
             auto_perf: [f32::NAN; 3],
             auto_other: [false; N_MACROS + 5],
+            hold: Box::new([false; MAX_VALUES]),
+            hold_other: [false; N_MACROS + 5],
+            any_hold: false,
             raw: RawSrc::None,
             raw_pos: 0.0,
             raw_on: false,
@@ -1533,10 +1540,48 @@ impl Layer {
         self.auto_other = [false; N_MACROS + 5];
     }
 
+    /// Where a lane target's hold flag lives: (value index) or (slot in `hold_other`).
+    fn hold_slot(kind: u32, index: usize) -> Option<Result<usize, usize>> {
+        use crate::seq::{LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE};
+        match kind {
+            LANE_VALUE if index < MAX_VALUES => Some(Ok(index)),
+            LANE_MACRO if index < N_MACROS => Some(Err(index)),
+            LANE_LEVEL => Some(Err(N_MACROS)),
+            LANE_PAN => Some(Err(N_MACROS + 1)),
+            LANE_PERF if index < 3 => Some(Err(N_MACROS + 2 + index)),
+            _ => None,
+        }
+    }
+
+    /// MSG_RECORD: a hand moved this target while recording; its lane is ignored until released.
+    pub fn hold_lane(&mut self, kind: u32, index: usize) {
+        match Self::hold_slot(kind, index) {
+            Some(Ok(i)) => self.hold[i] = true,
+            Some(Err(k)) => self.hold_other[k] = true,
+            None => return,
+        }
+        self.any_hold = true;
+    }
+
+    /// The transport stopped or recording ended: every lane is in charge again.
+    pub fn release_holds(&mut self) {
+        if self.any_hold {
+            self.hold.fill(false);
+            self.hold_other = [false; N_MACROS + 5];
+            self.any_hold = false;
+        }
+    }
+
     /// A lane's value for value `i` (normalized), macro, level (dB), pan or perf source.
     pub fn auto_set(&mut self, kind: u32, index: usize, v: f32) {
         use crate::seq::{LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE};
         if !v.is_finite() {
+            return;
+        }
+        if self.any_hold && matches!(Self::hold_slot(kind, index), Some(Ok(i)) if self.hold[i]) {
+            return;
+        }
+        if self.any_hold && matches!(Self::hold_slot(kind, index), Some(Err(k)) if self.hold_other[k]) {
             return;
         }
         match kind {

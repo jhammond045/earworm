@@ -82,6 +82,8 @@ pub struct Engine {
     /// How far a take's frames lag its audio (seconds): its audio is read that much earlier.
     take_lag: f64,
     raw: Vec<f32>,
+    /// A pass is recording (MSG_RECORD): hand moves take their target from its lane.
+    recording: bool,
 }
 
 /// Longest mic delay the ring holds.
@@ -159,6 +161,7 @@ impl Engine {
             mic_delay: 0,
             take_lag: 0.0,
             raw: vec![0.0; max_block],
+            recording: false,
         });
         e.mic_delay = ((e.capture.level_delay_s() * sr).round() as usize).min(MIC_RING - 1);
         e.take_lag = e.capture.take_lag_s() as f64;
@@ -397,7 +400,23 @@ impl Engine {
             let time = u32::from_le_bytes([m[12], m[13], m[14], m[15]])
                 .min(frames.saturating_sub(1) as u32);
             let lay = layer < MAX_LAYERS;
+            if self.recording && lay {
+                match ty {
+                    MSG_SET_PARAM if index == SET_BASE => self.layers[layer].hold_lane(crate::seq::LANE_VALUE, param as usize),
+                    MSG_SET_MACRO => self.layers[layer].hold_lane(crate::seq::LANE_MACRO, index as usize),
+                    MSG_SET_LAYER if param == LAYER_LEVEL => self.layers[layer].hold_lane(crate::seq::LANE_LEVEL, 0),
+                    MSG_SET_LAYER if param == LAYER_PAN => self.layers[layer].hold_lane(crate::seq::LANE_PAN, 0),
+                    MSG_SET_PERF => self.layers[layer].hold_lane(crate::seq::LANE_PERF, index as usize),
+                    _ => {}
+                }
+            }
             match ty {
+                MSG_RECORD => {
+                    self.recording = value > 0.5;
+                    if !self.recording {
+                        self.layers.iter_mut().for_each(|l| l.release_holds());
+                    }
+                }
                 MSG_SET_PARAM if lay => self.layers[layer].set_param(index, param as usize, value),
                 MSG_SET_MACRO if lay => self.layers[layer].set_macro(index as usize, value),
                 MSG_SET_LAYER if lay => self.layers[layer].set_field(param, value),
@@ -469,6 +488,7 @@ impl Engine {
                     self.transport.stop();
                     for l in self.layers.iter_mut() {
                         l.release_sequenced();
+                        l.release_holds();
                     }
                 }
                 MSG_JUMP => self.transport.queue_jump(index as usize),

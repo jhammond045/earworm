@@ -411,3 +411,32 @@ fn offset_between_the_raw_input_and_the_synth_it_drives() {
     assert!(off_live.abs() <= 240.0 && off_play.abs() <= 240.0, "offsets {off_live} and {off_play} samples");
 }
 
+
+/// While a pass records, a value moved by hand leaves its lane (so the move is heard and
+/// recorded over it); otherwise, and once the transport stops, the lane is in charge.
+#[test]
+fn a_hand_move_while_recording_takes_the_value_from_its_lane() {
+    let voice = sine_voice(1.0);
+    let ch: Vec<FxSpec> = vec![(P::T_INPUT, false)];
+    let mix = mix_index(&voice, &ch, 0);
+    let patch = build::patch(&[voice], &ch, &[]);
+    let t = take(2.0, 4800);
+    // The lane holds the mix at 0 (the synth) all through.
+    let lanes = [Lane { kind: LANE_VALUE, index: mix as u32, points: vec![(0.0, 0.0)] }];
+    let run = |record: bool| {
+        let mut e = take_engine(&t, &patch, 2.0, &lanes);
+        render(&mut e, (0.5 * SR) as usize, 4096);
+        if record {
+            e.push(MSG_RECORD, 0, 0, 0, 1.0, 0);
+        }
+        // A hand sets the mix to 1 (only the raw input).
+        e.push(MSG_SET_PARAM, 0, SET_BASE, mix as u16, 1.0, 0);
+        render(&mut e, (1.0 * SR) as usize, 4096).0
+    };
+    let (plain, recording) = (run(false), run(true));
+    let mut lane_only = take_engine(&t, &patch, 2.0, &lanes);
+    render(&mut lane_only, (0.5 * SR) as usize, 4096);
+    let (lane_only, _) = render(&mut lane_only, (1.0 * SR) as usize, 4096);
+    assert_eq!(plain, lane_only, "not recording: the lane stays in charge");
+    assert!(max_diff_db(&recording, &lane_only) > -20.0, "recording: the hand's value is heard");
+}

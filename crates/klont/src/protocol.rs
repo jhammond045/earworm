@@ -90,6 +90,11 @@ pub const MSG_LISTEN: u16 = 19;
 /// with morph markers wins while the transport plays; the scene holds when it
 /// stops. Needs states (LOAD_STATES).
 pub const MSG_MORPH_TO: u16 = 20;
+/// Recording (S5, docs/synth.md "DAW use"): value 1 while a pass records, 0 after. While it
+/// records, a value, macro, level, pan or performance source moved by a message (a hand: the
+/// screen or a controller) leaves its automation lane until the transport stops or recording
+/// ends, so the move is heard and recorded over the lane. Otherwise a lane stays in charge.
+pub const MSG_RECORD: u16 = 21;
 /// MSG_SET_PERF layer meaning every layer.
 pub const ALL_LAYERS: u8 = 255;
 

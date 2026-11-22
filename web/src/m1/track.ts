@@ -4,6 +4,7 @@
 
 export const TRACK_MAGIC = 0x31545745; // "EWT1"
 export const TRACK_MAGIC2 = 0x32545745; // "EWT2": v1 plus morph markers
+export const TRACK_MAGIC3 = 0x33545745; // "EWT3": v2 plus take audio and automation lanes (S5)
 export const CURVE_MAGIC = 0x31435745; // "EWC1"
 export const FEEL_GRID = 0;
 export const FEEL_FREE = 1;
@@ -13,6 +14,20 @@ export const TRACK_HEADER_WORDS = 8;
 export const SECTION_WORDS = 8;
 export const CLIP_WORDS = 8;
 export const CLIP_WORDS2 = 12;
+export const CLIP_WORDS3 = 16;
+export const LANE_WORDS = 4;
+export const POINT_WORDS = 3;
+/** Lane target kinds and point shapes (crates/klont/src/seq.rs). */
+export const LANE_VALUE = 0;
+export const LANE_MACRO = 1;
+export const LANE_LEVEL = 2;
+export const LANE_PAN = 3;
+export const LANE_PERF = 4;
+export const LANE_LINE = 0;
+export const LANE_EASE = 1;
+export const LANE_STEP = 2;
+export const MAX_LANES = 1024;
+export const MAX_LANE_POINTS = 65536;
 export const MORPH_WORDS = 4;
 export const MORPH_LINE = 0;
 export const MORPH_EASE = 1;
@@ -32,6 +47,7 @@ export const MAX_EVENTS = 16384;
 export const MAX_WARP = 16384;
 export const MAX_LAYERS = 8;
 export const MAX_CURVES = 64;
+export const MAX_SAMPLES = 64;
 
 const QUIET_NAN = 0x7fc00000;
 
@@ -97,7 +113,16 @@ export interface TrackClip {
   warp?: TrackWarpAnchor[];
   /** Morph markers for the layer's states. Any marker in the track makes the blob v2. */
   morph?: TrackMorph[];
+  /** Sample id of the take's audio (the raw input on playback), -1 / undefined for none. Any audio
+   *  or lane in the track makes the blob v3. */
+  audio?: number;
+  /** Automation lanes (resolution step 2). */
+  lanes?: TrackLane[];
 }
+
+/** An automation lane: LANE_* kind, index (value, macro or perf source), points sorted by t with
+ *  v in the target's units and a LANE_LINE, _EASE or _STEP shape. */
+export interface TrackLane { kind: number; index: number; points: { t: number; v: number; shape: number }[] }
 
 export interface TrackInput {
   sections: TrackSection[];
@@ -202,7 +227,20 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       };
     });
     morph.sort((a, b) => a.t - b.t);
-    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, morph };
+    const audio = int(c.audio ?? -1, -1, MAX_SAMPLES - 1, `clip ${i} audio`);
+    const lanes = (c.lanes ?? []).map((l, k) => {
+      int(l.kind, LANE_VALUE, LANE_PERF, `clip ${i} lane ${k} kind`);
+      const max = l.kind === LANE_VALUE ? 1023 : l.kind === LANE_MACRO ? 7 : l.kind === LANE_PERF ? 2 : 0;
+      int(l.index, 0, max, `clip ${i} lane ${k} index`);
+      const points = l.points.map((p, j) => {
+        if (!(finite(p.t, `clip ${i} lane ${k} point ${j} t`) >= 0)) fail(`clip ${i} lane ${k} point ${j} t must be >= 0`);
+        finite(p.v, `clip ${i} lane ${k} point ${j} v`);
+        int(p.shape, LANE_LINE, LANE_STEP, `clip ${i} lane ${k} point ${j} shape`);
+        return p;
+      });
+      return { kind: l.kind, index: l.index, points: [...points].sort((a, b) => a.t - b.t) };
+    });
+    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, morph, audio, lanes };
   });
 
   const nEvents = clips.reduce((n, c) => n + c.events.length, 0);
@@ -211,25 +249,31 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
   if (nWarp > MAX_WARP) fail(`more than ${MAX_WARP} warp anchors`);
   const nMorph = clips.reduce((n, c) => n + c.morph.length, 0);
   if (nMorph > MAX_MORPH) fail(`more than ${MAX_MORPH} morph markers`);
-  // v1 bytes when there are no markers, so existing tracks and fixtures stay byte-identical.
-  const v2 = nMorph > 0;
+  const nLanes = clips.reduce((n, c) => n + c.lanes.length, 0);
+  const nPoints = clips.reduce((n, c) => n + c.lanes.reduce((m, l) => m + l.points.length, 0), 0);
+  if (nLanes > MAX_LANES) fail(`more than ${MAX_LANES} automation lanes`);
+  if (nPoints > MAX_LANE_POINTS) fail(`more than ${MAX_LANE_POINTS} automation points`);
+  // The oldest version that holds everything, so existing tracks and fixtures stay byte-identical.
+  const v3 = nLanes > 0 || clips.some((c) => c.audio >= 0);
+  const v2 = v3 || nMorph > 0;
 
   const w = new Words(
     TRACK_HEADER_WORDS +
       sections.length * SECTION_WORDS +
-      clips.length * (v2 ? CLIP_WORDS2 : CLIP_WORDS) +
+      clips.length * (v3 ? CLIP_WORDS3 : v2 ? CLIP_WORDS2 : CLIP_WORDS) +
       nEvents * EVENT_WORDS +
       nWarp * WARP_WORDS +
-      nMorph * MORPH_WORDS,
+      nMorph * MORPH_WORDS +
+      (v3 ? 1 + nLanes * LANE_WORDS + nPoints * POINT_WORDS : 0),
   );
-  w.u(v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
+  w.u(v3 ? TRACK_MAGIC3 : v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
   w.u(sections.length);
   w.u(clips.length);
   w.u(nEvents);
   w.u(nWarp);
   w.u(t.loop ? 1 : 0);
   w.u(nMorph);
-  w.zeros(1);
+  w.u(v3 ? nLanes : 0);
   for (const s of sections) {
     w.u(s.grid ? FEEL_GRID : FEEL_FREE);
     w.f(s.length);
@@ -242,6 +286,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
   let fe = 0;
   let fw = 0;
   let fm = 0;
+  let fl = 0;
   for (const c of clips) {
     w.u(c.section);
     w.u(c.layer);
@@ -251,11 +296,19 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     w.i(c.curve);
     w.u(fw);
     w.u(c.warp.length);
-    if (v2) {
+    if (v3) {
+      w.u(fm);
+      w.u(c.morph.length);
+      w.i(c.audio);
+      w.u(fl);
+      w.u(c.lanes.length);
+      w.zeros(3);
+    } else if (v2) {
       w.u(fm);
       w.u(c.morph.length);
       w.zeros(2);
     }
+    fl += c.lanes.length;
     fe += c.events.length;
     fw += c.warp.length;
     fm += c.morph.length;
@@ -291,6 +344,28 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       w.u(m.state);
       w.f(m.lenMs);
       w.u(m.shape);
+    }
+  }
+  if (v3) {
+    w.u(nPoints);
+    let fp = 0;
+    for (const c of clips) {
+      for (const l of c.lanes) {
+        w.u(l.kind);
+        w.u(l.index);
+        w.u(fp);
+        w.u(l.points.length);
+        fp += l.points.length;
+      }
+    }
+    for (const c of clips) {
+      for (const l of c.lanes) {
+        for (const p of l.points) {
+          w.f(p.t);
+          w.f(p.v);
+          w.u(p.shape);
+        }
+      }
     }
   }
   return w.buf;
