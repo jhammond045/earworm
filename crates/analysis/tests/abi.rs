@@ -31,7 +31,8 @@ fn second_pass_through_the_c_abi_matches_the_direct_call() {
     let n = an_result_len() as usize;
     let via = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
     assert_eq!(bits(&via), bits(&direct));
-    assert_eq!(via.len(), 16 + (rec.len() / STRIDE) + 4 * via[12] as usize + 22 * via[13] as usize);
+    assert_eq!(via.len(), 16 + (rec.len() / STRIDE) + 4 * via[12] as usize + 22 * via[13] as usize + 3 * via[15] as usize);
+    assert!(via[15] >= 3.0, "a hum with notes gives flex anchors");
     assert!(via[12] >= 3.0, "a hum with notes gives notes");
     // Options: force a beat read of the same take.
     let mut opts = vec![0.0f32; analysis::second::OPTIONS_LEN];

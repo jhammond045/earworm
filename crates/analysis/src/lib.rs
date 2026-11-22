@@ -3,6 +3,7 @@
 //! stored-take tune call. Compiled natively (tests, the eval tools) and to
 //! wasm for the analysis workers.
 
+pub mod anchors;
 pub mod beats;
 pub mod full;
 pub mod influence;

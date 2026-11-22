@@ -400,3 +400,52 @@ pub fn make_hum(voice: &Voice, seed: u64) -> Hum {
 
 #[allow(unused_imports)]
 pub use analysis::score::{NoteScore, match_notes};
+
+// ---------------------------------------------------------------- flex anchors
+
+pub mod flex_takes;
+
+/// How well found anchor times match true onsets: each true time is matched to at most one
+/// found time within 50 ms, nearest pairs first (as the flex prototype matched them).
+#[derive(Clone, Debug, Default)]
+pub struct AnchorScore {
+    pub truth: usize,
+    /// Signed errors of the matched true times, found minus true, ms.
+    pub errs: Vec<f64>,
+}
+
+impl AnchorScore {
+    pub fn add(&mut self, found: &[f64], truth: &[f64]) {
+        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+        for (i, f) in found.iter().enumerate() {
+            for (j, t) in truth.iter().enumerate() {
+                let d = (f - t).abs();
+                if d <= 0.05 {
+                    pairs.push((d, i, j));
+                }
+            }
+        }
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (mut uf, mut ut) = (vec![false; found.len()], vec![false; truth.len()]);
+        for (_, i, j) in pairs {
+            if !uf[i] && !ut[j] {
+                uf[i] = true;
+                ut[j] = true;
+                self.errs.push((found[i] - truth[j]) * 1000.0);
+            }
+        }
+        self.truth += truth.len();
+    }
+    pub fn found_share(&self) -> f64 {
+        self.errs.len() as f64 / self.truth.max(1) as f64
+    }
+    pub fn mean_ms(&self) -> f64 {
+        self.errs.iter().map(|e| e.abs()).sum::<f64>() / self.errs.len().max(1) as f64
+    }
+    pub fn max_ms(&self) -> f64 {
+        self.errs.iter().fold(0.0f64, |m, e| m.max(e.abs()))
+    }
+    pub fn line(&self) -> String {
+        format!("{} of {} found ({:.1}%), mean error {:.2} ms, max {:.1} ms", self.errs.len(), self.truth, 100.0 * self.found_share(), self.mean_ms(), self.max_ms())
+    }
+}

@@ -6,6 +6,7 @@
 //! Frame records are 25 floats (`STRIDE`): the 24-float feature frame followed
 //! by the tuned pitch. Frame k sits at k / 100 s of the take audio.
 
+use crate::anchors::{self, Anchor};
 use crate::beats::{Hit, HitInput, Taught, group, measure_hits};
 use crate::notes::{self, Note};
 use crate::pyin::pyin;
@@ -117,6 +118,8 @@ pub struct SecondPassResult {
     pub loop_sec: f32,
     pub notes: Vec<Note>,
     pub hits: Vec<Hit>,
+    /// Flex anchors (docs/quant.md), sorted by time; see `anchors`.
+    pub anchors: Vec<Anchor>,
     pub kinds: usize,
     /// What kind detection looked at: voiced fraction, onsets per second, median event
     /// length (s), pitch stability, percussive share. For tests and tools; not in the flat layout.
@@ -134,7 +137,7 @@ pub const HIT_LEN: usize = 22;
 impl SecondPassResult {
     /// Floats needed by `to_floats`.
     pub fn flat_len(&self) -> usize {
-        OUT_HEADER + self.pitch.len() + self.notes.len() * NOTE_LEN + self.hits.len() * HIT_LEN
+        OUT_HEADER + self.pitch.len() + self.notes.len() * NOTE_LEN + self.hits.len() * HIT_LEN + self.anchors.len() * anchors::ANCHOR_LEN
     }
 
     /// Flat layout for the C ABI:
@@ -152,8 +155,8 @@ impl SecondPassResult {
     /// | 10 | kinds (kit groups) |
     /// | 11, 12, 13 | frame, note and hit counts |
     /// | 14 | floats per hit (22) |
-    /// | 15 | reserved |
-    /// | 16.. | pitch (one per frame), notes (4 each), hits (22 each) |
+    /// | 15 | anchor count (flex anchors, detector `anchors::VERSION`) |
+    /// | 16.. | pitch (one per frame), notes (4 each), hits (22 each), anchors (3 each: take seconds, weight, flags) |
     pub fn to_floats(&self, out: &mut Vec<f32>) {
         out.clear();
         out.reserve(self.flat_len());
@@ -173,7 +176,7 @@ impl SecondPassResult {
             self.notes.len() as f32,
             self.hits.len() as f32,
             HIT_LEN as f32,
-            0.0,
+            self.anchors.len() as f32,
         ]);
         out.extend_from_slice(&self.pitch);
         for n in &self.notes {
@@ -199,6 +202,7 @@ impl SecondPassResult {
             out.extend_from_slice(&h.features);
             out.extend_from_slice(&h.live);
         }
+        anchors::to_floats(&self.anchors, out);
     }
 }
 
@@ -309,6 +313,7 @@ pub fn second_pass(audio: &[f32], sr: f32, frames: &[f32], opts: &Options) -> Se
         loop_sec: n as f32 / FPS,
         notes: Vec::new(),
         hits: Vec::new(),
+        anchors: Vec::new(),
         kinds: 0,
         kind_features: [0.0; 5],
     };
@@ -364,6 +369,12 @@ pub fn second_pass(audio: &[f32], sr: f32, frames: &[f32], opts: &Options) -> Se
         }
         Kind::Texture => {}
     }
+
+    // Flex anchors, from what was found above (plus one high-band onset pass for beats and texture).
+    res.anchors = match res.kind {
+        Kind::Melody => anchors::note_anchors(&res.notes, &onsets.iter().map(|o| (o.t, o.flux)).collect::<Vec<_>>(), &second),
+        _ => anchors::onset_anchors(&anchors::onsets_with_high_band(audio, sr, n, &onsets), &res.hits),
+    };
 
     // Tuning reference and scale from the notes (or the voiced frames when there are none).
     let items: Vec<(f32, f32)> = if !res.notes.is_empty() {
@@ -456,13 +467,16 @@ mod tests {
             loop_sec: 4.8,
             notes: vec![Note { t: 0.1, dur: 0.2, cents: 5000.0, hard: 0.4 }],
             hits: vec![Hit { t: 0.5, slot: 2, features: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], live: [0.1, 0.2, 0.3], ..Hit::default() }],
+            anchors: vec![Anchor { t: 0.49, w: 2.0, flags: anchors::flags(true, anchors::KIND_HIT, 2) }],
             kinds: 3,
             kind_features: [0.0; 5],
         };
         let mut f = Vec::new();
         r.to_floats(&mut f);
         assert_eq!(f.len(), r.flat_len());
-        assert_eq!(f.len(), OUT_HEADER + 3 + 4 + HIT_LEN);
+        assert_eq!(f.len(), OUT_HEADER + 3 + 4 + HIT_LEN + 3);
+        assert_eq!(f[15], 1.0);
+        assert_eq!(&f[f.len() - 3..], &[0.49, 2.0, 21.0]);
         assert_eq!(f[0], 1.0);
         assert_eq!(f[7], 100.0);
         assert_eq!(f[11], 3.0);
