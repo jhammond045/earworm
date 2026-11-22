@@ -147,6 +147,14 @@
         <label>Length <input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds"> ms</label>
         <span id="morphList" class="dim"></span>
       </div>
+      <div class="morph" data-tour="lane">
+        <span class="dim">Lane</span>
+        <label>Shows
+          <select id="laneTarget" aria-label="What the automation strip under the selected layer shows"></select>
+        </label>
+        <button type="button" id="laneClear" title="Remove every point of this lane from the clip">Remove lane</button>
+        <span id="laneNote" class="hint">The strip under the morph strip: double-click to add a point (or remove one), drag a point to move it. Record fills lanes from what you play.</span>
+      </div>
     </main>
     <aside class="panel" id="panel-sound">
       <h2>Sound</h2>

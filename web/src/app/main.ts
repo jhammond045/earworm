@@ -3,6 +3,7 @@
 
 import { decodeBytes, decodeFile, loadSources, MAX_SOURCE_S, trimAndCap, type SavedSource } from '../influence/audio';
 import { stateVocab, vocabIndices } from '../synth/classic';
+import { layoutOf } from '../synth/patch';
 import { download, encodeWav } from '../common/wav';
 import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { OfflineRenderer } from '../m1/offline';
@@ -49,7 +50,7 @@ import { songSeconds, uploadsToSong } from './mix';
 import { tuneFromTake } from './tune';
 import { factoryPresets, parsePreset, presetFileName, presetFromLayer, presetMatches, presetText, type PresetFile } from '../presets/presets';
 import { Ribbon } from '../live/ribbon';
-import { SynthPanel } from './synth-ui';
+import { keyLabel, SynthPanel } from './synth-ui';
 import { PerformPanel } from './perform';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -265,6 +266,38 @@ async function main(): Promise<void> {
       b.addEventListener('click', () => app.run(() => app.store.dispatch('removeMorphMarker', { section: sec.id, layer: app.ui.layerId, index: i })));
       box.append(b);
     });
+    renderLanePick(sec);
+  }
+
+  /** What the automation strip under the selected layer shows: the clip's lanes first, then the
+   *  macros, level, pan, wheel, bend and pressure, then every value of the layer's patch. */
+  function renderLanePick(sec: NonNullable<ReturnType<typeof section>>): void {
+    const l = layer();
+    const sel = $<HTMLSelectElement>('laneTarget');
+    if (!l) return;
+    const clip = sec.clips[l.id];
+    const have = (clip?.auto ?? []).map((a) => a.target);
+    const fixed = ['macro1', 'macro2', 'macro3', 'macro4', 'macro5', 'macro6', 'macro7', 'macro8', 'layer.level', 'layer.pan', 'wheel', 'bend', 'pressure'];
+    const keys = layoutOf(l.patch).keys;
+    const sig = [l.id, have.join(','), keys.length].join('|');
+    const cur = timeline.laneTarget(l, clip);
+    if (sel.dataset.sig !== sig) {
+      sel.dataset.sig = sig;
+      sel.replaceChildren(new Option('(nothing)', ''));
+      const name = (k: string) => { const m = /^macro([1-8])$/.exec(k); return m ? `macro ${MACRO_NAMES[Number(m[1]) - 1]}` : k === 'layer.level' ? 'level' : k === 'layer.pan' ? 'pan' : keyLabel(k); };
+      const group = (label: string, list: string[]) => {
+        if (!list.length) return;
+        const g = document.createElement('optgroup');
+        g.label = label;
+        for (const k of list) g.append(new Option(name(k), k));
+        sel.append(g);
+      };
+      group('Lanes in this clip', have);
+      group('Layer', fixed.filter((k) => !have.includes(k)));
+      group('Values', keys.filter((k) => !have.includes(k)));
+    }
+    sel.value = cur;
+    $<HTMLButtonElement>('laneClear').disabled = !have.includes(cur);
   }
 
   function renderSound(): void {
@@ -1450,6 +1483,20 @@ async function main(): Promise<void> {
 
   holdButton(btn('capture'), () => { capture.start(); acted('capture'); }, () => { void capture.end(); });
   btn('record').addEventListener('click', () => { capture.toggleRecord(); acted('capture'); });
+  $<HTMLSelectElement>('laneTarget').addEventListener('change', () => {
+    const l = layer();
+    if (!l) return;
+    timeline.laneShown.set(l.id, $<HTMLSelectElement>('laneTarget').value);
+    timeline.invalidate();
+    app.refreshAll();
+  });
+  btn('laneClear').addEventListener('click', () => {
+    const l = layer();
+    const sec = section();
+    if (!l || !sec) return;
+    const target = timeline.laneTarget(l, sec.clips[l.id]);
+    if (target) app.run(() => app.store.dispatch('setLane', { section: sec.id, layer: l.id, target, points: null }));
+  });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { app.host?.stop(); return; }
     const mod = e.metaKey || e.ctrlKey;
