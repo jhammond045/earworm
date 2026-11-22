@@ -9,7 +9,8 @@
 //   layer's Tune octave, which the compiler adds, is taken off.
 // - Moves become automation lanes, one per target. A recorded lane overwrites the lane's old
 //   points from the first move to the end of the pass. A new lane starts with a point at the
-//   start of the pass holding the value the target had then, so playback starts as the pass did.
+//   start of the pass holding (a step) the value the target had then, so playback starts as the
+//   pass did.
 // - Scene taps become morph markers (the tap's state, over the scene time). When the clip had no
 //   markers, one at the start of the pass holds the state the layer was in, as heard.
 // - Where the hand left each value, macro, level and pan becomes the layer's own (in the state
@@ -236,7 +237,8 @@ export function passCommands(doc: Project, pass: Pass, place: Placement, sr: num
     const first: LanePoint[] = [];
     if (!old && g.si === startW.si) {
       const t = wrap(startW.pos, len);
-      if (t < t0) first.push({ t, v: valueOf(e.layer, g.target), shape: 'line' });
+      // Held (a step) until the first move, as it was heard.
+      if (t < t0) first.push({ t, v: valueOf(e.layer, g.target), shape: 'step' });
     }
     const merged = [...kept, ...first, ...pts].sort((a, b) => a.t - b.t);
     // Points recorded later in the pass win where the loop wrapped onto earlier ones.
