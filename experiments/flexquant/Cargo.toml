@@ -1,0 +1,19 @@
+# Throwaway feasibility prototype for docs/quant.md. Not part of the app or the
+# main workspace: it has its own workspace so `pnpm test` and `cargo test
+# --workspace` never build it.
+[package]
+name = "flexquant"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+analysis = { path = "../../crates/analysis" }
+dsp = { path = "../../crates/dsp" }
+hound = "3"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
