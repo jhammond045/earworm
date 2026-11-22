@@ -36,6 +36,12 @@ export interface RenderOptions {
   maxSeconds?: number;
   /** Render one pass of a looping track (clears the loop flag in the blob). Default true. */
   once?: boolean;
+  /** Before Play, let the engine sit one second with the transport stopped, so every value
+   *  starts where it does in a live engine that has sat still, instead of gliding in from the
+   *  patch's starting values under the first notes (docs/S5.md). Play from a stop then starts
+   *  every random sequence again, so the second leaves nothing else behind. The app's export
+   *  sets it; the golden renders do not, since the engine they compare with had no such second. */
+  settle?: boolean;
 }
 
 export interface Hooks {
@@ -122,6 +128,7 @@ export async function renderSong(ex: EngineExports, song: SongBlobs, opts: Rende
       new Uint32Array(track, 0, 6)[5] = 0; // header word 5: loop flag
     }
     check('track', core.load(LOAD_TRACK, 0, track));
+    if (opts.settle) for (let f = 0; f < sr; f += CHUNK) core.render(Math.min(CHUNK, sr - f));
     const first: Msg[] = [];
     if (opts.budget !== undefined) first.push([MSG_SET_BUDGET, 0, 0, 0, opts.budget]);
     first.push([MSG_PLAY, 0, 0, 0, 0]);

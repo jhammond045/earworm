@@ -1548,7 +1548,7 @@ async function main(): Promise<void> {
       const song = uploadsToSong(uploads);
       const seconds = songSeconds(app.doc);
       $('engineStatus').textContent = 'Rendering the mix…';
-      const job = renderer.render(song, { once: true, maxSeconds: Math.min(180, Math.max(2, seconds + 12)) }, (p) => {
+      const job = renderer.render(song, { once: true, settle: true, maxSeconds: Math.min(180, Math.max(2, seconds + 12)) }, (p) => {
         $('engineStatus').textContent = `Rendering ${p.seconds.toFixed(1)} s…`;
       });
       const res = await job.promise;

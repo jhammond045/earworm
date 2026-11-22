@@ -269,8 +269,11 @@ fn live_playback_after_play_from_a_stop_matches_an_export() {
         ll.extend_from_slice(&a[..QUANTUM]);
         lr.extend_from_slice(&b[..QUANTUM]);
     }
+    // The export, as the app makes it (render-core `settle`): one second with the transport
+    // stopped, then Play.
     let mut ex = Engine::new(SR, 4096);
     load(&mut ex);
+    render(&mut ex, SR as usize, 4096);
     ex.push(MSG_PLAY, 0, 0, 0, 0.0, 0);
     let (el, er) = render(&mut ex, n, 4096);
     let d = max_diff_db(&ll[..n], &el).max(max_diff_db(&lr[..n], &er));
