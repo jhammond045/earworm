@@ -7,7 +7,7 @@
 //! carries enough of the frame. The templates are generic: nothing is learned
 //! from the test guitar.
 
-use crate::hs::{Det, HIGH_MIDI, LOW_MIDI};
+use crate::hs::Det;
 use crate::spectrum::{Stft, midi_hz, refine_f0};
 
 pub struct NmfParams {
@@ -19,11 +19,20 @@ pub struct NmfParams {
     /// A pitch is present when its activation is at least this share of sum(V).
     pub share: f32,
     pub max_notes: usize,
+    /// The dictionary's lowest and highest note, MIDI.
+    pub lo: u8,
+    pub hi: u8,
+    /// Templates and the fitted spectrum stop here.
+    pub f_max: f32,
+    /// Inharmonicity B of each note's template.
+    pub b: fn(u8) -> f32,
+    /// Broadband atoms beside the notes (MIDI 0), smooth bumps on a log
+    /// frequency axis, so diffuse energy (noise, reverb, a body's thump) has
+    /// somewhere to go other than the lowest notes' dense templates.
+    pub noise: usize,
 }
 
-const F_MAX: f32 = 5000.0;
 const SLOPES: [f32; 2] = [0.6, 1.4];
-const B_NOMINAL: f32 = 5e-5;
 
 pub struct Nmf {
     p: NmfParams,
@@ -42,16 +51,17 @@ pub struct Nmf {
 impl Nmf {
     pub fn new(stft: &Stft, p: NmfParams) -> Self {
         let bin_hz = stft.bin_hz;
-        let kmax = ((F_MAX / bin_hz) as usize).min(stft.mag.len() - 1);
+        let kmax = ((p.f_max / bin_hz) as usize).min(stft.mag.len() - 1);
         let mut w = vec![];
         let mut midi = vec![];
-        for m in LOW_MIDI as u8..=HIGH_MIDI as u8 {
+        for m in p.lo..=p.hi {
             let f0 = midi_hz(m as f32);
+            let b = (p.b)(m);
             for &slope in &SLOPES {
                 let mut t = vec![0.0f32; kmax];
-                for h in 1..200 {
-                    let fh = h as f32 * f0 * (1.0 + B_NOMINAL * (h * h) as f32).sqrt();
-                    if fh > F_MAX {
+                for h in 1..400 {
+                    let fh = h as f32 * f0 * (1.0 + b * (h * h) as f32).sqrt();
+                    if fh > p.f_max {
                         break;
                     }
                     let a = (h as f32).powf(-slope);
@@ -71,6 +81,25 @@ impl Nmf {
                 }
                 w.push(col);
                 midi.push(m);
+            }
+        }
+        if p.noise > 0 {
+            let (a, b) = ((60.0f32).ln(), p.f_max.ln());
+            let step = (b - a) / (p.noise - 1).max(1) as f32;
+            for i in 0..p.noise {
+                let c = a + i as f32 * step;
+                let mut col: Vec<(u16, f32)> = (1..kmax)
+                    .filter_map(|k| {
+                        let d = ((k as f32 * bin_hz).max(1.0).ln() - c) / (2.0 * step);
+                        (d.abs() < 1.0).then(|| (k as u16, (0.5 + 0.5 * (std::f32::consts::PI * d).cos()).powf(p.pw)))
+                    })
+                    .collect();
+                let sum: f32 = col.iter().map(|x| x.1).sum();
+                if sum > 0.0 {
+                    col.iter_mut().for_each(|x| x.1 /= sum);
+                    w.push(col);
+                    midi.push(0);
+                }
             }
         }
         let nt = w.len();
@@ -128,7 +157,7 @@ impl Nmf {
                 a += self.h[i];
                 i += 1;
             }
-            if a >= self.p.share * total {
+            if m > 0 && a >= self.p.share * total {
                 self.act.push((m, a));
             }
         }

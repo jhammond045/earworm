@@ -20,6 +20,9 @@ pub struct TrackParams {
     pub strum_rise: f32,
     /// Strength a pitch needs to start a note; any detection keeps one going.
     pub open_strength: f32,
+    /// When non-zero, a note may only start within this many frames of a
+    /// broadband onset: a string sounds because it was struck.
+    pub open_gate: u32,
     pub max_notes: usize,
 }
 
@@ -145,7 +148,8 @@ impl Tracker {
             if s.on {
                 continue;
             }
-            if d.strength < self.p.open_strength {
+            let gated = self.p.open_gate > 0 && self.since_onset >= self.p.open_gate;
+            if d.strength < self.p.open_strength || gated {
                 s.run = 0;
                 continue;
             }

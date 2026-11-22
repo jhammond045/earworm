@@ -28,10 +28,10 @@ pub struct HsParams {
     pub max_notes: usize,
     /// Whitening exponent (Klapuri's nu).
     pub nu: f32,
+    /// Lowest and highest candidate, MIDI.
+    pub lo: u8,
+    pub hi: u8,
 }
-
-pub const LOW_MIDI: f32 = 40.0;
-pub const HIGH_MIDI: f32 = 88.0;
 const STEPS: usize = 5;
 const MAX_PARTIALS: usize = 20;
 const F_MAX: f32 = 5000.0;
@@ -71,9 +71,9 @@ impl Hs {
         let beta = 320.0;
         let mut cands = vec![];
         let mut tab = vec![];
-        let n_c = ((HIGH_MIDI - LOW_MIDI) * STEPS as f32).round() as usize + STEPS;
+        let n_c = (p.hi - p.lo) as usize * STEPS + STEPS;
         for i in 0..n_c {
-            let midi = LOW_MIDI - 0.4 + i as f32 / STEPS as f32;
+            let midi = p.lo as f32 - 0.4 + i as f32 / STEPS as f32;
             let f0 = midi_hz(midi);
             let start = tab.len();
             let half = (0.5 / STEPS as f32 / 12.0).exp2();

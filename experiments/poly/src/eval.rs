@@ -40,6 +40,10 @@ pub struct Metrics {
     pub cents: Vec<f64>,
     /// Per section: name, notes played, notes found.
     pub sections: Vec<(&'static str, usize, usize)>,
+    /// Per played note, in order: was it found. Not merged by `add`.
+    pub hit: Vec<bool>,
+    /// Per tracked note: MIDI note, found, length in seconds.
+    pub tracked: Vec<(u8, bool, f64)>,
 }
 
 impl Metrics {
@@ -65,6 +69,7 @@ impl Metrics {
         self.frame.2 += o.frame.2;
         self.vel.extend(&o.vel);
         self.cents.extend(&o.cents);
+        self.tracked.extend(&o.tracked);
         for &(name, n, tp) in &o.sections {
             match self.sections.iter_mut().find(|s| s.0 == name) {
                 Some(s) => {
@@ -92,24 +97,27 @@ impl Metrics {
 }
 
 pub fn percentile(v: &[f64], q: f64) -> f64 {
-    if v.is_empty() {
+    // NaN marks a value a detector does not report (Basic Pitch's cents).
+    let mut s: Vec<f64> = v.iter().copied().filter(|x| !x.is_nan()).collect();
+    if s.is_empty() {
         return f64::NAN;
     }
-    let mut s = v.to_vec();
     s.sort_by(f64::total_cmp);
     s[((s.len() - 1) as f64 * q).round() as usize]
 }
 
 pub fn pearson(v: &[(f64, f64)]) -> f64 {
+    // Labels without velocities carry NaN; they are left out.
+    let v: Vec<(f64, f64)> = v.iter().copied().filter(|p| p.0.is_finite() && p.1.is_finite()).collect();
     let n = v.len() as f64;
     let (mx, my) = (v.iter().map(|p| p.0).sum::<f64>() / n, v.iter().map(|p| p.1).sum::<f64>() / n);
     let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
-    for &(x, y) in v {
+    for &(x, y) in &v {
         sxy += (x - mx) * (y - my);
         sxx += (x - mx) * (x - mx);
         syy += (y - my) * (y - my);
     }
-    sxy / (sxx * syy).sqrt().max(1e-12)
+    if sxx * syy > 0.0 { sxy / (sxx * syy).sqrt() } else { f64::NAN }
 }
 
 fn mask(notes: impl Iterator<Item = u8>) -> u128 {
@@ -151,6 +159,7 @@ pub fn score(truth: &[Note], est: &[Est], live: bool, window: (f64, f64), sectio
         }
         let sec = section_of(t.on);
         m.sections[sec].1 += 1;
+        m.hit.push(best.is_some());
         match best {
             Some(i) => {
                 used[i] = true;
@@ -178,6 +187,7 @@ pub fn score(truth: &[Note], est: &[Est], live: bool, window: (f64, f64), sectio
     }
 
     for (i, e) in est.iter().enumerate() {
+        m.tracked.push((e.midi, used[i], off(e) - on(e)));
         if used[i] {
             continue;
         }

@@ -18,6 +18,7 @@ mod eval;
 mod guitar;
 mod hs;
 mod nmf;
+mod real;
 mod spectrum;
 mod track;
 
@@ -65,7 +66,39 @@ fn knob(name: &str, default: f32) -> f32 {
     std::env::var(format!("POLY_{name}")).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-fn track_params(cfg: &Config) -> TrackParams {
+/// What the detectors assume about the instrument: the dictionary's range,
+/// how far up its templates reach, their inharmonicity, and how many notes
+/// the tracker holds at once.
+#[derive(Clone, Copy)]
+pub struct Profile {
+    pub name: &'static str,
+    pub lo: u8,
+    pub hi: u8,
+    pub f_max: f32,
+    pub b: fn(u8) -> f32,
+    pub max_notes: usize,
+}
+
+/// E2 to E6, a steel string's inharmonicity, six strings. The synthetic
+/// figures in docs/poly.md are all from this one.
+pub const GUITAR: Profile = Profile { name: "guitar", lo: 40, hi: 88, f_max: 5000.0, b: |_| 5e-5, max_notes: 6 };
+
+/// A0 to C8, piano inharmonicity, up to 8 kHz so the top octave keeps a
+/// second partial, ten notes. B follows the usual two-slope shape: lowest
+/// around the bass break, rising steeply up the treble (about 4e-4 at C4,
+/// 2e-2 at C8).
+pub const PIANO: Profile = Profile { name: "piano", lo: 21, hi: 108, f_max: 8000.0, b: piano_b, max_notes: 10 };
+
+/// A1 to C7 with harmonic templates (B = 0), for bowed strings, winds,
+/// voices and mixed ensembles when nothing is known about the instrument.
+pub const GENERIC: Profile = Profile { name: "generic", lo: 33, hi: 96, f_max: 5000.0, b: |_| 0.0, max_notes: 10 };
+
+fn piano_b(m: u8) -> f32 {
+    let m = m as f32;
+    4e-4 * (0.088 * (m - 60.0)).exp() + 1e-4 * (-0.06 * (m - 21.0)).exp()
+}
+
+fn track_params(cfg: &Config, prof: &Profile) -> TrackParams {
     TrackParams {
         min_on: knob("MIN_ON", 2.0) as u32,
         min_off: knob("MIN_OFF", 10.0) as u32,
@@ -76,21 +109,31 @@ fn track_params(cfg: &Config) -> TrackParams {
         // NMF reports weak pitches too, so that a sounding note is not lost
         // between frames; it takes a stronger one to start a note.
         open_strength: if cfg.method == Method::Nmf { knob("OPEN", 0.08) } else { 0.0 },
-        max_notes: 6,
+        max_notes: knob("MAX_NOTES", prof.max_notes as f32) as usize,
+        open_gate: (knob("OPEN_GATE", 2.0) * (cfg.n / 340) as f32) as u32,
     }
 }
 
-fn hs_params() -> HsParams {
-    HsParams { gamma: knob("GAMMA", 0.7), rel_floor: knob("FLOOR", 0.15), max_notes: 6, nu: knob("NU", 0.33) }
+fn hs_params(prof: &Profile) -> HsParams {
+    let max_notes = knob("MAX_NOTES", prof.max_notes as f32) as usize;
+    HsParams { gamma: knob("GAMMA", 0.7), rel_floor: knob("FLOOR", 0.15), max_notes, nu: knob("NU", 0.33), lo: prof.lo, hi: prof.hi }
 }
 
-fn nmf_params() -> NmfParams {
+fn nmf_params(prof: &Profile) -> NmfParams {
     NmfParams {
         pw: knob("PW", 0.6),
         lambda: knob("LAMBDA", 0.1),
         iters: knob("ITERS", 10.0) as usize,
         share: knob("SHARE", 0.04),
-        max_notes: 6,
+        max_notes: knob("MAX_NOTES", prof.max_notes as f32) as usize,
+        lo: prof.lo,
+        hi: prof.hi,
+        f_max: prof.f_max,
+        b: prof.b,
+        // Added after stage P0: real recordings put a body's thump, rumble
+        // and room sound on the lowest notes without them. POLY_NOISE=0
+        // POLY_OPEN_GATE=0 gives the detector as first designed.
+        noise: knob("NOISE", 8.0) as usize,
     }
 }
 
@@ -105,13 +148,13 @@ struct Run {
     est: Vec<Est>,
 }
 
-fn run(cfg: &Config, sig: &[f32], truth: &[Note], sections: &[(f64, &'static str)], len: f64) -> Run {
+fn run(cfg: &Config, prof: &Profile, sig: &[f32], truth: &[Note], sections: &[(f64, &'static str)], len: f64) -> Run {
     let mut stft = Stft::new(cfg.n, SR as f32, cfg.window);
     let mut det = match cfg.method {
-        Method::Hs => Detector::Hs(Hs::new(&stft, hs_params())),
-        Method::Nmf => Detector::Nmf(Nmf::new(&stft, nmf_params())),
+        Method::Hs => Detector::Hs(Hs::new(&stft, hs_params(prof))),
+        Method::Nmf => Detector::Nmf(Nmf::new(&stft, nmf_params(prof))),
     };
-    let mut tracker = Tracker::new(track_params(cfg));
+    let mut tracker = Tracker::new(track_params(cfg, prof));
     // Broadband onsets come from a short window, which sees a pluck within
     // a few ms; the long window's spectrum takes tens of ms to show it.
     let mut short = Stft::new(1024, SR as f32, Window::Hann);
@@ -212,6 +255,9 @@ fn ms(x: f64) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "real") {
+        return real::main(&args[2..]);
+    }
     let set = if args.iter().any(|a| a == "dev") { Set::Dev } else { Set::Test };
     let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let wav_dir = opt("--wav");
@@ -245,7 +291,7 @@ fn main() {
             if std::env::var("POLY_ONLY").is_ok_and(|o| !o.split(',').any(|x| x.parse() == Ok(ci))) {
                 continue;
             }
-            let r = run(cfg, &sig, &truth, &sc.sections, sc.len);
+            let r = run(cfg, &GUITAR, &sig, &truth, &sc.sections, sc.len);
             per_kind.push((kind, cfg.name, r.m.f1(), r.m.precision(), r.m.recall()));
             totals[ci].add(&r.m);
             cpu[ci] += r.us_per_block / kinds.len() as f64;
@@ -256,89 +302,9 @@ fn main() {
         }
     }
 
-    println!("\n### Notes (both instruments)\n");
-    println!("| Detector | Precision | Recall | F1 | Latency median / p90 ms | Frame F1 | Velocity r | Pitch error median / p90 cents | CPU us per 128-sample block |");
-    println!("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-    for (ci, cfg) in CONFIGS.iter().enumerate() {
-        let m = &totals[ci];
-        let lat = format!(
-            "{}{} / {}",
-            if cfg.live { "" } else { "offline " },
-            ms(percentile(&m.latency, 0.5)),
-            ms(percentile(&m.latency, 0.9))
-        );
-        println!(
-            "| {} | {:.3} | {:.3} | {:.3} | {} | {:.3} | {:.2} | {:.1} / {:.1} | {:.1} |",
-            cfg.name,
-            m.precision(),
-            m.recall(),
-            m.f1(),
-            lat,
-            m.frame_f1(),
-            pearson(&m.vel),
-            percentile(&m.cents, 0.5),
-            percentile(&m.cents, 0.9),
-            cpu[ci]
-        );
-    }
-
-    println!("\n### Errors (both instruments)\n");
-    println!("| Detector | Notes played | Tracked | Found | False: octave | harmonic | semitone | repeat | other | Missed: octave-shadowed | other |");
-    println!("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-    for (ci, cfg) in CONFIGS.iter().enumerate() {
-        let m = &totals[ci];
-        println!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-            cfg.name,
-            m.n_ref,
-            m.n_est,
-            m.tp,
-            m.fp_octave,
-            m.fp_harmonic,
-            m.fp_semitone,
-            m.fp_repeat,
-            m.fp_other,
-            m.miss_shadowed,
-            m.miss_other
-        );
-    }
-
-    println!("\n### Recall by section (both instruments)\n");
-    let names: Vec<&str> = totals[0].sections.iter().map(|s| s.0).collect();
-    println!("| Detector | {} |", names.join(" | "));
-    println!("| --- |{}", " --- |".repeat(names.len()));
-    for (ci, cfg) in CONFIGS.iter().enumerate() {
-        let cells: Vec<String> =
-            totals[ci].sections.iter().map(|s| format!("{:.2} ({}/{})", s.2 as f64 / s.1.max(1) as f64, s.2, s.1)).collect();
-        println!("| {} | {} |", cfg.name, cells.join(" | "));
-    }
-
-    println!("\n### Recall by chord size (notes struck within 50 ms; both instruments)\n");
-    println!("| Detector | 1 | 2 | 3 | 4 | 5 | 6 |");
-    println!("| --- | --- | --- | --- | --- | --- | --- |");
-    for (ci, cfg) in CONFIGS.iter().enumerate() {
-        let cells: Vec<String> = (1..=6)
-            .map(|k| {
-                let (n, f) = totals[ci].by_size[k];
-                if n == 0 { "-".into() } else { format!("{:.2} ({f}/{n})", f as f64 / n as f64) }
-            })
-            .collect();
-        println!("| {} | {} |", cfg.name, cells.join(" | "));
-    }
-
-    println!("\n### Live latency by register, median / p90 ms (both instruments)\n");
-    println!("| Detector | E2 to D#3 | E3 to D#4 | E4 and up |");
-    println!("| --- | --- | --- | --- |");
-    for (ci, cfg) in CONFIGS.iter().enumerate().filter(|c| c.1.live) {
-        let cells: Vec<String> = [(40u8, 52u8), (52, 64), (64, 128)]
-            .iter()
-            .map(|&(lo, hi)| {
-                let v: Vec<f64> = totals[ci].latency_by_note.iter().filter(|x| x.0 >= lo && x.0 < hi).map(|x| x.1).collect();
-                format!("{} / {} (n {})", ms(percentile(&v, 0.5)), ms(percentile(&v, 0.9)), v.len())
-            })
-            .collect();
-        println!("| {} | {} |", cfg.name, cells.join(" | "));
-    }
+    let names: Vec<&str> = CONFIGS.iter().map(|c| c.name).collect();
+    let live: Vec<bool> = CONFIGS.iter().map(|c| c.live).collect();
+    tables("both instruments", &names, &live, &totals, &cpu, &[(40, 52, "E2 to D#3"), (52, 64, "E3 to D#4"), (64, 128, "E4 and up")]);
 
     println!("\n### F1 by instrument\n");
     println!("| Detector | Acoustic F1 (P / R) | Electric F1 (P / R) |");
@@ -435,4 +401,93 @@ fn piano_roll(path: &str, truth: &[Note], est: &[Est], cfg: &Config, sections: &
         t1 - t0
     );
     std::fs::write(path, s).expect("write svg");
+}
+
+/// The tables docs/poly.md quotes, for any set of runs. `bands` splits live
+/// latency by register: lowest MIDI note, one past the highest, label.
+pub fn tables(what: &str, names: &[&str], live: &[bool], totals: &[Metrics], cpu: &[f64], bands: &[(u8, u8, &str)]) {
+    println!("\n### Notes ({what})\n");
+    println!("| Detector | Precision | Recall | F1 | Latency median / p90 ms | Frame F1 | Velocity r | Pitch error median / p90 cents | CPU us per 128-sample block |");
+    println!("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    for ci in 0..names.len() {
+        let m = &totals[ci];
+        let lat = format!(
+            "{}{} / {}",
+            if live[ci] { "" } else { "offline " },
+            ms(percentile(&m.latency, 0.5)),
+            ms(percentile(&m.latency, 0.9))
+        );
+        println!(
+            "| {} | {:.3} | {:.3} | {:.3} | {} | {:.3} | {:.2} | {:.1} / {:.1} | {:.1} |",
+            names[ci],
+            m.precision(),
+            m.recall(),
+            m.f1(),
+            lat,
+            m.frame_f1(),
+            pearson(&m.vel),
+            percentile(&m.cents, 0.5),
+            percentile(&m.cents, 0.9),
+            cpu[ci]
+        );
+    }
+
+    println!("\n### Errors ({what})\n");
+    println!("| Detector | Notes played | Tracked | Found | False: octave | harmonic | semitone | repeat | other | Missed: octave-shadowed | other |");
+    println!("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    for ci in 0..names.len() {
+        let m = &totals[ci];
+        println!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            names[ci],
+            m.n_ref,
+            m.n_est,
+            m.tp,
+            m.fp_octave,
+            m.fp_harmonic,
+            m.fp_semitone,
+            m.fp_repeat,
+            m.fp_other,
+            m.miss_shadowed,
+            m.miss_other
+        );
+    }
+
+    println!("\n### Recall by section ({what})\n");
+    let secs: Vec<&str> = totals[0].sections.iter().map(|s| s.0).collect();
+    println!("| Detector | {} |", secs.join(" | "));
+    println!("| --- |{}", " --- |".repeat(secs.len()));
+    for ci in 0..names.len() {
+        let cells: Vec<String> =
+            totals[ci].sections.iter().map(|s| format!("{:.2} ({}/{})", s.2 as f64 / s.1.max(1) as f64, s.2, s.1)).collect();
+        println!("| {} | {} |", names[ci], cells.join(" | "));
+    }
+
+    println!("\n### Recall by chord size (notes struck within 50 ms; {what})\n");
+    println!("| Detector | 1 | 2 | 3 | 4 | 5 | 6 |");
+    println!("| --- | --- | --- | --- | --- | --- | --- |");
+    for ci in 0..names.len() {
+        let cells: Vec<String> = (1..=6)
+            .map(|k| {
+                let (n, f) = totals[ci].by_size[k];
+                if n == 0 { "-".into() } else { format!("{:.2} ({f}/{n})", f as f64 / n as f64) }
+            })
+            .collect();
+        println!("| {} | {} |", names[ci], cells.join(" | "));
+    }
+
+    println!("\n### Live latency by register, median / p90 ms ({what})\n");
+    println!("| Detector | {} |", bands.iter().map(|b| b.2).collect::<Vec<_>>().join(" | "));
+    println!("| --- |{}", " --- |".repeat(bands.len()));
+    for ci in (0..names.len()).filter(|&ci| live[ci]) {
+        let cells: Vec<String> = bands
+            .iter()
+            .map(|&(lo, hi, _)| {
+                let v: Vec<f64> = totals[ci].latency_by_note.iter().filter(|x| x.0 >= lo && x.0 < hi).map(|x| x.1).collect();
+                format!("{} / {} (n {})", ms(percentile(&v, 0.5)), ms(percentile(&v, 0.9)), v.len())
+            })
+            .collect();
+        println!("| {} | {} |", names[ci], cells.join(" | "));
+    }
+
 }
