@@ -145,6 +145,17 @@ export class Session {
     return null;
   }
 
+  /** A take's mic audio (the raw input on playback, S5), or null while it loads (a later change
+   *  event says when it arrives). */
+  audioFor(take: Take): Float32Array | null {
+    const d = this.takes.get(take.id);
+    if (d) return d.audio ?? null;
+    void this.loadTake(take.id).then(() => {
+      if (this.takes.has(take.id)) this.emit(this.store.doc, 'change', null);
+    });
+    return null;
+  }
+
   /** Keep a new take: in memory at once, in the blob store in the background (errors are remembered, not thrown). */
   async putTake(id: string, data: TakeData): Promise<void> {
     this.takes.set(id, data);

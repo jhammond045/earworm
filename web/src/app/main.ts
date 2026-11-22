@@ -124,9 +124,14 @@ async function main(): Promise<void> {
     patch: $('soundPatch'), mod: $('soundMod'), pick: $<HTMLSelectElement>('modPick'), pickBox: $('modPickBox'),
     views: [...document.querySelectorAll<HTMLButtonElement>('[data-view]')], simple: $('soundSimple'), perform: $('soundPerform'),
   });
-  synth.perform = new PerformPanel(app, $('soundPerform'), {
+  const perform = new PerformPanel(app, $('soundPerform'), {
     layer: () => layer(), listening: (id) => synth.listening(id), toggleListen: (id) => synth.toggleListen(id), kv,
+    toggleRecord: () => capture.toggleRecord(), recording: () => capture.recording,
   });
+  synth.perform = perform;
+  app.rec = capture;
+  capture.listeningTo = (id) => synth.listening(id);
+  capture.sceneOf = (id) => perform.sceneOf(id);
 
   function paintTour(): void {
     document.querySelectorAll('[data-tour].tour-on').forEach((e) => e.classList.remove('tour-on'));
@@ -408,6 +413,7 @@ async function main(): Promise<void> {
     btn('undo').disabled = !app.store.history.canUndo;
     btn('redo').disabled = !app.store.history.canRedo;
     btn('capture').disabled = !app.host || !app.stream;
+    btn('record').disabled = !app.host;
     btn('play').disabled = !app.host;
     btn('stop').disabled = !app.host;
     num('projNameInput').value = doc.name;
@@ -554,13 +560,14 @@ async function main(): Promise<void> {
         void app.sync.request(doc).then(() => { pushMetro(doc); app.host?.seek(0, 0); });
       }
     } else {
-      app.lastRequest = app.sync.request(doc);
+      app.lastRequest = app.sync.request(app.rec.overlay(doc));
       pushMetro(doc);
     }
     app.refreshAll();
   });
   app.sync.framesFor = (take) => session.framesFor(take);
   app.sync.grainFor = (l) => session.grainFor(l);
+  app.sync.audioFor = (t) => session.audioFor(t);
   app.sync.onPass = (r) => {
     if (r.errors.length) app.fail(`Engine: ${r.errors.join('; ')}`);
     else if (!r.skipped) $('engineStatus').textContent = `Engine in sync. ${r.uploads.length} blobs, ${r.loadMs.toFixed(0)} ms.`;
@@ -944,10 +951,11 @@ async function main(): Promise<void> {
     const l = layer();
     const i = app.doc.layers.findIndex((x) => x.id === l?.id);
     if (i >= 0) app.host?.setLayer(i, LAYER_LEVEL, Number(num('level').value));
+    if (l) app.rec.move(l.id, 'layer.level', Number(num('level').value));
   });
   num('level').addEventListener('change', () => {
     const l = layer();
-    if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, level: Number(num('level').value) }));
+    if (l && !app.rec.recording) app.run(() => app.store.dispatch('setLayer', { id: l.id, level: Number(num('level').value) }));
   });
   num('pan').addEventListener('input', () => {
     const l = layer();
@@ -955,10 +963,11 @@ async function main(): Promise<void> {
     $('panRead').textContent = panLabel(pan);
     const i = app.doc.layers.findIndex((x) => x.id === l?.id);
     if (i >= 0) app.host?.setLayer(i, LAYER_PAN, pan);
+    if (l) app.rec.move(l.id, 'layer.pan', pan);
   });
   num('pan').addEventListener('change', () => {
     const l = layer();
-    if (l) app.run(() => app.store.dispatch('setLayer', { id: l.id, pan: Number(num('pan').value) / 100 }));
+    if (l && !app.rec.recording) app.run(() => app.store.dispatch('setLayer', { id: l.id, pan: Number(num('pan').value) / 100 }));
   });
   btn('mute').addEventListener('click', () => {
     const l = layer();
@@ -987,11 +996,13 @@ async function main(): Promise<void> {
       const l = layer();
       if (!l) return;
       const macros = macroValues(l, k, Number(input.value) / 100);
+      app.rec.move(l.id, `macro${k + 1}`, Number(input.value) / 100);
       app.previewDoc((d) => applyOps(d, commands.setState(d, { layer: l.id, id: app.ui.editState(l).id, macros })).doc);
     });
     input.addEventListener('change', () => {
       const l = layer();
-      if (!l) return;
+      // While a pass records, where the hand leaves it is committed with the pass.
+      if (!l || app.rec.recording) return;
       const macros = macroValues(l, k, Number(input.value) / 100);
       if (app.run(() => app.store.dispatch('setState', { layer: l.id, id: app.ui.editState(l).id, macros }))) acted('macro');
     });
@@ -1438,6 +1449,7 @@ async function main(): Promise<void> {
   // ---- capture and keys
 
   holdButton(btn('capture'), () => { capture.start(); acted('capture'); }, () => { void capture.end(); });
+  btn('record').addEventListener('click', () => { capture.toggleRecord(); acted('capture'); });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { app.host?.stop(); return; }
     const mod = e.metaKey || e.ctrlKey;
@@ -1544,6 +1556,7 @@ async function main(): Promise<void> {
       const compiler = new Compiler();
       const uploads = compiler.compile(app.doc, (take, lay) => app.sync.cachedCurve(take, lay) ?? session.framesFor(take), {
         grainFor: (lay) => session.grainFor(lay),
+        audioFor: (t) => session.audioFor(t),
       });
       const song = uploadsToSong(uploads);
       const seconds = songSeconds(app.doc);
@@ -1718,6 +1731,7 @@ async function main(): Promise<void> {
     if (m && secNow) {
       const playing = m[M_PLAYING] === 1;
       btn('play').setAttribute('aria-pressed', String(playing));
+      btn('record').setAttribute('aria-pressed', String(capture.recording));
       btn('play').textContent = playing ? '■ Playing' : '▶ Play';
       const pos = m[M_SECTION_POS];
       $('posRead').textContent = playing ? positionLabel(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : positionLabel(secNow, 0);

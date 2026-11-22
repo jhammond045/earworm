@@ -14,7 +14,7 @@
 // noise, grains) keep their place.
 
 import { ALL_DESCS } from '../gen/modules';
-import { M_LAYER_SRC, M_LIVE, M_LISTEN, M_ROUTES, M_STORED, MSG_LISTEN } from '../m1/protocol';
+import { M_LAYER_SRC, M_LIVE, M_LISTEN, M_PLAYING, M_ROUTES, M_SECTION, M_STORED, MSG_LISTEN } from '../m1/protocol';
 import type { App } from '../m3/app';
 import { applyOps } from '../project/patch';
 import { commands } from '../project/commands';
@@ -182,8 +182,20 @@ export class SynthPanel {
       host.selectLayer(i);
       this.selectedSent = i;
     }
+    this.sendListen(this.app.readMeters());
+  }
+
+  /** Tell the engine which layers listen. While the transport plays a take on a layer and no pass
+   *  records, that layer reads the take instead (playback plays what was recorded, docs/S5.md),
+   *  and listens again when the transport stops or a pass records. */
+  private sendListen(m: Float32Array | null): void {
+    const host = this.app.host;
+    if (!host || host !== this.hostSeen) return;
+    const playing = !!m && m[M_PLAYING] === 1;
+    const sec = playing ? this.app.doc.sections[m![M_SECTION]] : undefined;
     this.app.doc.layers.forEach((x, k) => {
-      const on = this.listen.get(x.id) ?? false;
+      const takeNow = !!sec?.clips[x.id]?.take && !this.app.rec.recording;
+      const on = (this.listen.get(x.id) ?? false) && !takeNow;
       if (this.sentListen.get(k) !== on) {
         host.send(MSG_LISTEN, k, 0, 0, on ? 1 : 0);
         this.sentListen.set(k, on);
@@ -354,8 +366,12 @@ export class SynthPanel {
       const cur = doc.layers.find((x) => x.id === l.id)!;
       return { layer: cur.id, state: this.app.ui.editState(cur).id, values: { [key]: Number(input.value) / 1000 } };
     };
-    input.addEventListener('input', () => this.app.previewDoc((d) => applyOps(d, commands.setValues(d, args(d))).doc));
-    input.addEventListener('change', () => { this.app.runRestoring(() => this.app.store.dispatch('setValues', args(this.app.doc))); });
+    input.addEventListener('input', () => {
+      this.app.rec.move(l.id, key, Number(input.value) / 1000);
+      this.app.previewDoc((d) => applyOps(d, commands.setValues(d, args(d))).doc);
+    });
+    // While a pass records, where the hand leaves the knob is committed with the pass.
+    input.addEventListener('change', () => { if (!this.app.rec.recording) this.app.runRestoring(() => this.app.store.dispatch('setValues', args(this.app.doc))); });
     row.append(name, track, out, to, badges);
     this.knobs.set(key, { input, out, ring, live, badges, to });
     return row;
@@ -969,6 +985,7 @@ export class SynthPanel {
 
   /** Live parts, every animation frame or so: thumbs, route outputs, feature meters. */
   frame(m: Float32Array | null): void {
+    this.sendListen(m);
     if (this.view === 'perform') { this.perform?.frame(m); return; }
     if (!m || this.view === 'simple') return;
     const l = this.layer();

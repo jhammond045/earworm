@@ -1,5 +1,6 @@
 // Shared page state: the session, the engine sync, the host, and what the editor has selected.
 
+import { idleRecord, type RecordHooks } from '../record/record';
 import type { KlontHost } from '../m1/klont-host';
 import { METER_LEN } from '../m1/protocol';
 import type { Analysis } from '../m2/analysis';
@@ -97,6 +98,8 @@ export class App {
   analysis: Analysis | null = null;
   ctx: AudioContext | null = null;
   stream: MediaStream | null = null;
+  /** A recorded pass in progress (app/capture.ts), or the idle hooks. */
+  rec: RecordHooks = idleRecord;
   /** Re-reads the document into every panel. Set by main. */
   refreshAll: () => void = () => {};
   /** Turns the periodic save-on-hide off (the crash check needs a page that does not flush on its way out). */
@@ -138,7 +141,7 @@ export class App {
 
   /** Let the engine hear `make(doc)` without touching the document. A bad value is left for the commit to report. */
   previewDoc(make: (doc: Project) => Project): void {
-    try { void this.sync.request(make(this.doc)); } catch { /* the commit on release reports it */ }
+    try { void this.sync.request(this.rec.overlay(make(this.doc))); } catch { /* the commit on release reports it */ }
   }
 
   /** The newest meters, or null before the engine has published any. */

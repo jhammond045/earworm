@@ -42,6 +42,8 @@ export class Sync {
   framesFor: (take: Take) => Float32Array | null = () => null;
   /** The grain source (Influence audio cut to its region) for a layer, or null while it loads. */
   grainFor: (layer: Layer) => { data: Float32Array; rate: number; refCents: number | null } | null = () => null;
+  /** A take's audio (a layer with an `input` element plays it on playback), or null while it loads. */
+  audioFor: (take: Take) => Float32Array | null = () => null;
   /** Called when a pass ends (status line, errors). */
   onPass: (r: SyncResult) => void = () => {};
 
@@ -95,7 +97,7 @@ export class Sync {
     const t0 = performance.now();
     let uploads;
     try {
-      uploads = this.compiler.compile(doc, (take, layer) => this.curveFor(take, layer), { grainFor: (l) => this.grainFor(l) });
+      uploads = this.compiler.compile(doc, (take, layer) => this.curveFor(take, layer), { grainFor: (l) => this.grainFor(l), audioFor: (t) => this.audioFor(t) });
     } catch (e) {
       base.errors.push(e instanceof Error ? e.message : String(e));
       base.compileMs = performance.now() - t0;

@@ -18,7 +18,8 @@
 // Times are engine samples (the engine's clock, which the meter block reports); `marks` turn them
 // into transport positions. Nothing here talks to the engine or the page, so it runs in tests.
 
-import { newId } from '../project/commands';
+import { commands, newId } from '../project/commands';
+import { applyOps } from '../project/patch';
 import { sectionLength } from '../project/compile';
 import { positionAt, type ClockMark } from '../project/overdub';
 import type { AutoLane, BeatClip, Clip, Hit, LanePoint, Layer, MelodyClip, MorphMarker, Note, Project, Take, WarpAnchor } from '../project/types';
@@ -31,7 +32,24 @@ export const LANE_STEP_S = 0.01;
 const MIN_NOTE_S = 0.02;
 
 interface PassNote { layer: string; start: number; end: number; cents: number; slot: number; vel: number }
-interface PassMove { layer: string; target: string; v: number; sample: number }
+export interface PassMove { layer: string; target: string; v: number; sample: number }
+
+/** What the page reports while a pass records (AppCapture implements it; idle otherwise). */
+export interface RecordHooks {
+  readonly recording: boolean;
+  /** A note or hit started; returns a handle for noteOff. */
+  noteOn(layer: string, cents: number, slot: number, vel: number): number;
+  noteOff(handle: number): void;
+  /** A hand moved a target (types.ts AutoLane units). */
+  move(layer: string, target: string, v: number): void;
+  scene(layer: string, state: string, ms: number): void;
+  /** `doc` with where the hand has left things so far in this pass, for previews. */
+  overlay(doc: Project): Project;
+}
+
+export const idleRecord: RecordHooks = {
+  recording: false, noteOn: () => 0, noteOff: () => {}, move: () => {}, scene: () => {}, overlay: (d) => d,
+};
 interface PassScene { layer: string; state: string; ms: number; sample: number }
 
 export class Pass {
@@ -247,10 +265,24 @@ export function passCommands(doc: Project, pass: Pass, place: Placement, sr: num
   }
 
   const cmds: Cmd[] = [...out.values()].map((e) => ({ name: 'setClip', args: { section: e.section, layer: e.layer.id, clip: e.clip } }));
+  return [...cmds, ...handCommands(doc, pass.moves, stateOf)];
+}
 
-  // Where the hand left things.
+/** `doc` with where the hand left each target in `moves`. */
+export function withHand(doc: Project, moves: PassMove[], stateOf: (l: Layer) => string): Project {
+  let d = doc;
+  for (const c of handCommands(doc, moves, stateOf)) {
+    const make = commands[c.name as keyof typeof commands] as (doc: Project, a: unknown) => import('../project/patch').Op[];
+    d = applyOps(d, make(d, c.args)).doc;
+  }
+  return d;
+}
+
+/** Where the hand left each value, macro, level and pan: commands for the state being edited. */
+function handCommands(doc: Project, moves: PassMove[], stateOf: (l: Layer) => string): Cmd[] {
+  const cmds: Cmd[] = [];
   const last = new Map<string, PassMove>();
-  for (const mv of [...pass.moves].sort((a, b) => a.sample - b.sample)) last.set(`${mv.layer}/${mv.target}`, mv);
+  for (const mv of [...moves].sort((a, b) => a.sample - b.sample)) last.set(`${mv.layer}/${mv.target}`, mv);
   for (const l of doc.layers) {
     const mine = [...last.values()].filter((m) => m.layer === l.id);
     if (!mine.length) continue;

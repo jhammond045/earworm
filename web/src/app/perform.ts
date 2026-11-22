@@ -75,7 +75,7 @@ function withValues(app: App, doc: Project, pending: Map<string, { t: PerfTarget
   return d;
 }
 
-interface Held { layerIdx: number; cents: number }
+interface Held { layerIdx: number; cents: number; rec: number }
 
 export interface PerformDeps {
   layer: () => Layer | undefined;
@@ -83,6 +83,9 @@ export interface PerformDeps {
   listening: (id: string) => boolean;
   toggleListen: (id: string) => void;
   kv: Kv;
+  /** Record a pass (app/capture.ts): press to start, press to stop. */
+  toggleRecord: () => void;
+  recording: () => boolean;
 }
 
 export class PerformPanel {
@@ -120,6 +123,12 @@ export class PerformPanel {
     if (this.midiAvailable) void this.connectIfAllowed();
   }
 
+  /** The state a tapped scene left the layer in, if any (a recorded pass starts from it). */
+  sceneOf(layerId: string): string | undefined {
+    const k = this.scene.get(layerId);
+    return k === undefined ? undefined : this.app.doc.layers.find((x) => x.id === layerId)?.states[k]?.id;
+  }
+
   /** The value an on-screen control sets, if Learn can map it. */
   private targetOf(el: EventTarget | null): PerfTarget | null {
     if (!(el instanceof Element)) return null;
@@ -138,6 +147,7 @@ export class PerformPanel {
 
   /** Set `t` to `v` now (the engine hears it at once) and commit once nothing has moved for REST_MS. */
   setValue(t: PerfTarget, v: number): void {
+    this.app.rec.move(t.layer, t.key, Math.min(1, Math.max(0, v)));
     this.pending.set(`${t.layer}/${t.key}`, { t, v: Math.min(1, Math.max(0, v)) });
     this.app.previewDoc((d) => withValues(this.app, d, this.pending));
     window.clearTimeout(this.restTimer);
@@ -146,6 +156,8 @@ export class PerformPanel {
 
   private commit(): void {
     if (!this.pending.size) return;
+    // While a pass records, where the hand left things is committed with the pass (one undo step).
+    if (this.app.rec.recording) { this.pending = new Map(); return; }
     const pending = this.pending;
     this.pending = new Map();
     this.app.runRestoring(() => this.app.store.batch('Controller', (run) => {
@@ -198,7 +210,7 @@ export class PerformPanel {
   private releaseGone(): void {
     const live = new Set(this.inputs().map((i) => i.id));
     for (const [k, h] of this.held) {
-      if (!live.has(k.split('/')[0])) { this.app.host?.noteOff(h.layerIdx, h.cents); this.held.delete(k); }
+      if (!live.has(k.split('/')[0])) { this.app.host?.noteOff(h.layerIdx, h.cents); this.app.rec.noteOff(h.rec); this.held.delete(k); }
     }
   }
 
@@ -227,26 +239,27 @@ export class PerformPanel {
         if (!p) return;
         const key = `${input.id}/${ev.channel}/${ev.note}`;
         const was = this.held.get(key);
-        if (was) host.noteOff(was.layerIdx, was.cents);
+        if (was) { host.noteOff(was.layerIdx, was.cents); this.app.rec.noteOff(was.rec); }
         host.noteOn(i, p.cents, p.slot, ev.velocity);
+        const rec = this.app.rec.noteOn(l.id, p.cents, p.slot, ev.velocity);
         // e.timeStamp is when the browser got the message, on the performance.now() clock.
         if (e.timeStamp > 0) {
           this.delays.push(performance.now() - e.timeStamp);
           if (this.delays.length > 4000) this.delays.splice(0, this.delays.length - 4000);
         }
-        this.held.set(key, { layerIdx: i, cents: p.cents });
+        this.held.set(key, { layerIdx: i, cents: p.cents, rec });
         return;
       }
       case 'off': {
         const key = `${input.id}/${ev.channel}/${ev.note}`;
         const h = this.held.get(key);
-        if (h) { host.noteOff(h.layerIdx, h.cents); this.held.delete(key); }
+        if (h) { host.noteOff(h.layerIdx, h.cents); this.app.rec.noteOff(h.rec); this.held.delete(key); }
         return;
       }
-      case 'bend': host.send(MSG_SET_PERF, i, 1, 0, ev.value); this.showPerf(1, ev.value); return;
-      case 'pressure': host.send(MSG_SET_PERF, i, 2, 0, ev.value); this.showPerf(2, ev.value); return;
+      case 'bend': host.send(MSG_SET_PERF, i, 1, 0, ev.value); this.app.rec.move(l.id, 'bend', ev.value); this.showPerf(1, ev.value); return;
+      case 'pressure': host.send(MSG_SET_PERF, i, 2, 0, ev.value); this.app.rec.move(l.id, 'pressure', ev.value); this.showPerf(2, ev.value); return;
       case 'cc': {
-        if (ev.cc === MOD_WHEEL_CC) { host.send(MSG_SET_PERF, i, 0, 0, ev.value); this.showPerf(0, ev.value); return; }
+        if (ev.cc === MOD_WHEEL_CC) { host.send(MSG_SET_PERF, i, 0, 0, ev.value); this.app.rec.move(l.id, 'wheel', ev.value); this.showPerf(0, ev.value); return; }
         if (typeof this.learn === 'object') {
           const target = this.learn;
           this.learn = 'off';
@@ -400,6 +413,11 @@ export class PerformPanel {
     learn.disabled = !this.midiAvailable;
     this.els.learn = learn;
     kids.push(learn);
+    const rec = this.button(this.deps.recording() ? 'Recording' : 'Record', () => { this.deps.toggleRecord(); this.render(true); },
+      'Press to record a pass, press again to stop: notes, knob moves, the wheel and scene taps go into the clips as one undo step.');
+    rec.setAttribute('aria-pressed', String(this.deps.recording()));
+    this.els.record = rec;
+    kids.push(rec);
     const status = document.createElement('p');
     status.className = 'hint';
     status.setAttribute('role', 'status');
@@ -442,8 +460,8 @@ export class PerformPanel {
         if (!host) { app.fail('Press Start first.'); return; }
         void host.ctx.resume();
         host.noteOn(i, cents, slot, 0.8);
-        on = { layerIdx: i, cents };
-      }, () => { if (on) app.host?.noteOff(on.layerIdx, on.cents); on = null; });
+        on = { layerIdx: i, cents, rec: app.rec.noteOn(l.id, cents, slot, 0.8) };
+      }, () => { if (on) { app.host?.noteOff(on.layerIdx, on.cents); app.rec.noteOff(on.rec); } on = null; });
     };
     if (l.kind === 'beat') {
       SLOT_NAMES.forEach((name, k) => {
@@ -491,7 +509,10 @@ export class PerformPanel {
     ([['Mod wheel', 0, 0, 100], ['Pitch bend', 1, -100, 100], ['Pressure', 2, 0, 100]] as const).forEach(([name, k, lo, hi]) => {
       const lab = this.slider(name, lo, hi, 0);
       const input = lab.querySelector('input')!;
-      const send = () => app.host?.send(MSG_SET_PERF, i, k, 0, Number(input.value) / 100);
+      const send = () => {
+        app.host?.send(MSG_SET_PERF, i, k, 0, Number(input.value) / 100);
+        app.rec.move(l.id, (['wheel', 'bend', 'pressure'] as const)[k], Number(input.value) / 100);
+      };
       input.addEventListener('input', send);
       // The bend springs back to the centre when let go, as a bend wheel does.
       if (k === 1) input.addEventListener('pointerup', () => { input.value = '0'; send(); });
@@ -513,6 +534,7 @@ export class PerformPanel {
         const host = app.host;
         if (!host) { app.fail('Press Start first.'); return; }
         host.send(MSG_MORPH_TO, i, k, 0, l.sceneMs ?? SCENE_MS);
+        app.rec.scene(l.id, s.id, l.sceneMs ?? SCENE_MS);
         this.scene.set(l.id, k);
         scenes.querySelectorAll('button').forEach((x, j) => x.setAttribute('aria-pressed', String(j === k)));
       });
@@ -707,6 +729,11 @@ export class PerformPanel {
     });
     const i = this.app.doc.layers.indexOf(l);
     this.els.listen?.classList.toggle('down', ((m[M_LISTEN] >>> 0) & (1 << i)) !== 0);
+    const rec = this.els.record;
+    if (rec && rec.getAttribute('aria-pressed') !== String(this.deps.recording())) {
+      rec.setAttribute('aria-pressed', String(this.deps.recording()));
+      rec.textContent = this.deps.recording() ? 'Recording' : 'Record';
+    }
     // Values a controller is moving, the pad's dot and the timing, a few times a second.
     if (performance.now() - this.lastPaint > 100) {
       this.lastPaint = performance.now();
