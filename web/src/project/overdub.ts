@@ -91,8 +91,9 @@ export function placeTake(o: PlaceTakeArgs): Clip {
     takes: [...(existing?.takes ?? []).filter((id) => id !== o.take.id), o.take.id],
     loopLen,
     timeSnap: existing?.timeSnap ?? 0,
-    // A new take keeps the morph lane of the clip it replaces.
+    // A new take keeps the morph lane and the automation lanes of the clip it replaces.
     morph: existing?.morph ?? [],
+    ...(existing?.auto ? { auto: existing.auto } : {}),
   };
 
   if (layer.kind === 'beat') {

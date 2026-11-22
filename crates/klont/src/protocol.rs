@@ -18,8 +18,9 @@ pub const MAX_CURVES: usize = 64;
 /// Floats in the curve pool shared by all curves: 2^21 floats is 8 MB, about
 /// 14 minutes of 25-float frames at 100 per second.
 pub const CURVE_POOL_FLOATS: usize = 1 << 21;
-/// Staging area the host copies a blob into before `ew_load`: 4 MB.
-pub const STAGING_BYTES: usize = 4 << 20;
+/// Staging area the host copies a blob into before `ew_load`: 16 MB, so a 59 s take at 48 kHz
+/// (its audio, the raw input on playback, S5) fits in one blob.
+pub const STAGING_BYTES: usize = 16 << 20;
 
 // ---------------------------------------------------------------- control ring
 

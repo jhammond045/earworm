@@ -9,7 +9,7 @@ export const N_MACROS = 8;
 export const MAX_VALUES = 1024;
 export const MAX_CURVES = 64;
 export const CURVE_POOL_FLOATS = 1 << 21;
-export const STAGING_BYTES = 4 << 20;
+export const STAGING_BYTES = 16 << 20;
 
 // ---- control ring
 export const MSG_BYTES = 16;

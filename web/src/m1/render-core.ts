@@ -99,6 +99,22 @@ export class Core {
     new Uint32Array(this.mem!, this.t.controlCount, 1)[0] = msgs.length;
   }
   render(frames: number): number { return this.ex.ew_render(this.e, frames); }
+  /** Live: one call of ew_process with `input` as the mic (silence when omitted). Afterwards
+   *  `mic` is the mic as the live tier left it (high-passed), `frameRecords` the frames it made. */
+  process(frames: number, input?: Float32Array): void {
+    this.refresh();
+    const buf = new Float32Array(this.mem!, this.t.input, frames);
+    if (input) buf.set(input.subarray(0, frames));
+    else buf.fill(0);
+    this.ex.ew_process(this.e, frames);
+  }
+  mic(frames: number): Float32Array { this.refresh(); return new Float32Array(this.mem!, this.t.input, frames); }
+  frameRecords(): Float32Array {
+    this.refresh();
+    const n = new Uint32Array(this.mem!, this.t.framesCount, 1)[0];
+    return new Float32Array(this.mem!, this.t.frames, n * 25);
+  }
+  seek(section: number, pos: number): void { this.ex.ew_seek(this.e, section, pos); }
   /** Views into wasm memory: valid until the next render or load. */
   out(frames: number): { l: Float32Array; r: Float32Array } {
     this.refresh();
