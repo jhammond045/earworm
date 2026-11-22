@@ -610,6 +610,10 @@ impl Voice {
     /// Play from a stop: every random sequence of the voice (jitter, clicks, noise modules, LFO
     /// drift and steps) from the start, as `new(sr, seed)` sets them.
     pub fn reseed(&mut self, seed: u32) {
+        // An idle voice also loses what it kept from its last note (partial phases, filter state).
+        if !self.active() {
+            self.reset_all();
+        }
         let s = seed ^ 0x5bd1_e995;
         self.partials.reseed(seed);
         self.click.s = Click::new(self.sr, seed ^ 0x1234_5679);

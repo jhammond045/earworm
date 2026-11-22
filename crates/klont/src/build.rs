@@ -50,8 +50,25 @@ pub struct VoiceSpec {
     pub grains: Option<(u32, u32, f32)>,
 }
 
-/// A channel effect: type code and bypass.
+/// A channel effect: type code (with CH_RAW to put it on the raw path) and bypass.
 pub type FxSpec = (u32, bool);
+
+/// A layer route (a source that is one per layer) into a value of voice patch `vp`
+/// (`module` indexes its modules, then its mods) or, with `vp` None, of channel effect
+/// `module`.
+#[derive(Clone, Copy, Debug)]
+pub struct LayerRouteSpec {
+    pub src: u16,
+    pub arg: u16,
+    pub vp: Option<usize>,
+    pub module: usize,
+    pub param: usize,
+    pub mode: u8,
+    pub polarity: u8,
+    pub amount: f32,
+    pub rise_ms: f32,
+    pub fall_ms: f32,
+}
 
 struct W(Vec<u8>);
 impl W {
@@ -70,6 +87,11 @@ fn params_of(code: u32) -> &'static P::ModuleType {
 /// The blob of a patch with these voice patches and channel; `chan_set` gives (effect, offset,
 /// real value).
 pub fn patch(voices: &[VoiceSpec], channel: &[FxSpec], chan_set: &[(usize, usize, f32)]) -> Vec<u8> {
+    patch_with(voices, channel, chan_set, &[])
+}
+
+/// `patch` with layer routes.
+pub fn patch_with(voices: &[VoiceSpec], channel: &[FxSpec], chan_set: &[(usize, usize, f32)], layer_routes: &[LayerRouteSpec]) -> Vec<u8> {
     let mut descs: Vec<u16> = Vec::new();
     let mut init: Vec<f32> = Vec::new();
     let push = |code: u32, set: &mut dyn FnMut(usize) -> Option<f32>, descs: &mut Vec<u16>, init: &mut Vec<f32>| -> usize {
@@ -122,19 +144,25 @@ pub fn patch(voices: &[VoiceSpec], channel: &[FxSpec], chan_set: &[(usize, usize
     let mut chan = Vec::new();
     for (c, &(code, _)) in channel.iter().enumerate() {
         let mut set = |off: usize| chan_set.iter().find(|s| s.0 == c && s.1 == off).map(|s| s.2);
-        chan.push(push(code, &mut set, &mut descs, &mut init));
+        chan.push(push(code & !CH_RAW, &mut set, &mut descs, &mut init));
     }
     let width = descs.len();
     let wd = P::DESCS.iter().position(|d| d.id == "width").expect("width descriptor");
     descs.push(wd as u16);
     init.push(P::to_norm(wd, P::desc(wd).neutral));
+    let mut lr_amounts = Vec::new();
+    for r in layer_routes {
+        lr_amounts.push(descs.len());
+        descs.push(P::D_ROUTE_AMOUNT as u16);
+        init.push(P::to_norm(P::D_ROUTE_AMOUNT, r.amount));
+    }
 
     let mut w = W(Vec::new());
     w.u(PATCH_MAGIC);
     w.u(descs.len() as u32);
     w.u(voices.len() as u32);
     w.u(channel.len() as u32);
-    w.u(0);
+    w.u(layer_routes.len() as u32);
     w.u(width as u32);
     w.u(0);
     descs.iter().for_each(|&d| w.u(d as u32));
@@ -218,6 +246,36 @@ pub fn patch(voices: &[VoiceSpec], channel: &[FxSpec], chan_set: &[(usize, usize
     for (c, &(code, bypass)) in channel.iter().enumerate() {
         w.u(code | if bypass { CH_BYPASS } else { 0 });
         w.u(chan[c] as u32);
+    }
+    for (i, r) in layer_routes.iter().enumerate() {
+        let target = match r.vp {
+            Some(k) => {
+                let l = &laid[k];
+                (if r.module < l.modules.len() { l.modules[r.module] } else { l.mods[r.module - l.modules.len()] }) + r.param
+            }
+            None => chan[r.module] + r.param,
+        };
+        w.u(r.src as u32);
+        w.u(r.arg as u32);
+        w.u(TGT_VALUE as u32);
+        w.u(1);
+        w.u(target as u32);
+        (1..MAX_TARGETS).for_each(|_| w.u(0));
+        w.u(lr_amounts[i] as u32);
+        w.u(SRC_NONE as u32);
+        w.u(0);
+        w.u(r.mode as u32);
+        w.u(r.polarity as u32);
+        w.u(0);
+        w.u(GROUP_NONE as u32);
+        w.f(1.0);
+        w.f(0.0);
+        w.f(1.0);
+        w.f(0.0);
+        w.f(r.rise_ms);
+        w.f(r.fall_ms);
+        w.u(0);
+        (0..2 * MAX_POINTS).for_each(|_| w.f(0.0));
     }
     w.0
 }

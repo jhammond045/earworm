@@ -340,6 +340,12 @@ impl LiveTier {
         self.gesture.floor_db = self.floor_db;
     }
 
+    /// How much later stored frames put every channel than the level analysis does: the frame
+    /// sink shifts them to line up with pitch, by whole frames (seconds).
+    pub fn align_s(&self) -> f32 {
+        self.align_frames as f32 * frame::FRAME_SECONDS
+    }
+
     /// Nominal analysis delays (constants derived from filter/window sizes).
     pub fn delays(&self) -> Delays {
         Delays { level_s: LEVEL_DELAY_S, pitch_s: self.pitch_delay_s }

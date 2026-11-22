@@ -659,9 +659,15 @@ impl Osc {
         self.last = 0.0;
     }
 
-    /// Advance `m` samples without output.
+    /// Advance `m` samples without output, one sample at a time as `render` does, so the phase
+    /// does not depend on how a tick is split into calls.
     pub fn skip(&mut self, inc: f32, m: usize) {
-        self.phase = wrap01(self.phase + inc * m as f32);
+        for _ in 0..m {
+            self.phase += inc;
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+            }
+        }
         self.last = self.phase;
     }
 

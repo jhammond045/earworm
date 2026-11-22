@@ -79,6 +79,8 @@ pub struct Engine {
     mic_ring: Vec<f32>,
     mic_w: usize,
     mic_delay: usize,
+    /// How far a take's frames lag its audio (seconds): its audio is read that much earlier.
+    take_lag: f64,
     raw: Vec<f32>,
 }
 
@@ -155,9 +157,11 @@ impl Engine {
             mic_ring: vec![0.0; MIC_RING],
             mic_w: 0,
             mic_delay: 0,
+            take_lag: 0.0,
             raw: vec![0.0; max_block],
         });
         e.mic_delay = ((e.capture.level_delay_s() * sr).round() as usize).min(MIC_RING - 1);
+        e.take_lag = e.capture.take_lag_s() as f64;
         let addr = |p: *const u8| p as usize as u32;
         e.table = BufferTable {
             input: addr(e.input.as_ptr() as *const u8),
@@ -566,6 +570,11 @@ impl Engine {
         self.mic_delay
     }
 
+    /// How much earlier than its frames a take's audio is read on playback, in seconds.
+    pub fn take_lag_s(&self) -> f64 {
+        self.take_lag
+    }
+
     /// Start the transport. From a stop, every layer starts its random sequences and free LFO
     /// phases again (docs/synth.md "Deterministic playback"), so playback matches an export.
     fn start_play(&mut self) {
@@ -573,6 +582,8 @@ impl Engine {
             for l in self.layers.iter_mut() {
                 l.play_reset();
             }
+            // The tails the layers just cut would otherwise leave the master's DC blocker moving.
+            self.dc = (DcBlocker::new(self.sr), DcBlocker::new(self.sr));
         }
         self.transport.play();
     }
@@ -872,7 +883,7 @@ impl Engine {
         let (section, pos) = (self.transport.section(), self.transport.pos());
         let ups = self.transport.units_per_sample();
         let armed = self.capture.armed;
-        let delay_s = self.mic_delay as f64 / self.sr as f64;
+        let delay_s = self.take_lag;
         for (li, l) in self.layers.iter_mut().enumerate() {
             // Step 2: the lanes of the clip playing on this layer.
             let clip_i = if playing { self.track.clip_index_for(section, li) } else { None };

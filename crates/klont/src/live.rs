@@ -405,6 +405,12 @@ impl LiveCapture {
         self.tier.delays().level_s
     }
 
+    /// How far a stored take's frames lag its audio: the level delay plus the frame sink's shift
+    /// toward the pitch delay, seconds.
+    pub fn take_lag_s(&self) -> f32 {
+        self.tier.delays().level_s + self.tier.align_s()
+    }
+
     /// Tuned carrier pitch with the octave applied (meters), NaN unknown.
     pub fn carrier(&self) -> f32 {
         if self.tuned.is_finite() { self.tuned + self.octave() } else { f32::NAN }

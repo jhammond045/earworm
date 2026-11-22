@@ -1504,12 +1504,22 @@ impl Layer {
         let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         self.gl_t = lvl * a.cos();
         self.gr_t = lvl * a.sin();
+        if !self.layer_on {
+            // Silent: no ramp needed (as for the values in `advance_values`).
+            self.gl = self.gl_t;
+            self.gr = self.gr_t;
+        }
         // Fixed per tick so the ramp does not depend on how the tick is split.
         self.gl_step = (self.gl_t - self.gl) / TICK as f32;
         self.gr_step = (self.gr_t - self.gr) / TICK as f32;
         let (gs, gx) = self.blend_target();
-        self.gs.aim(gs);
-        self.gx.aim(gx);
+        if self.layer_on {
+            self.gs.aim(gs);
+            self.gx.aim(gx);
+        } else {
+            self.gs.jump(gs);
+            self.gx.jump(gx);
+        }
     }
 
     /// The blend's gains from the `input` element's values (synth only without one).
@@ -1641,10 +1651,18 @@ impl Layer {
 
     /// Play from a stop (docs/synth.md "Deterministic playback", rule 2): free LFO phases restart
     /// and every random source starts its sequence again, as in a fresh engine, so live playback
-    /// from a point matches an export from that point. Effect tails are cleared too.
+    /// from a point matches an export from that point. Effect tails and sequenced notes still
+    /// ringing from the last playback are cut.
     pub fn play_reset(&mut self) {
         let seed = self.seed;
+        // What still rings from the last playback stops, so playback starts from silence as an
+        // export does. Notes played live (keys, the mic) sound on.
+        self.unqueue(|s| s.seq);
         for (v, voice) in self.voices.iter_mut().enumerate() {
+            if self.slots[v].seq && voice.active() {
+                voice.kill();
+                self.slots[v] = Slot::default();
+            }
             voice.reseed(seed ^ (v as u32 + 1).wrapping_mul(0x85EB_CA6B));
         }
         for l in self.lfos.iter_mut() {
@@ -1673,7 +1691,13 @@ impl Layer {
             self.layer_routes(false);
         }
         let n = self.patch.n_values;
-        if !self.settled {
+        if !self.layer_on && !self.settled {
+            // Nothing sounds, so nothing can click: take the values at once. A fresh engine (an
+            // export) then starts where a live engine that sat still does.
+            self.norm[..n].copy_from_slice(&self.target[..n]);
+            self.map_all();
+            self.settled = true;
+        } else if !self.settled {
             let mut moving = false;
             for i in 0..n {
                 let d = self.target[i] - self.norm[i];
