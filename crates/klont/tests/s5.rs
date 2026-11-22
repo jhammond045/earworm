@@ -13,6 +13,7 @@ use klont::curve::{CURVE_MAGIC, CURVE_STRIDE};
 use klont::patch::*;
 use klont::protocol::*;
 use klont::seq::{FEEL_FREE, LANE_LINE, LANE_VALUE, TRACK_MAGIC3};
+use klont::voice::TICK;
 use klont::Engine;
 use params as P;
 
@@ -304,18 +305,16 @@ fn mix_at_0_and_1_nulls_against_the_synth_alone_and_the_raw_input_alone() {
     assert!(peak(&b) > 0.05, "the synth sounds");
     assert!(d0 <= -90.0);
 
-    // At 1, with only the element in the channel: the take, read as much earlier as its frames
-    // lag it, through level and pan (0 dB, centre) and the master bus.
+    // At 1, with only the element in the channel: the take at its own time (its frames are read
+    // ahead instead), through level and pan (0 dB, centre) and the master bus.
     let only: Vec<FxSpec> = vec![(P::T_INPUT, false)];
     let at1 = build::patch_with(&[voice], &only, &[(0, P::input::MIX, 1.0)], &route);
-    let mut e = take_engine(&t, &at1, secs, &[]);
-    let delay = (e.take_lag_s() * SR as f64).round() as usize;
-    let (l, r) = render(&mut e, n, 4096);
+    let (l, r) = render(&mut take_engine(&t, &at1, secs, &[]), n, 4096);
     let g = std::f32::consts::FRAC_PI_4.cos();
-    let raw: Vec<f32> = (0..n).map(|i| i.checked_sub(delay).map_or(0.0, |k| t.audio[k]) * g).collect();
+    let raw: Vec<f32> = t.audio[..n].iter().map(|&x| x * g).collect();
     let want = master(&raw);
     let d1 = max_diff_db(&l, &want).max(max_diff_db(&r, &want));
-    println!("mix 1 against the raw input alone (read {delay} samples late): worst difference {d1:.1} dB (raw peak {:.2})", peak(&want));
+    println!("mix 1 against the raw input alone (read at its own time): worst difference {d1:.1} dB (raw peak {:.2})", peak(&want));
     assert!(peak(&want) > 0.05);
     assert!(d1 <= -90.0);
 }
@@ -354,21 +353,23 @@ fn half_rise(x: &[f32], from: usize, to: usize) -> usize {
     env.iter().position(|&e| e >= 0.5 * level).unwrap()
 }
 
-fn offsets(what: &str, synth: &[f32], raw: &[f32], onset: usize, delay: f64) -> f64 {
+fn ms(samples: f64) -> f64 {
+    samples * 1000.0 / SR as f64
+}
+
+/// Synth minus raw input, in samples, from where each reaches half its steady level.
+fn offsets(what: &str, synth: &[f32], raw: &[f32], onset: usize) -> (f64, usize) {
     let steady = (onset + (0.5 * SR) as usize, onset + (1.0 * SR) as usize);
     let (s, r) = (half_rise(synth, steady.0, steady.1), half_rise(raw, steady.0, steady.1));
-    let ms = |x: f64| x * 1000.0 / SR as f64;
     let off = s as f64 - r as f64;
     println!(
-        "{what}: raw input reaches half level {:.2} ms after the sung onset, the synth {:.2} ms; synth - raw = {:+.2} ms ({} samples); without the {:.2} ms the raw input is held back it would be {:+.2} ms",
+        "{what}: raw input reaches half level {:.2} ms after the sung onset, the synth {:.2} ms; synth - raw = {:+.2} ms ({} samples)",
         ms(r as f64 - onset as f64),
         ms(s as f64 - onset as f64),
         ms(off),
         off,
-        delay * 1000.0,
-        ms(off) + delay * 1000.0
     );
-    off
+    (off, r)
 }
 
 #[test]
@@ -396,19 +397,34 @@ fn offset_between_the_raw_input_and_the_synth_it_drives() {
         (out, e.mic_delay())
     };
     let ((ls, delay), (lr, _)) = (live(0.0), live(1.0));
-    let off_live = offsets("live (listening layer, mic)", &ls, &lr, onset, delay as f64 / SR as f64);
+    let (off_live, _) = offsets("live (listening layer, mic held back the level delay)", &ls, &lr, onset);
+    println!("live: the mic is held back {:.2} ms; without it synth - raw would be {:+.2} ms", ms(delay as f64), ms(off_live + delay as f64));
 
-    // Playback: the same singing as a take.
+    // Playback: the same singing as a take. The beat is the transport: the take's onset is at
+    // the same place in the take as in the transport, so the raw input is on the beat when it
+    // reaches half level where the take's own audio does.
     let t = take(secs, onset);
     let mut e = take_engine(&t, &patch(0.0), secs, &[]);
-    let lag = e.take_lag_s();
+    let lead = e.take_lead_s();
     let (ps, _) = render(&mut e, n, 4096);
     let (pr, _) = render(&mut take_engine(&t, &patch(1.0), secs, &[]), n, 4096);
-    let off_play = offsets("playback (the take)", &ps, &pr, onset, lag);
-    // The take was captured live, so playback lines up as live does, to within a frame.
+    let (off_play, raw_at) = offsets("playback (the take)", &ps, &pr, onset);
+    let g = std::f32::consts::FRAC_PI_4.cos();
+    let on_beat = half_rise(&master(&t.audio[..n].iter().map(|&x| x * g).collect::<Vec<_>>()), onset + (0.5 * SR) as usize, onset + SR as usize);
+    let raw_vs_beat = raw_at as f64 - on_beat as f64;
+    println!(
+        "playback: the take's frames are read {:.2} ms early; raw input - beat = {:+.2} ms ({raw_vs_beat} samples); synth - raw = {:+.2} ms",
+        lead * 1000.0,
+        ms(raw_vs_beat),
+        ms(off_play)
+    );
+    // The raw input is on the beat, within one control tick.
+    assert!(raw_vs_beat.abs() <= TICK as f64, "raw input {raw_vs_beat} samples off the beat");
+    // The take was captured live, so the synth follows its raw input on playback as it follows
+    // the mic live, to within a frame (10 ms).
     assert!((off_live - off_play).abs() <= 480.0, "live and playback differ by {} samples", off_live - off_play);
-    // With the delay the two land within 5 ms of each other.
-    assert!(off_live.abs() <= 240.0 && off_play.abs() <= 240.0, "offsets {off_live} and {off_play} samples");
+    // Both land within 5 ms of their raw input, the synth after it.
+    assert!((0.0..=240.0).contains(&off_live) && (0.0..=240.0).contains(&off_play), "offsets {off_live} and {off_play} samples");
 }
 
 

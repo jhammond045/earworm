@@ -79,8 +79,6 @@ pub struct Engine {
     mic_ring: Vec<f32>,
     mic_w: usize,
     mic_delay: usize,
-    /// How far a take's frames lag its audio (seconds): its audio is read that much earlier.
-    take_lag: f64,
     raw: Vec<f32>,
     /// A pass is recording (MSG_RECORD): hand moves take their target from its lane.
     recording: bool,
@@ -159,12 +157,11 @@ impl Engine {
             mic_ring: vec![0.0; MIC_RING],
             mic_w: 0,
             mic_delay: 0,
-            take_lag: 0.0,
             raw: vec![0.0; max_block],
             recording: false,
         });
         e.mic_delay = ((e.capture.level_delay_s() * sr).round() as usize).min(MIC_RING - 1);
-        e.take_lag = e.capture.take_lag_s() as f64;
+        e.curves.set_lead(e.capture.take_lag_frames());
         let addr = |p: *const u8| p as usize as u32;
         e.table = BufferTable {
             input: addr(e.input.as_ptr() as *const u8),
@@ -590,9 +587,9 @@ impl Engine {
         self.mic_delay
     }
 
-    /// How much earlier than its frames a take's audio is read on playback, in seconds.
-    pub fn take_lag_s(&self) -> f64 {
-        self.take_lag
+    /// How much earlier than its audio a take's frames are read on playback, in seconds.
+    pub fn take_lead_s(&self) -> f64 {
+        self.curves.lead_s()
     }
 
     /// Start the transport. From a stop, every layer starts its random sequences and free LFO
@@ -903,7 +900,6 @@ impl Engine {
         let (section, pos) = (self.transport.section(), self.transport.pos());
         let ups = self.transport.units_per_sample();
         let armed = self.capture.armed;
-        let delay_s = self.take_lag;
         for (li, l) in self.layers.iter_mut().enumerate() {
             // Step 2: the lanes of the clip playing on this layer.
             let clip_i = if playing { self.track.clip_index_for(section, li) } else { None };
@@ -923,7 +919,7 @@ impl Engine {
             } else if self.live_on && (l.listen || armed == li as i32) {
                 RawSrc::Mic
             } else {
-                clip_i.and_then(|ci| take_audio(&self.track, &self.samples, ci, pos, ups, delay_s)).unwrap_or(RawSrc::None)
+                clip_i.and_then(|ci| take_audio(&self.track, &self.samples, ci, pos, ups)).unwrap_or(RawSrc::None)
             };
             l.set_raw(raw);
             let mut rec = [0.0f32; CURVE_STRIDE];
@@ -1129,9 +1125,9 @@ impl Engine {
 }
 
 /// Where clip `ci`'s take audio is read for the control tick at transport position `pos`: the
-/// take second the warp map gives (as for its frames), `delay_s` earlier, and the step per
-/// output sample over the tick. None without take audio.
-fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64, delay_s: f64) -> Option<RawSrc> {
+/// take second the warp map gives (as for its frames, which the curve pool reads ahead by their
+/// lag), and the step per output sample over the tick. None without take audio.
+fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64) -> Option<RawSrc> {
     let clip = track.clip(ci);
     if clip.audio < 0 || !(clip.loop_len > 0.0) {
         return None;
@@ -1144,7 +1140,7 @@ fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64
     let a = curve::warp_to_take(warp, t, slope);
     let b = curve::warp_to_take(warp, t + ups * TICK as f64, slope);
     let rate = s.rate as f64;
-    Some(RawSrc::Take { sample: clip.audio as u8, pos: (a - delay_s) * rate, step: (b - a) * rate / TICK as f64 })
+    Some(RawSrc::Take { sample: clip.audio as u8, pos: a * rate, step: (b - a) * rate / TICK as f64 })
 }
 
 /// The frame of layer `li`'s clip take in `section` at transport position `pos` (section

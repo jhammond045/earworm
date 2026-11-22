@@ -405,10 +405,11 @@ impl LiveCapture {
         self.tier.delays().level_s
     }
 
-    /// How far a stored take's frames lag its audio: the level delay plus the frame sink's shift
-    /// toward the pitch delay, seconds.
-    pub fn take_lag_s(&self) -> f32 {
-        self.tier.delays().level_s + self.tier.align_s()
+    /// How many frames a stored take's frames lag its audio: the frame sink's shift toward the
+    /// pitch delay. Playback reads a take's frames this much earlier (docs/S5.md, "Take
+    /// alignment").
+    pub fn take_lag_frames(&self) -> usize {
+        self.tier.align_frames()
     }
 
     /// Tuned carrier pitch with the octave applied (meters), NaN unknown.

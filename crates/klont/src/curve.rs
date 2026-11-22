@@ -49,6 +49,9 @@ pub struct CurvePool {
     slots: [Slot; MAX_CURVES],
     /// End of the used part of the pool, in floats.
     used: usize,
+    /// How many frames ahead of the asked take time `read` reads: the lag of stored frames
+    /// behind their audio, so features line up with the take's audio.
+    lead: f64,
 }
 
 impl Default for CurvePool {
@@ -59,7 +62,17 @@ impl Default for CurvePool {
 
 impl CurvePool {
     pub fn new() -> Self {
-        Self { data: vec![0.0; CURVE_POOL_FLOATS], slots: [Slot::default(); MAX_CURVES], used: 0 }
+        Self { data: vec![0.0; CURVE_POOL_FLOATS], slots: [Slot::default(); MAX_CURVES], used: 0, lead: 0.0 }
+    }
+
+    /// Read every curve `frames` frames ahead of the asked time (see `read`).
+    pub fn set_lead(&mut self, frames: usize) {
+        self.lead = frames as f64;
+    }
+
+    /// How far ahead `read` reads, in seconds.
+    pub fn lead_s(&self) -> f64 {
+        self.lead / FRAME_RATE
     }
 
     /// Move every live curve (except `skip`) to the front, in pool order.
@@ -158,7 +171,7 @@ impl CurvePool {
         &self.data[a..a + CURVE_STRIDE]
     }
 
-    /// The record at take time `sec`, by linear interpolation between the two
+    /// The record at take time `sec` (plus the lead), by linear interpolation between the two
     /// nearest frames. Band levels and loudness interpolate linearly (bands
     /// are already dB). Pitch and tuned pitch interpolate in cents when both
     /// sides are finite, else take the nearer side. Voicing and onset take
@@ -174,7 +187,7 @@ impl CurvePool {
         if s.frames == 0 {
             return false;
         }
-        let x = sec * FRAME_RATE;
+        let x = sec * FRAME_RATE + self.lead;
         let last = s.frames - 1;
         if !(x > 0.0) {
             out.copy_from_slice(self.frame(s, 0));
