@@ -26,3 +26,4 @@ Design: see docs/TDD.md.
 - Modular synth, stage S2 (the modulation matrix: every source, the shaper, layer LFOs, listening layers; the Patch and Mod views in the Sound panel): see docs/S2.md for how to check it.
 - Modular synth, stage S3 (editing patches: oscillators, noise, a sampler, a channel filter; add, remove, rewire and reorder; the cost meter and voice count; preset save, load, import and export; a 5 ms fade on structure changes): see docs/S3.md for how to check it.
 - Modular synth, stage S5 (recording and automation: Record a pass of notes, knob moves and scene taps; automation lanes in the timeline; the raw input beside the synth, crossfaded by a value): see docs/S5.md for how to check it.
+- Polyphonic capture (a guitar's chords into synth voices; design and feasibility, not built): see docs/poly.md for the measurements and the design, and experiments/poly for the prototype.
