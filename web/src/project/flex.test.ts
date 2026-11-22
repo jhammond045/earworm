@@ -170,3 +170,23 @@ describe('flexClip', () => {
     expect(warpToTake(m.warp!, 0, 1 / UPS)).toBeCloseTo(2, 9);
   });
 });
+
+describe('cost', () => {
+  it('builds a 4-bar clip\'s time map and moves its notes in well under a millisecond', () => {
+    // 64 notes on 16ths of four bars, each played up to 30 ms off, with a take placed by its notes.
+    const len = 4 * BAR;
+    let seed = 3;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const notes = Array.from({ length: 64 }, (_, k) => ({ id: `n${k}`, t: k * 240 + 20 + (rnd() - 0.5) * 100, dur: 200, cents: 5000, hard: 0.5 }));
+    const warp = notes.flatMap((n) => [{ takeSec: n.t / UPS, clipT: n.t }, { takeSec: (n.t + n.dur) / UPS, clipT: n.t + n.dur }]);
+    const anchors = new Float32Array(notes.flatMap((n) => [n.t / UPS, 1, 1]));
+    const c = melody({ take: 'k', takes: ['k'], loopLen: len, notes, warp, flex: quantizeFlex(undefined, 240) }) as MelodyClip & { flex: Flex };
+    for (let i = 0; i < 200; i++) flexClip(c, anchors, UPS);
+    const runs = 2000;
+    const t0 = performance.now();
+    for (let i = 0; i < runs; i++) flexClip(c, anchors, UPS);
+    const us = ((performance.now() - t0) * 1000) / runs;
+    console.log(`flexClip: 64 notes and anchors over 4 bars, ${us.toFixed(1)} us per clip`);
+    expect(us).toBeLessThan(1000);
+  });
+});

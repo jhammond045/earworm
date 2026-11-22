@@ -4,6 +4,8 @@
 //    playback from the start and an export null within -90 dB; two exports are bit-identical.
 // 2. Undo removes a recorded pass as one step; redo puts it back.
 // 3. Killing the tab after a recorded pass and reopening restores the lanes (journal replay).
+// Flex quantize (docs/quant.md, Q1) re-runs check 1 in a 120 bpm grid section with Feel on in
+// both recorded clips (Feel needs a grid): live playback and the export stay bit-identical.
 // The recording is driven the way the app drives it: messages into the engine's control ring
 // before each 128-sample quantum, the same events into a Pass, the mic's audio and frames into a
 // take, and the clock from the meter block. The engine-only S5 checks are crates/klont/tests/s5.rs.
@@ -47,12 +49,12 @@ function singing(n: number): Float32Array {
 /** The project: one free section of 32 s; the melody layer listens, has an input element (the
  *  raw voice beside the synth) and a route from its sung volume to its filter, and two states; the
  *  beat layer plays MIDI hits. */
-function project(): { store: Store; doc0: Project } {
+function project(grid = false): { store: Store; doc0: Project } {
   const store = new Store(newProject('S5'));
   const doc = store.doc;
   const [mel, beat] = doc.layers;
   const sec = doc.sections[0].id;
-  store.dispatch('setSection', { id: sec, feel: 'free', seconds: 32 });
+  store.dispatch('setSection', grid ? { id: sec, feel: 'grid', bpm: 120, beats: 64 } : { id: sec, feel: 'free', seconds: 32 });
   store.dispatch('setLoop', { loop: false });
   store.dispatch('addChannelFx', { layer: mel.id, type: 'input' });
   store.dispatch('addRoute', { layer: mel.id, route: { source: 'layer.volume', target: 'filter1.cutoff' }, amount: 0.4 });
@@ -174,9 +176,10 @@ const dbfs = (x: number) => 20 * Math.log10(Math.max(x, 1e-30));
 const worst = (a: Float32Array, b: Float32Array) => { let m = 0; for (let i = 0; i < Math.min(a.length, b.length); i++) m = Math.max(m, Math.abs(a[i] - b[i])); return m; };
 const peak = (a: Float32Array) => a.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
 
-describe('S5: a recorded pass', () => {
-  it('plays back live as the export renders it, and two exports are bit-identical (check 1)', async () => {
-    const { store } = project();
+/** Check 1: record, commit, play back live from the start, export twice. With `flex`, the section
+ *  is a grid and both recorded clips get Feel before playback. */
+async function checkOne(flex: boolean): Promise<void> {
+    const { store } = project(flex);
     const compiler = new Compiler();
     const core = new Core(exportsOf(), SR, Q);
     load(core, compiler.compile(store.doc, () => null));
@@ -186,6 +189,14 @@ describe('S5: a recorded pass', () => {
     const r = record(core, store.doc);
     const recordMs = performance.now() - t0;
     commit(store, r);
+    if (flex) {
+      // 16ths swung 60% at 80% strength on the melody (its MIDI notes are its anchors); 8ths at full
+      // strength on the beat layer with kit slot 2 left alone.
+      const sec = store.doc.sections[0].id;
+      const [mel, beat] = store.doc.layers;
+      store.dispatch('setFlex', { section: sec, layer: mel.id, flex: { on: true, grid: 240, triplets: false, feel: { kind: 'swing', amount: 0.6, unit: 240 }, strength: 0.8, catch: 120 } });
+      store.dispatch('setFlex', { section: sec, layer: beat.id, flex: { on: true, grid: 480, triplets: true, feel: { kind: 'straight' }, strength: 1, catch: 240, slotStrength: [1, 1, 0, 1] } });
+    }
 
     const doc = store.doc;
     const clip = doc.sections[0].clips[doc.layers[0].id]!;
@@ -220,13 +231,24 @@ describe('S5: a recorded pass', () => {
     const a = await exportOnce();
     const b = await exportOnce();
     expect(a.frames).toBe(n);
+    if (flex) {
+      // Feel moved what plays: the track differs from the same document with Feel off.
+      const track = (d: Project) => new Compiler().compile(d, curve, { audioFor: audio }).find((u) => u.what === 'track')!.blob;
+      const off = { ...doc, sections: doc.sections.map((s) => ({ ...s, clips: Object.fromEntries(Object.entries(s.clips).map(([k, c]) => [k, { ...c!, flex: undefined }])) })) };
+      expect(Buffer.from(track(doc)).equals(Buffer.from(track(off)))).toBe(false);
+    }
     const d = Math.max(worst(live.l, a.left), worst(live.r, a.right));
-    console.log(`S5 check 1: ${SECS} s pass (${r.pass.notes.length} notes and hits, ${r.pass.moves.length} moves, ${r.pass.scenes.length} scene taps); live playback against the export: worst difference ${dbfs(d).toFixed(1)} dBFS (peak ${peak(a.left).toFixed(2)}); recording ${SECS} s took ${(recordMs / 1000).toFixed(2)} s in 128-sample calls; the export rendered at ${a.realtime.toFixed(1)}x real time`);
+    console.log(`${flex ? 'Q1: S5 check 1 with Feel on, grid section' : 'S5 check 1'}: ${SECS} s pass (${r.pass.notes.length} notes and hits, ${r.pass.moves.length} moves, ${r.pass.scenes.length} scene taps); live playback against the export: worst difference ${dbfs(d).toFixed(1)} dBFS (peak ${peak(a.left).toFixed(2)}); recording ${SECS} s took ${(recordMs / 1000).toFixed(2)} s in 128-sample calls; the export rendered at ${a.realtime.toFixed(1)}x real time`);
     expect(peak(a.left)).toBeGreaterThan(0.05);
     expect(dbfs(d)).toBeLessThanOrEqual(-90);
     expect(Buffer.from(a.left.buffer).equals(Buffer.from(b.left.buffer))).toBe(true);
     expect(Buffer.from(a.right.buffer).equals(Buffer.from(b.right.buffer))).toBe(true);
-  }, 120_000);
+}
+
+describe('S5: a recorded pass', () => {
+  it('plays back live as the export renders it, and two exports are bit-identical (check 1)', () => checkOne(false), 120_000);
+
+  it('with Feel on in the recorded clips (docs/quant.md Q1), plays back live as the export renders it', () => checkOne(true), 120_000);
 
   it('is one undo step, and redo puts it back (check 2)', () => {
     const { store, doc0 } = project();
