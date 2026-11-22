@@ -352,12 +352,14 @@ pub fn blend_gains(m: f32, trim: f32) -> (f32, f32) {
     }
 }
 
-/// A gain that ramps to its target across one control tick.
+/// A gain that ramps to its target across one control tick and ends the tick exactly on it.
 #[derive(Clone, Copy, Debug, Default)]
 struct Ramp {
     g: f32,
     t: f32,
     d: f32,
+    /// Samples left in the tick's ramp.
+    left: u32,
 }
 
 impl Ramp {
@@ -365,12 +367,23 @@ impl Ramp {
     fn aim(&mut self, t: f32) {
         self.t = t;
         self.d = (t - self.g) / TICK as f32;
+        self.left = TICK as u32;
     }
     fn jump(&mut self, t: f32) {
-        *self = Ramp { g: t, t, d: 0.0 };
+        *self = Ramp { g: t, t, d: 0.0, left: 0 };
     }
+    /// The last sample of the tick lands on the target. Adding the step 32 times can stop an
+    /// ulp or two short, and a step that small then rounds away on every later tick, so the
+    /// gain would keep a remainder that depends on its history: an engine that has played a
+    /// while and a fresh one would hold the same target a few ulps apart.
     #[inline]
     fn next(&mut self) -> f32 {
+        if self.left <= 1 {
+            self.g = self.t;
+            self.left = 0;
+            return self.g;
+        }
+        self.left -= 1;
         self.g += self.d;
         if (self.g - self.t) * self.d > 0.0 {
             self.g = self.t;
@@ -663,7 +676,7 @@ impl Layer {
             raw: RawSrc::None,
             raw_pos: 0.0,
             raw_on: false,
-            gs: Ramp { g: 1.0, t: 1.0, d: 0.0 },
+            gs: Ramp { g: 1.0, t: 1.0, d: 0.0, left: 0 },
             gx: Ramp::default(),
         };
         let classic = crate::classic::patch_blob(KIND_MELODY, index as u32);

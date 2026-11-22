@@ -1,7 +1,8 @@
 // Stage S5 checks (docs/synth.md "S5: recording and automation"), through the committed
 // klont.wasm and the app's own recorder, compiler, store and journal:
 // 1. Record 30 s with MIDI notes, controller moves and singing into a listening layer. Live
-//    playback from the start and an export null within -90 dB; two exports are bit-identical.
+//    playback from the start and an export null within -90 dB (here: no sample differs); two
+//    exports are bit-identical.
 // 2. Undo removes a recorded pass as one step; redo puts it back.
 // 3. Killing the tab after a recorded pass and reopening restores the lanes (journal replay).
 // Flex quantize (docs/quant.md, Q1) re-runs check 1 in a 120 bpm grid section with Feel on in
@@ -240,7 +241,10 @@ async function checkOne(flex: boolean): Promise<void> {
     const d = Math.max(worst(live.l, a.left), worst(live.r, a.right));
     console.log(`${flex ? 'Q1: S5 check 1 with Feel on, grid section' : 'S5 check 1'}: ${SECS} s pass (${r.pass.notes.length} notes and hits, ${r.pass.moves.length} moves, ${r.pass.scenes.length} scene taps); live playback against the export: worst difference ${dbfs(d).toFixed(1)} dBFS (peak ${peak(a.left).toFixed(2)}); recording ${SECS} s took ${(recordMs / 1000).toFixed(2)} s in 128-sample calls; the export rendered at ${a.realtime.toFixed(1)}x real time`);
     expect(peak(a.left)).toBeGreaterThan(0.05);
-    expect(dbfs(d)).toBeLessThanOrEqual(-90);
+    // The design asks for -90 dB, but S5 measured no sample differing and this holds it there: a
+    // -171 dB difference once went unnoticed (docs/S5.md, "Live playback against the export,
+    // again").
+    expect(d).toBe(0);
     expect(Buffer.from(a.left.buffer).equals(Buffer.from(b.left.buffer))).toBe(true);
     expect(Buffer.from(a.right.buffer).equals(Buffer.from(b.right.buffer))).toBe(true);
 }
