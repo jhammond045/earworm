@@ -48,7 +48,6 @@ pub struct Note {
     pub on: f64,
     pub off: f64,
     pub vel_db: f64,
-    pub string: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -385,7 +384,7 @@ pub fn render(sc: &Score, kind: Kind, seed: u64) -> (Vec<f32>, Vec<Note>) {
         }
         let midi = OPEN[p.string] + p.fret;
         let hz = 440.0 * 2f64.powf((midi as f64 - 69.0) / 12.0) * 2f64.powf(detune[p.string] / 1200.0);
-        notes.push(Note { midi, hz, on: p.t, off: cut, vel_db: p.vel_db, string: p.string });
+        notes.push(Note { midi, hz, on: p.t, off: cut, vel_db: p.vel_db });
         render_pluck(&mut out, p, hz, cut, kind, pickup, &mut rng);
     }
     // Room and converter noise, -66 dBFS RMS.
