@@ -13,6 +13,11 @@
 //! (other chords, other lines, other random draws). `--wav <dir>` also
 //! writes the rendered guitar; `--svg <dir>` draws piano rolls of the
 //! strummed passage (poly-roll-hs.svg, poly-roll-nmf.svg).
+//!
+//!   (cd experiments/poly && cargo run --release -- real <dir> --profile guitar|piano|generic)
+//!
+//! runs the same detectors on real labelled recordings (stage P0; see
+//! `real.rs` and docs/poly.md for how the data is made).
 
 mod eval;
 mod guitar;
@@ -94,7 +99,7 @@ pub const GUITAR: Profile =
 /// A0 to C8, piano inharmonicity, up to 8 kHz so the top octave keeps a
 /// second partial, ten notes. B follows the usual two-slope shape: lowest
 /// around the bass break, rising steeply up the treble (about 4e-4 at C4,
-/// 2e-2 at C8). No onset gate: in fast passages the onset detector, tuned
+/// 3e-2 at C8). No onset gate: in fast passages the onset detector, tuned
 /// on guitar, misses too many key strikes. Tuned on two MAESTRO pieces.
 pub const PIANO: Profile =
     Profile { name: "piano", lo: 21, hi: 108, f_max: 8000.0, b: piano_b, max_notes: 10, noise: 4, gate: 0.0 };
