@@ -67,8 +67,10 @@ fn knob(name: &str, default: f32) -> f32 {
 }
 
 /// What the detectors assume about the instrument: the dictionary's range,
-/// how far up its templates reach, their inharmonicity, and how many notes
-/// the tracker holds at once.
+/// how far up its templates reach, their inharmonicity, how many notes the
+/// tracker holds at once, how many broadband atoms NMF has beside the notes,
+/// and the onset gate (a note may only start within `gate` times the
+/// retrigger window of a broadband onset; 0 turns it off).
 #[derive(Clone, Copy)]
 pub struct Profile {
     pub name: &'static str,
@@ -77,21 +79,31 @@ pub struct Profile {
     pub f_max: f32,
     pub b: fn(u8) -> f32,
     pub max_notes: usize,
+    pub noise: usize,
+    pub gate: f32,
 }
 
-/// E2 to E6, a steel string's inharmonicity, six strings. The synthetic
-/// figures in docs/poly.md are all from this one.
-pub const GUITAR: Profile = Profile { name: "guitar", lo: 40, hi: 88, f_max: 5000.0, b: |_| 5e-5, max_notes: 6 };
+/// E2 to E6, a steel string's inharmonicity, six strings. The noise atoms
+/// and the onset gate were added after stage P0, tuned on GuitarSet's
+/// player 00: real recordings put a body's thump, rumble and room sound on
+/// the lowest notes without them. POLY_NOISE=0 POLY_OPEN_GATE=0 gives the
+/// detector the synthetic figures in docs/poly.md were first measured with.
+pub const GUITAR: Profile =
+    Profile { name: "guitar", lo: 40, hi: 88, f_max: 5000.0, b: |_| 5e-5, max_notes: 6, noise: 8, gate: 2.0 };
 
 /// A0 to C8, piano inharmonicity, up to 8 kHz so the top octave keeps a
 /// second partial, ten notes. B follows the usual two-slope shape: lowest
 /// around the bass break, rising steeply up the treble (about 4e-4 at C4,
-/// 2e-2 at C8).
-pub const PIANO: Profile = Profile { name: "piano", lo: 21, hi: 108, f_max: 8000.0, b: piano_b, max_notes: 10 };
+/// 2e-2 at C8). No onset gate: in fast passages the onset detector, tuned
+/// on guitar, misses too many key strikes. Tuned on two MAESTRO pieces.
+pub const PIANO: Profile =
+    Profile { name: "piano", lo: 21, hi: 108, f_max: 8000.0, b: piano_b, max_notes: 10, noise: 4, gate: 0.0 };
 
 /// A1 to C7 with harmonic templates (B = 0), for bowed strings, winds,
 /// voices and mixed ensembles when nothing is known about the instrument.
-pub const GENERIC: Profile = Profile { name: "generic", lo: 33, hi: 96, f_max: 5000.0, b: |_| 0.0, max_notes: 10 };
+/// No onset gate: bowed and blown notes can start without one.
+pub const GENERIC: Profile =
+    Profile { name: "generic", lo: 33, hi: 96, f_max: 5000.0, b: |_| 0.0, max_notes: 10, noise: 4, gate: 0.0 };
 
 fn piano_b(m: u8) -> f32 {
     let m = m as f32;
@@ -110,7 +122,7 @@ fn track_params(cfg: &Config, prof: &Profile) -> TrackParams {
         // between frames; it takes a stronger one to start a note.
         open_strength: if cfg.method == Method::Nmf { knob("OPEN", 0.08) } else { 0.0 },
         max_notes: knob("MAX_NOTES", prof.max_notes as f32) as usize,
-        open_gate: (knob("OPEN_GATE", 2.0) * (cfg.n / 340) as f32) as u32,
+        open_gate: (knob("OPEN_GATE", prof.gate) * (cfg.n / 340) as f32) as u32,
     }
 }
 
@@ -130,10 +142,7 @@ fn nmf_params(prof: &Profile) -> NmfParams {
         hi: prof.hi,
         f_max: prof.f_max,
         b: prof.b,
-        // Added after stage P0: real recordings put a body's thump, rumble
-        // and room sound on the lowest notes without them. POLY_NOISE=0
-        // POLY_OPEN_GATE=0 gives the detector as first designed.
-        noise: knob("NOISE", 8.0) as usize,
+        noise: knob("NOISE", prof.noise as f32) as usize,
     }
 }
 

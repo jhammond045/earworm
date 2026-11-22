@@ -4,7 +4,8 @@ reads: one 48 kHz mono WAV per excerpt and, beside it, a note list
 seconds, MIDI pitch (fractional when the labels measured it), and velocity
 (0 to 127, or -1 when the labels have none).
 
-Needs numpy, scipy, soundfile and mido (see experiments/poly/tools/README.md).
+Needs numpy, scipy, soundfile and mido; docs/poly.md "Stage P0" has the
+whole sequence, downloads included.
 
   python prep.py guitarset <GuitarSet dir with annotation/ and mic/> <out>
   python prep.py maestro <out> [<cache dir>]
@@ -14,7 +15,6 @@ Nothing here is committed: keep the downloads and the output outside the
 repository, or under experiments/poly/data, which git ignores.
 """
 
-import csv
 import glob
 import io
 import json
