@@ -1,6 +1,6 @@
 # Flex quantize: timing decided at play time
 
-Nov 22, 2026. Design for the owner's approval. Nothing on this page is built into the app. A throwaway prototype in `experiments/flexquant` measured the parts that carry risk; its full output is [experiments/flexquant/results.md](../experiments/flexquant/results.md), and "Prototype" below summarizes it.
+Nov 22, 2026. Design, approved. Stage Q1 is built: see [Q1.md](Q1.md) for what it does and where it differs from this page; the later stages are not. A throwaway prototype in `experiments/flexquant` measured the parts that carry risk; its full output is [experiments/flexquant/results.md](../experiments/flexquant/results.md), and "Prototype" below summarizes it.
 
 Today Quantize moves note starts once, in the document, and leaves the take behind. This page makes quantizing a setting of the clip that is applied every time the track plays or exports. The take keeps its performed timing. The app finds **anchors** in it (onsets, note starts, hits, peaks of a sung feature), pulls them toward a **target** (a grid at any resolution, a swing, a groove, or the timing of another layer) by a **strength** that a lane can automate, and the engine plays the notes, the curves and the take's audio through the resulting time map, stretching the audio between anchors without changing its pitch. One layer can set the timing of any number of others.
 
@@ -99,7 +99,7 @@ The compiler builds one map per clip whose feel is on:
 
 1. Each anchor's take time goes to its performed clip time through the take's placement (today's warp map).
 2. Anchors are pulled to their slots as above; riders are placed on the line the moved anchors draw.
-3. The map runs through the moved anchors and riders, pinned at the loop's ends.
+3. The map runs through the moved anchors and riders and repeats with the loop: an anchor played just before the loop end can be pulled to the next pass's first slot, and its note then starts at the top of the loop. (This page first pinned the map at the loop's ends; then a note sung a little early on the first beat, which placing a take stores just before the loop end, could never reach it.)
 
 ```text
  performed   ──x─────x────x──────x───x──────▶   anchors where they were played
