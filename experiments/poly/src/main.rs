@@ -11,8 +11,8 @@
 //!
 //! `dev` is the material the thresholds were tuned on; `test` is held out
 //! (other chords, other lines, other random draws). `--wav <dir>` also
-//! writes the rendered guitar; `--svg <file>` draws a piano roll of one
-//! passage.
+//! writes the rendered guitar; `--svg <dir>` draws piano rolls of the
+//! strummed passage (poly-roll-hs.svg, poly-roll-nmf.svg).
 
 mod eval;
 mod guitar;
@@ -249,9 +249,9 @@ fn main() {
             per_kind.push((kind, cfg.name, r.m.f1(), r.m.precision(), r.m.recall()));
             totals[ci].add(&r.m);
             cpu[ci] += r.us_per_block / kinds.len() as f64;
-            if let (Some(path), Kind::Acoustic, true) = (&svg, kind, ci == 0 || ci == 2) {
-                let p = if ci == 0 { path.clone() } else { path.replace(".svg", "-nmf.svg") };
-                piano_roll(&p, &truth, &r.est, cfg, &sc.sections);
+            if let (Some(dir), Kind::Acoustic, true) = (&svg, kind, ci == 0 || ci == 2) {
+                let name = if ci == 0 { "hs" } else { "nmf" };
+                piano_roll(&format!("{dir}/poly-roll-{name}.svg"), &truth, &r.est, cfg, &sc.sections);
             }
         }
     }
@@ -310,6 +310,33 @@ fn main() {
     for (ci, cfg) in CONFIGS.iter().enumerate() {
         let cells: Vec<String> =
             totals[ci].sections.iter().map(|s| format!("{:.2} ({}/{})", s.2 as f64 / s.1.max(1) as f64, s.2, s.1)).collect();
+        println!("| {} | {} |", cfg.name, cells.join(" | "));
+    }
+
+    println!("\n### Recall by chord size (notes struck within 50 ms; both instruments)\n");
+    println!("| Detector | 1 | 2 | 3 | 4 | 5 | 6 |");
+    println!("| --- | --- | --- | --- | --- | --- | --- |");
+    for (ci, cfg) in CONFIGS.iter().enumerate() {
+        let cells: Vec<String> = (1..=6)
+            .map(|k| {
+                let (n, f) = totals[ci].by_size[k];
+                if n == 0 { "-".into() } else { format!("{:.2} ({f}/{n})", f as f64 / n as f64) }
+            })
+            .collect();
+        println!("| {} | {} |", cfg.name, cells.join(" | "));
+    }
+
+    println!("\n### Live latency by register, median / p90 ms (both instruments)\n");
+    println!("| Detector | E2 to D#3 | E3 to D#4 | E4 and up |");
+    println!("| --- | --- | --- | --- |");
+    for (ci, cfg) in CONFIGS.iter().enumerate().filter(|c| c.1.live) {
+        let cells: Vec<String> = [(40u8, 52u8), (52, 64), (64, 128)]
+            .iter()
+            .map(|&(lo, hi)| {
+                let v: Vec<f64> = totals[ci].latency_by_note.iter().filter(|x| x.0 >= lo && x.0 < hi).map(|x| x.1).collect();
+                format!("{} / {} (n {})", ms(percentile(&v, 0.5)), ms(percentile(&v, 0.9)), v.len())
+            })
+            .collect();
         println!("| {} | {} |", cfg.name, cells.join(" | "));
     }
 

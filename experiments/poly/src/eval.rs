@@ -28,6 +28,10 @@ pub struct Metrics {
     pub miss_shadowed: usize,
     pub miss_other: usize,
     pub latency: Vec<f64>,
+    /// (MIDI note, latency) of found notes.
+    pub latency_by_note: Vec<(u8, f64)>,
+    /// Per chord size 1..=6 (notes struck within 50 ms): notes played, found.
+    pub by_size: [(usize, usize); 7],
     /// Per 10 ms: notes sounding and tracked, tracked only, sounding only.
     pub frame: (usize, usize, usize),
     /// (played velocity dB, tracked level dB) of found notes.
@@ -51,6 +55,11 @@ impl Metrics {
         self.miss_shadowed += o.miss_shadowed;
         self.miss_other += o.miss_other;
         self.latency.extend(&o.latency);
+        self.latency_by_note.extend(&o.latency_by_note);
+        for i in 0..7 {
+            self.by_size[i].0 += o.by_size[i].0;
+            self.by_size[i].1 += o.by_size[i].1;
+        }
         self.frame.0 += o.frame.0;
         self.frame.1 += o.frame.1;
         self.frame.2 += o.frame.2;
@@ -116,8 +125,20 @@ pub fn score(truth: &[Note], est: &[Est], live: bool, window: (f64, f64), sectio
     m.sections = sections.iter().map(|s| (s.1, 0, 0)).collect();
     let section_of = |t: f64| sections.iter().rposition(|s| s.0 <= t + 1e-9).unwrap_or(0);
 
+    // Chord size of each played note: how many notes start within 50 ms of the group's first.
+    let mut size = vec![1usize; truth.len()];
+    let mut g = 0;
+    for i in 1..=truth.len() {
+        if i == truth.len() || truth[i].on - truth[g].on >= 0.05 {
+            for s in size[g..i].iter_mut() {
+                *s = (i - g).min(6);
+            }
+            g = i;
+        }
+    }
     let mut used = vec![false; est.len()];
-    for t in truth {
+    for (ti, t) in truth.iter().enumerate() {
+        m.by_size[size[ti]].0 += 1;
         let mut best: Option<usize> = None;
         for (i, e) in est.iter().enumerate() {
             let d = on(e) - t.on;
@@ -137,6 +158,8 @@ pub fn score(truth: &[Note], est: &[Est], live: bool, window: (f64, f64), sectio
                 m.sections[sec].2 += 1;
                 let e = &est[i];
                 m.latency.push(on(e) - t.on);
+                m.latency_by_note.push((t.midi, on(e) - t.on));
+                m.by_size[size[ti]].1 += 1;
                 m.vel.push((t.vel_db, 20.0 * (e.level.max(1e-9) as f64).log10()));
                 let true_cents = 1200.0 * (t.hz / midi_hz(t.midi as f32) as f64).log2();
                 m.cents.push((e.cents as f64 - true_cents).abs());
