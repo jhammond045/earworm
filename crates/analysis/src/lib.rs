@@ -8,6 +8,7 @@ pub mod beats;
 pub mod full;
 pub mod influence;
 pub mod notes;
+pub mod poly;
 pub mod pyin;
 pub mod score;
 pub mod second;
@@ -79,6 +80,51 @@ pub unsafe extern "C" fn an_match_full(ptr: *const f32, len: u32, sample_rate: f
     let out = unsafe { &mut *std::ptr::addr_of_mut!(FULL_OUT) };
     r.to_floats(out);
     out.as_ptr()
+}
+
+// ---- Poly takes (docs/poly.md, P3) ----
+
+thread_local! {
+    static POLY: std::cell::RefCell<Option<poly::PolyStream>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start a poly pass over a take at `sr` Hz: `opts_len` floats of options (layout in
+/// `poly::Options::from_floats`). Feed the take with `an_poly_feed`, then `an_poly_end`. A pass
+/// already started is dropped.
+///
+/// # Safety
+/// `opts`/`opts_len` must describe readable f32s in wasm memory (or be 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn an_poly_begin(sr: f32, opts: *const f32, opts_len: u32) {
+    let opts = if opts_len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(opts, opts_len as usize) } };
+    let s = poly::PolyStream::new(sr, poly::Options::from_floats(opts));
+    POLY.with(|p| *p.borrow_mut() = Some(s));
+}
+
+/// The take's next `len` samples (mono). Model windows run as they fill, so a long take is read
+/// in pieces and never held whole.
+///
+/// # Safety
+/// `ptr`/`len` must describe readable f32s in wasm memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn an_poly_feed(ptr: *const f32, len: u32) {
+    let x = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    POLY.with(|p| {
+        if let Some(s) = p.borrow_mut().as_mut() {
+            s.feed(x);
+        }
+    });
+}
+
+/// End the pass: decode the notes and their curves. Returns a pointer to `an_result_len()` floats
+/// (layout in `poly::PolyResult::to_floats`), valid until the next call; an empty result when no
+/// pass was started.
+#[unsafe(no_mangle)]
+pub extern "C" fn an_poly_end() -> *const f32 {
+    let r = POLY.with(|p| p.borrow_mut().take()).map(|s| s.finish()).unwrap_or_default();
+    let mut out = Vec::new();
+    r.to_floats(&mut out);
+    publish(out)
 }
 
 // ---- Second pass and tune (M2) ----
