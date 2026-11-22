@@ -182,7 +182,9 @@ describe('S5: a recorded pass', () => {
     load(core, compiler.compile(store.doc, () => null));
     // Let the values settle before the pass, as a live engine that has sat still has them.
     for (let i = 0; i < SR / Q; i++) core.process(Q);
+    const t0 = performance.now();
     const r = record(core, store.doc);
+    const recordMs = performance.now() - t0;
     commit(store, r);
 
     const doc = store.doc;
@@ -219,7 +221,7 @@ describe('S5: a recorded pass', () => {
     const b = await exportOnce();
     expect(a.frames).toBe(n);
     const d = Math.max(worst(live.l, a.left), worst(live.r, a.right));
-    console.log(`S5 check 1: ${SECS} s pass (${r.pass.notes.length} notes and hits, ${r.pass.moves.length} moves, ${r.pass.scenes.length} scene taps); live playback against the export: worst difference ${dbfs(d).toFixed(1)} dBFS (peak ${peak(a.left).toFixed(2)})`);
+    console.log(`S5 check 1: ${SECS} s pass (${r.pass.notes.length} notes and hits, ${r.pass.moves.length} moves, ${r.pass.scenes.length} scene taps); live playback against the export: worst difference ${dbfs(d).toFixed(1)} dBFS (peak ${peak(a.left).toFixed(2)}); recording ${SECS} s took ${(recordMs / 1000).toFixed(2)} s in 128-sample calls; the export rendered at ${a.realtime.toFixed(1)}x real time`);
     expect(peak(a.left)).toBeGreaterThan(0.05);
     expect(dbfs(d)).toBeLessThanOrEqual(-90);
     expect(Buffer.from(a.left.buffer).equals(Buffer.from(b.left.buffer))).toBe(true);

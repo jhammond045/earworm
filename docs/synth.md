@@ -1,6 +1,6 @@
 # Synth engine: patches and modulation
 
-Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page. Stage S3 is built; [S3.md](S3.md) does the same for it. Stage S4 is built; [S4.md](S4.md) does the same for it.
+Nov 20, 2026. Design approved. Stage S1 is built and this page now describes it as built (the owner accepted the changes [S1.md](S1.md) lists). Stage S2 is built; [S2.md](S2.md) says how to check it and where it differs from this page. Stage S3 is built; [S3.md](S3.md) does the same for it. Stage S4 is built; [S4.md](S4.md) does the same for it. Stage S5 is built, with the raw input beside the synth; [S5.md](S5.md) does the same for it.
 
 Today a layer's sound is one fixed chain, the Klont voice, set by 96 numbers, and the app offers a short list of presets to pick from plus eight macros. This page turns that into an open patch: a small graph of modules the user can add, remove and wire, and one modulation system in which every envelope, LFO, knob and sung feature (pitch, intensity, volume, hardness) can drive any synth or channel-effect parameter. The aim is a tool that works as a real-time DAW and as an instrument for improvising.
 
@@ -94,7 +94,7 @@ Every module is built from code that exists today, except the four marked new.
 | `delay` | channel | stereo | time (seconds or beats), feedback, shift, mix | `dsp::layer_fx::StereoDelay` |
 | `reverb` | channel | stereo | size, damp, mix, freeze | `dsp::layer_fx::Reverb` |
 
-Level and pan sit between the mono and the stereo effects, and width ends every channel. Width is a value like any other, so it can be modulated and automated. Level and pan are still layer fields, not values: making them values belongs with automation (S5).
+Level and pan sit between the mono and the stereo effects, and width ends every channel. Width is a value like any other, so it can be modulated and automated. Level and pan are layer fields, not values: automation lanes can move them (S5), routes and scenes cannot.
 
 `sampler` and `grains` read a **sample**: a mono buffer in the sample pool (see "Engine changes"). In S3 each layer has one, its Influence source (a file, a recording or a saved source): both the grains and a sampler play it.
 
@@ -315,7 +315,7 @@ Smoothing and latch state start at the source's value when a voice starts, so a 
 
 - Any value of any module in the voice patch, including the voice pitch (`pitch`). A log-scaled value can also be moved in octaves after mapping (`oct:<key>`), so an LFO can sweep a filter past 20 kHz up to the filter's own limit, as the old LFO maps did.
 - Any parameter of the envelopes and LFOs (times, rates, curves), from any source except an envelope or an LFO.
-- Any channel value: effect parameters and width (level and pan are layer fields until S5). Only layer-scope sources may target the channel, because the channel is one per layer and a per-voice value has no single meaning there.
+- Any channel value: effect parameters and width (level and pan are layer fields, which only automation lanes move). Only layer-scope sources may target the channel, because the channel is one per layer and a per-voice value has no single meaning there.
 
 ### Order of evaluation
 
@@ -417,7 +417,8 @@ The live overload policy stays as it is: lower the partial budget first, then st
 | `MSG_LISTEN` (new) | Layer, 1 or 0. Several layers may listen. |
 | `MSG_MORPH_TO` (new) | Layer, index = state, value = ms. A live morph, used by scenes. |
 | Samples | `LOAD_GRAIN` becomes `LOAD_SAMPLE`: up to 64 samples in one pool of 2^23 floats (32 MB, about 2.9 minutes at 48 kHz), allocated at start-up and compacted the way the curve pool is. It replaces today's two 480,000-float buffers per layer (30.7 MB), so memory stays about the same. A sample being replaced stays until the 50 ms crossfade ends. |
-| Track blob v3 | Per clip, after the morph markers: automation lanes (target index, points with time, value and shape). |
+| Track blob v3 | Per clip: the take's audio as a sample id (the raw input on playback), and automation lanes (target kind and index, points with time, value and shape). Built in S5; see `seq.rs`. |
+| `MSG_RECORD` (S5) | 1 while a pass records: a hand move (a value, macro, level, pan or performance message) takes its target from its lane until the transport stops or recording ends. |
 | Notes | A document note gains a velocity (`vel`, default 1). The track blob already has a strength per event; the compiler fills it from `vel` instead of writing 1. |
 | Meter block | The selected layer's values after step 4 and after step 6, 1,024 each instead of 96; the current output of each route (for the matrix view); the live intensity. |
 
@@ -447,7 +448,7 @@ The LLM `/api/sound` endpoint is not built. When it is, its schema is generated 
 - **Automation lanes.** Per clip, beside the morph lane. A lane targets one value (a module parameter, a route amount, a macro, level or pan) or one of the wheel, bend and pressure sources, which it then plays back. Points have a time in section units (ticks or seconds, like notes), a value, and a shape to the next point (line, ease, step). Drawn in the timeline or recorded. During playback a value with a lane follows the lane. Moving it by hand while recording automation overwrites the lane from that point on; moving it otherwise leaves the lane in charge.
 - **Deterministic playback.** Export and playback must agree.
   1. Everything that moves a value is a function of the sample clock and stored data. Nothing reads wall time.
-  2. Synced LFOs read the transport position. Play resets free LFO phases and re-seeds every random source (noise, drift, random steps, jitter, tape dropouts) per layer, as export already does at render start. So live playback from a point matches an export from that point.
+  2. Synced LFOs read the transport position. Play resets free LFO phases and re-seeds every random source (noise, drift, random steps, jitter, tape dropouts) per layer, as export already does at render start. So live playback from a point matches an export from that point. As built (S5), Play from a stop also cuts sequenced notes and effect tails still ringing from the last playback, and an export settles a second with the transport stopped before Play, so its values start settled as a live engine's are.
   3. Live inputs never play back directly. The mic becomes a take, MIDI becomes notes, controllers become lanes, and playback reads those.
   4. Smoothing and latch state start fresh at each note.
   5. The live partial budget still adapts to CPU load and offline renders still do not, so an overloaded live playback can differ from the export. That is today's rule.
