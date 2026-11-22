@@ -213,6 +213,8 @@ fn costs(seconds: f64) {
     rows.push(("delay", per_layer(lt(&[(params::T_DELAY, false)], &[(0, P::delay::MIX, 0.3), (0, P::delay::FEEDBACK, 0.5)]), none)));
     rows.push(("reverb", per_layer(rev, none)));
     rows.push(("cfilter", per_layer(lt(&[(params::T_REVERB, false), (params::T_CFILTER, false)], &[(0, P::reverb::MIX, 0.3), (1, P::cfilter::CUTOFF, 2000.0)]), rev)));
+    // The input element (S5): the blend path, with no raw source playing (the bench has no take).
+    rows.push(("input", per_layer(lt(&[(params::T_INPUT, false)], &[(0, P::input::MIX, 0.5)]), none)));
     let with_noise = VoiceSpec { noise: Some((0, 0.5)), ..ov.clone() };
     rows.push(("shaped_noise", per_layer(scene_ns(&blob(&with_noise, &[], &[]), seconds), with_osc)));
     let with_grains = VoiceSpec { grains: Some((0, 0, 0.5)), ..ov.clone() };

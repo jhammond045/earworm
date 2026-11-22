@@ -464,5 +464,5 @@ params = ["cutoff:filt.cutoff", "res:filt.res", "morph:filt.morph"]
 type   = "input"
 kind   = "channel"
 code   = 26
-cost   = 1.0
+cost   = 1.5
 params = ["mix:input.mix", "trim:input.trim"]

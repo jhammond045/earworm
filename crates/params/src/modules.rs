@@ -109,7 +109,7 @@ pub static MODULE_TYPES: [crate::ModuleType; 20] = [
     crate::ModuleType { name: "delay", code: 23, kind: crate::ModKind::Channel, cost: 10.0, n_values: 4, params: &[crate::ModParam { name: "time", desc: 55, count: 1 }, crate::ModParam { name: "feedback", desc: 56, count: 1 }, crate::ModParam { name: "shift", desc: 57, count: 1 }, crate::ModParam { name: "mix", desc: 58, count: 1 }] },
     crate::ModuleType { name: "reverb", code: 24, kind: crate::ModKind::Channel, cost: 29.5, n_values: 4, params: &[crate::ModParam { name: "size", desc: 59, count: 1 }, crate::ModParam { name: "damp", desc: 60, count: 1 }, crate::ModParam { name: "mix", desc: 61, count: 1 }, crate::ModParam { name: "freeze", desc: 62, count: 1 }] },
     crate::ModuleType { name: "cfilter", code: 25, kind: crate::ModKind::Channel, cost: 5.5, n_values: 3, params: &[crate::ModParam { name: "cutoff", desc: 30, count: 1 }, crate::ModParam { name: "res", desc: 31, count: 1 }, crate::ModParam { name: "morph", desc: 32, count: 1 }] },
-    crate::ModuleType { name: "input", code: 26, kind: crate::ModKind::Channel, cost: 1.0, n_values: 2, params: &[crate::ModParam { name: "mix", desc: 119, count: 1 }, crate::ModParam { name: "trim", desc: 120, count: 1 }] },
+    crate::ModuleType { name: "input", code: 26, kind: crate::ModKind::Channel, cost: 1.5, n_values: 2, params: &[crate::ModParam { name: "mix", desc: 119, count: 1 }, crate::ModParam { name: "trim", desc: 120, count: 1 }] },
 ];
 
 /// Value offsets of each parameter inside its module.

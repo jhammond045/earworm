@@ -69,7 +69,7 @@ export const MODULE_TYPES: Readonly<Record<string, ModuleType>> = {
   delay: { type: 'delay', code: 23, kind: 'channel', cost: 10.0, nValues: 4, params: [{ name: 'time', desc: 55, count: 1 }, { name: 'feedback', desc: 56, count: 1 }, { name: 'shift', desc: 57, count: 1 }, { name: 'mix', desc: 58, count: 1 }] },
   reverb: { type: 'reverb', code: 24, kind: 'channel', cost: 29.5, nValues: 4, params: [{ name: 'size', desc: 59, count: 1 }, { name: 'damp', desc: 60, count: 1 }, { name: 'mix', desc: 61, count: 1 }, { name: 'freeze', desc: 62, count: 1 }] },
   cfilter: { type: 'cfilter', code: 25, kind: 'channel', cost: 5.5, nValues: 3, params: [{ name: 'cutoff', desc: 30, count: 1 }, { name: 'res', desc: 31, count: 1 }, { name: 'morph', desc: 32, count: 1 }] },
-  input: { type: 'input', code: 26, kind: 'channel', cost: 1.0, nValues: 2, params: [{ name: 'mix', desc: 119, count: 1 }, { name: 'trim', desc: 120, count: 1 }] },
+  input: { type: 'input', code: 26, kind: 'channel', cost: 1.5, nValues: 2, params: [{ name: 'mix', desc: 119, count: 1 }, { name: 'trim', desc: 120, count: 1 }] },
 };
 
 if (DESCS.length !== COUNT) throw new Error('modules.ts: vocabulary size changed; run pnpm gen:params');
