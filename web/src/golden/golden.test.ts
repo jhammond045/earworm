@@ -8,6 +8,9 @@
 // The reference side does not use the current protocol or renderer: it loads the stored blobs
 // into klont-reference.wasm (a copy of the engine before S1) with its own copy of the old buffer
 // table layout, so it keeps working whatever the current engine becomes.
+// The current engine reads take frames two frames (20 ms) ahead (docs/S5.md "Take alignment"), so
+// the reference curve uploads of sung-melody and gestures have their first two frames removed: what
+// the reference engine reads at the take time is then what the current one reads.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
