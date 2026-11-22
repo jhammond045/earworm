@@ -88,6 +88,7 @@ Every module is built from code that exists today, except the four marked new.
 | `shaped_noise` | layer source | none | level (each voice's share of the bank), noise bands (16, per layer) | `ShapedNoise` in `layer.rs` |
 | `grains` | layer source | none | level (each voice's share), size, density, position, spray, scatter | `grain.rs` |
 | `cfilter` | channel | mono or stereo, where it sits | cutoff, resonance, morph | Two `Svf` |
+| `input` (S5) | channel | the raw input (mic or take audio) | mix, trim | The mix point; see "The raw input beside the synth" |
 | `crush` | channel | stereo | bits, rate, mix | `dsp::layer_fx::Crush` |
 | `tape` | channel | stereo | amount | `dsp::layer_fx::Tape` |
 | `delay` | channel | stereo | time (seconds or beats), feedback, shift, mix | `dsp::layer_fx::StereoDelay` |
@@ -155,7 +156,7 @@ interface VoicePatch {
   routes: Route[];                 // per-voice routes
 }
 interface LayerSource { id: string; type: 'shaped_noise' | 'grains'; voice: number; drive: string; sample?: BlobRef }
-interface ChannelFx  { id: string; type: ChannelFxType; bypass: boolean }
+interface ChannelFx  { id: string; type: ChannelFxType; bypass: boolean; path?: 'synth' | 'raw' }  // path: before an `input` element (S5)
 interface ModDef     { id: string; type: 'env' | 'lfo'; trigger?: 'note' | 'onset' }
 interface Route {
   id: string;
@@ -476,6 +477,17 @@ The LLM `/api/sound` endpoint is not built. When it is, its schema is generated 
 
 There is no mode switch. Both run at once: a layer can play its clip while another listens to the mic and a third is played from a keyboard.
 
+### The raw input beside the synth
+
+Added for stage S5 at the owner's request. A layer that sings into the synth can also let the voice itself through, and slide from one to the other: singing that drives a pad and then becomes the sung vocal.
+
+- **The `input` element.** A channel element (at most one per layer) that marks where the raw input audio joins the layer's signal. Its values are `mix` (0 is only the synth, 1 only the raw input) and `trim` (dB on the raw input, -24 to +12). `mix` is a value like any other: routes, scenes, Perform controls and automation lanes move it.
+- **The blend.** An equal-power crossfade: the synth is scaled by cos(πm/2) and the raw input by sin(πm/2), exactly 1 and 0 at the ends, so 0 and 1 are exactly synth-only and raw-only. The gains ramp across each control tick like level and pan.
+- **What the raw input is.** Live, the mic, while the layer listens or is armed. Otherwise, while the transport plays, the audio of the take on the layer's clip, read at the same take time as the take's features (through the clip's warp map). Otherwise silence. The synth part is everything the layer makes today: its voices and layer sources.
+- **Effects.** The channel stays one ordered list, and the `input` element's place in it is the mix point. Effects after it run on the blend, so with the element first (where adding it puts it) one effect chain serves both. Effects before it run before the blend, each on the synth (as today) or on the raw input (an effect's `path`, `synth` or `raw`). That gives the same effects on both (after the element), different ones (before it, one path each) or effects on either alone. Level and pan apply to both paths, width to the blend. The rule that crush and tape come before any delay or reverb holds for the whole list. A layer without the element runs exactly as before.
+- **Alignment.** The synth reacts to the sung level about 5 ms after the mic hears it (the live tier's level delay, "Latency"), so the raw input is delayed by that delay before the blend: live from the mic, and on playback by reading the take that much earlier. A take's frames were made live from the same audio the take stores, so playback lines up the way live does. Pitch is later still (about 24 ms); delaying the voice that long would be heard as a late monitor, so the alignment follows the level. [S5.md](S5.md) reports the measured offsets.
+- **Cost.** The element costs about what a channel filter does; a raw-path stereo effect runs a second level and pan. The take audio goes to the engine as a sample in the sample pool.
+
 ## Interface sketch
 
 The Sound panel keeps today's simple view and gains Patch and Mod; the channel's cards sit in the Patch view after the voice's (stage S3). A Perform view joins the main views.
@@ -589,6 +601,12 @@ Latched record, notes from MIDI and the screen into clips, value moves into lane
 - Record 30 s with MIDI notes, controller moves and singing into a listening layer. Live playback from the start and an export null within -90 dB. Two exports are bit-identical.
 - Undo removes a recorded pass as one step; redo puts it back.
 - Killing the tab after a recorded pass and reopening restores the lanes (journal replay).
+
+Added to S5: the raw input beside the synth ("The raw input beside the synth").
+
+- At mix 0 and 1 the output nulls within -90 dB offline against the synth alone and the raw input alone.
+- A recorded take with an automated mix sweep renders bit-identically twice.
+- The offset between the raw input and the synth is measured and reported, live and on playback.
 
 ## Choices for the owner
 
