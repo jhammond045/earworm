@@ -377,6 +377,10 @@ table.pattern {
 }
 .tl-wrap { margin-top: var(--s-3); }
 .tl-head { display: flex; gap: var(--s-3); align-items: baseline; flex-wrap: wrap; }
+.tl-flex { display: flex; gap: var(--s-3); align-items: baseline; flex-wrap: wrap; margin: var(--s-1) 0 var(--s-2); }
+.tl-flex input[type='number'] { width: 4.5em; }
+.tl-flex input[type='range'] { width: 7em; }
+.flex-kit input[type='number'] { width: 3.5em; margin-left: var(--s-1); }
 .tl-body {
   display: flex;
   max-height: 360px;

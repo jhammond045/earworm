@@ -14,7 +14,8 @@ import { listeningClip, Pass, passCommands, stateValue, withHand, type RecordHoo
 import { layoutOf } from '../synth/patch';
 import type { Clip, Project } from '../project/types';
 import type { App } from '../m3/app';
-import type { TaughtSlot } from '../m2/analysis';
+import { ANCHORS_VERSION, type TaughtSlot } from '../m2/analysis';
+import { anchorsRef } from '../m3/session';
 import { tuneFromTake } from './tune';
 import { newId } from '../project/commands';
 import { clockMark, placeTake, type ClockMark } from '../project/overdub';
@@ -268,7 +269,9 @@ export class AppCapture implements RecordHooks {
     };
     take.audio = `audio-${take.id}`;
     take.frames = `frames-${take.id}`;
-    await app.session.putTake(take.id, { audio: mic, frames });
+    take.anchors = anchorsRef(take.id);
+    take.anchorsVersion = ANCHORS_VERSION;
+    await app.session.putTake(take.id, { audio: mic, frames, anchors: sp.anchors });
     if (!app.doc.sections.some((s) => s.id === a.sectionId)) throw new Error('The section was removed while recording.');
     const clip = placeTake({
       doc: app.doc, sectionId: a.sectionId, layerId: a.layerId, take, startSample: a.f0 * host.frameLen(), mark,

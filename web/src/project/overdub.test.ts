@@ -111,13 +111,13 @@ describe('placeTake', () => {
     ]);
   });
 
-  it('beat layer: hits with shape copied, no warp', () => {
+  it('beat layer: hits with shape copied, and a warp anchor at each hit start that places the take', () => {
     const hits = [{ t: 0.25, dur: 0.05, slot: 2, strength: 0.7, shape: { ...shape, cents: 3000 }, features: [], live: [] }];
     const c = placeTake({ ...args(doc('grid')), layerId: 'b', hits }) as BeatClip;
     expect(c.kind).toBe('beat');
     expect(c.hits[0]).toMatchObject({ t: 1920 + 480, dur: 96, slot: 2, strength: 0.7 });
     expect(c.hits[0].shape).toEqual({ ...shape, cents: 3000 });
     expect(c.hits[0].shape).not.toBe(hits[0].shape);
-    expect('warp' in c).toBe(false);
+    expect(c.warp).toEqual([{ takeSec: 0.25, clipT: 1920 + 480 }]);
   });
 });

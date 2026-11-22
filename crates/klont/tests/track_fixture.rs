@@ -23,9 +23,9 @@ fn every_field() {
     assert_eq!((t.n_clips(), t.n_events()), (3, 9));
 
     let want_clips = [
-        Clip { section: 0, layer: 0, loop_len: 3840.0, first_event: 0, n_events: 3, curve: 3, first_warp: 0, n_warp: 3, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0 },
-        Clip { section: 0, layer: 1, loop_len: 1920.0, first_event: 3, n_events: 4, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0 },
-        Clip { section: 1, layer: 7, loop_len: 2.5, first_event: 7, n_events: 2, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0 },
+        Clip { section: 0, layer: 0, loop_len: 3840.0, first_event: 0, n_events: 3, curve: 3, first_warp: 0, n_warp: 3, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0 },
+        Clip { section: 0, layer: 1, loop_len: 1920.0, first_event: 3, n_events: 4, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0 },
+        Clip { section: 1, layer: 7, loop_len: 2.5, first_event: 7, n_events: 2, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0 },
     ];
     for (i, w) in want_clips.iter().enumerate() {
         assert_eq!(t.clip(i), w, "clip {i}");

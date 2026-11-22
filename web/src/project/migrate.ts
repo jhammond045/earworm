@@ -123,7 +123,19 @@ const v3to4: Step = {
   },
 };
 
-const STEPS: Step[] = [v1to2, v2to3, v3to4];
+/** 4 -> 5 (docs/quant.md, Q1): flex settings, beat clip warp maps and take anchors are optional
+ *  fields, so a document without them plays as before. Only the number changes. */
+const v4to5: Step = {
+  from: 4,
+  doc(doc) {
+    return { ...doc, schema: 5 };
+  },
+  value(v) {
+    return v;
+  },
+};
+
+const STEPS: Step[] = [v1to2, v2to3, v3to4, v4to5];
 
 function stepsFrom(schema: unknown): Step[] {
   if (typeof schema !== 'number' || !Number.isInteger(schema) || schema < 1) {

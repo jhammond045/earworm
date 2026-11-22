@@ -29,8 +29,10 @@
 //!   (v2, 4 more words:) u32 first_morph, u32 n_morph (a run in the morph
 //!   array, sorted by t), 2 x u32 0
 //!   (v3: those last two words are i32 audio (sample id of the take's audio in
-//!   the sample pool, -1 none) and u32 first_lane; then u32 n_lanes, 3 x u32 0:
-//!   16 words in all)
+//!   the sample pool, -1 none) and u32 first_lane; then u32 n_lanes,
+//!   u32 first_audio_warp, u32 n_audio_warp (a run in the warp array the take's
+//!   audio is read through instead of the clip's own; empty: the clip's own,
+//!   docs/quant.md Q1), u32 0: 16 words in all)
 //! events, n_events x 16 words (one record for notes and hits):
 //!   0 t, 1 dur (section units), 2 cents (NaN: kit slot pitch), 3 hard (0..1),
 //!   4 u32 slot (kit slot for hits), 5 strength (0..1, velocity),
@@ -163,6 +165,11 @@ pub struct Clip {
     /// Run in the lane array (v3).
     pub first_lane: u32,
     pub n_lanes: u32,
+    /// Run in the warp array that the take's audio is read through (v3). Empty: the clip's
+    /// warp. A flexed clip plays its notes and curves through a moved warp map while its audio
+    /// keeps the performed timing (docs/quant.md, Q1).
+    pub first_audio_warp: u32,
+    pub n_audio_warp: u32,
 }
 
 /// One automation lane (v3): its target and its run of points.
@@ -336,10 +343,10 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
     } else {
         (0, 0)
     };
-    let (audio, first_lane, n_lanes) = if d.v3 {
-        (word(b, o + 10)? as i32, word(b, o + 11)?, word(b, o + 12)?)
+    let (audio, first_lane, n_lanes, first_audio_warp, n_audio_warp) = if d.v3 {
+        (word(b, o + 10)? as i32, word(b, o + 11)?, word(b, o + 12)?, word(b, o + 13)?, word(b, o + 14)?)
     } else {
-        (-1, 0, 0)
+        (-1, 0, 0, 0, 0)
     };
     let clip = Clip {
         first_morph,
@@ -347,6 +354,8 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
         audio,
         first_lane,
         n_lanes,
+        first_audio_warp,
+        n_audio_warp,
         section: word(b, o)?,
         layer: word(b, o + 1)?,
         loop_len: fword(b, o + 2)? as f64,
@@ -368,6 +377,7 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
         || clip.curve >= MAX_CURVES as i32
         || !in_run(clip.first_event, clip.n_events, n_events)
         || !in_run(clip.first_warp, clip.n_warp, n_warp)
+        || !in_run(clip.first_audio_warp, clip.n_audio_warp, n_warp)
         || !in_run(clip.first_morph, clip.n_morph, d.morph)
         || !in_run(clip.first_lane, clip.n_lanes, d.lanes)
         || clip.audio < -1
@@ -581,13 +591,15 @@ impl Track {
                 }
                 last = e.t;
             }
-            let mut last = f64::NEG_INFINITY;
-            for k in 0..c.n_warp as usize {
-                let a = read_warp(bytes, warp_base, c.first_warp as usize + k)?;
-                if a.clip_t < last {
-                    return Err(LoadError::Malformed);
+            for (first, n) in [(c.first_warp, c.n_warp), (c.first_audio_warp, c.n_audio_warp)] {
+                let mut last = f64::NEG_INFINITY;
+                for k in 0..n as usize {
+                    let a = read_warp(bytes, warp_base, first as usize + k)?;
+                    if a.clip_t < last {
+                        return Err(LoadError::Malformed);
+                    }
+                    last = a.clip_t;
                 }
-                last = a.clip_t;
             }
             let mut last = 0.0;
             for k in 0..c.n_morph as usize {
@@ -772,6 +784,15 @@ impl Track {
     pub fn warp(&self, clip: &Clip) -> &[WarpAnchor] {
         let a = clip.first_warp as usize;
         &self.warp[a..a + clip.n_warp as usize]
+    }
+    /// The warp map the clip's take audio is read through: its own run when it has one, else
+    /// the clip's warp.
+    pub fn audio_warp(&self, clip: &Clip) -> &[WarpAnchor] {
+        if clip.n_audio_warp == 0 {
+            return self.warp(clip);
+        }
+        let a = clip.first_audio_warp as usize;
+        &self.warp[a..a + clip.n_audio_warp as usize]
     }
     /// The events of a clip, sorted by t.
     pub fn clip_events(&self, clip: &Clip) -> &[Event] {

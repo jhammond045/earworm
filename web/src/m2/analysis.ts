@@ -44,6 +44,8 @@ export interface SecondPass {
   root: number; scale: number;
   bpm: number | null; beats: number | null; loopSec: number;
   notes: Note[]; hits: Hit[]; kinds: number;
+  /** Flex anchors (crates/analysis/src/anchors.rs), ANCHOR_LEN floats each: take seconds, weight, flags. */
+  anchors: Float32Array;
   ms: number;
 }
 
@@ -53,6 +55,9 @@ export const FRAME_STRIDE = 25;
 export const OUT_HEADER = 16;
 export const NOTE_LEN = 4;
 export const HIT_LEN = 22;
+export const ANCHOR_LEN = 3;
+/** The anchor detector the analysis module carries (crates/analysis/src/anchors.rs VERSION). */
+export const ANCHORS_VERSION = 1;
 export const OPTIONS_LEN = 2 + 4 * 13;
 export const TUNE_SETTINGS_LEN = 8;
 export const SLOTS = 4;
@@ -64,9 +69,9 @@ const KINDS: ClipKind[] = ['melody', 'beat', 'texture'];
 export function decodeSecondPass(floats: ArrayLike<number>, ms = 0): SecondPass {
   if (floats.length < OUT_HEADER) throw new Error(`second pass result has ${floats.length} floats, expected at least ${OUT_HEADER}`);
   const f = (i: number) => floats[i];
-  const nFrames = f(11), nNotes = f(12), nHits = f(13), hitLen = f(14);
+  const nFrames = f(11), nNotes = f(12), nHits = f(13), hitLen = f(14), nAnchors = f(15);
   if (hitLen !== HIT_LEN) throw new Error(`second pass hit record is ${hitLen} floats, expected ${HIT_LEN}`);
-  const want = OUT_HEADER + nFrames + nNotes * NOTE_LEN + nHits * HIT_LEN;
+  const want = OUT_HEADER + nFrames + nNotes * NOTE_LEN + nHits * HIT_LEN + nAnchors * ANCHOR_LEN;
   if (floats.length < want) throw new Error(`second pass result has ${floats.length} floats, header says ${want}`);
   const kind = KINDS[f(0)];
   if (!kind) throw new Error(`second pass kind ${f(0)}`);
@@ -87,11 +92,12 @@ export function decodeSecondPass(floats: ArrayLike<number>, ms = 0): SecondPass 
       live: [0, 1, 2].map((d) => f(o + 19 + d)),
     });
   }
+  const anchors = Float32Array.from({ length: nAnchors * ANCHOR_LEN }, (_, i) => floats[o + i]);
   const bpm = f(7), beats = f(8);
   return {
     kind, voicedFraction: f(1), onsetsPerSec: f(2), pitch, repaired: f(3), refCents: f(4), root: f(5), scale: f(6),
     bpm: Number.isNaN(bpm) ? null : bpm, beats: Number.isNaN(beats) ? null : beats, loopSec: f(9),
-    notes, hits, kinds: f(10), ms,
+    notes, hits, kinds: f(10), anchors, ms,
   };
 }
 

@@ -18,6 +18,7 @@ function walk(v: unknown, knownTakes: Set<string>, takes: Set<string>, grains: S
     if (v.startsWith('grain-')) grains.add(v);
     if (v.startsWith('audio-')) takes.add(v.slice('audio-'.length));
     if (v.startsWith('frames-')) takes.add(v.slice('frames-'.length));
+    if (v.startsWith('anchors-')) takes.add(v.slice('anchors-'.length));
     return;
   }
   if (Array.isArray(v)) {
@@ -51,8 +52,10 @@ export function cleanupPlan(doc: Project, history: HistoryState | { undo: Group[
     const t = doc.takes[id];
     if (t?.audio) keep.add(t.audio);
     if (t?.frames) keep.add(t.frames);
+    if (t?.anchors) keep.add(t.anchors);
     keep.add(`audio-${id}`);
     keep.add(`frames-${id}`);
+    keep.add(`anchors-${id}`);
   }
   return { takeIds: [...knownTakes].filter((id) => !takes.has(id)).sort(), keep: [...keep].sort() };
 }

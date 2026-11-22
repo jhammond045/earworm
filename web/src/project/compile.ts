@@ -18,6 +18,7 @@ import {
 import { classicPatch, classicVectors, isClassic } from '../synth/classic';
 import { inputAt, layoutOf, patchBlob, type Patch } from '../synth/patch';
 import { KIT_SLOTS, LANE_SHAPES, MORPH_SHAPES, PPQ, type AutoLane, type Hit, type Layer, type MorphMarker, type Project, type Section, type Take } from './types';
+import { flexActive, flexClip } from './flex';
 
 export interface Upload {
   /** LOAD_TRACK, LOAD_PATCH, LOAD_LAYER, LOAD_CURVE, LOAD_SAMPLE or LOAD_STATES (m1/protocol.ts). */
@@ -112,7 +113,11 @@ export type GrainFor = (layer: Layer) => { data: Float32Array; rate: number; ref
  *  raw input on playback. null: not loaded yet. Same array until the take changes. */
 export type AudioFor = (take: Take) => Float32Array | null;
 
-export interface CompileOptions { grainFor?: GrainFor; audioFor?: AudioFor }
+/** A take's flex anchors (docs/quant.md), or null: not loaded yet, or the take has none. A clip
+ *  then quantizes its note or hit starts. Same array until the take's anchors change. */
+export type AnchorsFor = (take: Take) => Float32Array | null;
+
+export interface CompileOptions { grainFor?: GrainFor; audioFor?: AudioFor; anchorsFor?: AnchorsFor }
 
 /** Take audio goes in the sample pool from this id up (ids below are the layers' grain samples). */
 export const FIRST_AUDIO_SAMPLE = 8;
@@ -246,9 +251,12 @@ export class Compiler {
     const layerSig = doc.layers.map((l) => `${l.id}:${l.tune.octave}`).join(',');
     const slotSig = [...this.slotOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
     const audioSig = [...this.audioOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
-    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${morphSig(doc)}|${laneSig(doc)}`;
+    // A flexed clip's take anchors arrive after the document does.
+    const anchors = (t: Take) => opts.anchorsFor?.(t) ?? null;
+    const flexSig = doc.sections.flatMap((s) => Object.values(s.clips).filter((c) => c.flex?.on && c.take).map((c) => `${c.take}:${anchors(doc.takes[c.take]) ? 1 : 0}`)).join(',');
+    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${morphSig(doc)}|${laneSig(doc)}|${flexSig}`;
     if (doc.sections !== this.lastSections || key !== this.lastTrackKey) {
-      out.push({ kind: LOAD_TRACK, slot: 0, blob: encodeTrack(this.trackInput(doc)), what: 'track' });
+      out.push({ kind: LOAD_TRACK, slot: 0, blob: encodeTrack(this.trackInput(doc, anchors)), what: 'track' });
       this.lastSections = doc.sections;
       this.lastTrackKey = key;
     }
@@ -335,7 +343,7 @@ export class Compiler {
     this.lastTrackKey = null;
   }
 
-  private trackInput(doc: Project): TrackInput {
+  private trackInput(doc: Project, anchorsFor: AnchorsFor): TrackInput {
     const sections = doc.sections.map((s) => ({
       feel: s.feel,
       length: sectionLength(s),
@@ -351,20 +359,30 @@ export class Compiler {
         if (!c) return;
         const audio = c.take ? (this.audioOf.get(c.take) ?? -1) : -1;
         const lanes = lanesFor(c.auto, l);
+        // Flex (docs/quant.md, Q1): notes, hits and the warp map the curves are read through go
+        // through the clip's time map. The take's audio keeps its performed timing until Q2.
+        const take = c.take ? doc.takes[c.take] : undefined;
+        const flexed = flexActive(c, s.feel === 'grid') ? flexClip(c, take ? anchorsFor(take) : null, sectionUnitsPerSec(s)) : null;
         if (c.kind === 'beat') {
-          clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(c.hits), morph: morphFor(c.morph, l), audio, lanes });
+          clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(flexed?.hits ?? c.hits), morph: morphFor(c.morph, l), audio, lanes });
           return;
         }
         const oct = 1200 * l.tune.octave;
         const morph = morphFor(c.morph, l);
         const curve = c.take ? (this.slotOf.get(c.take) ?? -1) : -1;
+        const warp = flexed?.warp ?? c.warp;
+        // The audio keeps the clip's own map; an empty one reads the take at clip time, as the engine does.
+        const audioWarp = audio >= 0 && warp !== c.warp
+          ? (c.warp.length ? c.warp : [{ takeSec: 0, clipT: 0 }, { takeSec: c.loopLen / sectionUnitsPerSec(s), clipT: c.loopLen }])
+          : undefined;
         clips.push({
           section: si, layer: li, loopLen: c.loopLen, curve,
-          events: c.notes.map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1 })),
-          warp: curve >= 0 || audio >= 0 ? c.warp : [],
+          events: (flexed?.notes ?? c.notes).map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1 })),
+          warp: curve >= 0 || audio >= 0 ? warp : [],
           morph,
           audio,
           lanes,
+          ...(audioWarp ? { audioWarp } : {}),
         });
       });
     });

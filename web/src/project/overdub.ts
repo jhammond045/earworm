@@ -71,7 +71,8 @@ export interface PlaceTakeArgs {
  *  anchors sorted by clip time). There is one at every note start and end. Each note's start is
  *  wrapped by itself, but its end is start + dur, which may pass loopLen: the engine's voices
  *  keep counting past the loop end while a note sounds, so the end anchor stays consistent
- *  with its start. Hits carry no curve, so beat clips get no anchors. */
+ *  with its start. Hits carry no curve; a beat clip's anchors, one at every hit start, only place
+ *  the take's flex anchors on the clip (docs/quant.md) and are not sent to the engine. */
 export function placeTake(o: PlaceTakeArgs): Clip {
   const si = o.doc.sections.findIndex((s) => s.id === o.sectionId);
   if (si < 0) throw new RangeError(`no section ${o.sectionId}`);
@@ -101,7 +102,9 @@ export function placeTake(o: PlaceTakeArgs): Clip {
       id: newId('hit'), t: place(h.t), dur: h.dur * ups, slot: h.slot, strength: h.strength, shape: { ...h.shape },
     }));
     hits.sort((a, b) => a.t - b.t);
-    const clip: BeatClip = { kind: 'beat', ...base, hits };
+    const warp: WarpAnchor[] = o.hits.map((h) => ({ takeSec: h.t, clipT: place(h.t) }));
+    warp.sort((a, b) => a.clipT - b.clipT || a.takeSec - b.takeSec);
+    const clip: BeatClip = { kind: 'beat', ...base, hits, warp };
     return clip;
   }
 

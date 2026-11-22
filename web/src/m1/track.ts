@@ -118,6 +118,9 @@ export interface TrackClip {
   audio?: number;
   /** Automation lanes (resolution step 2). */
   lanes?: TrackLane[];
+  /** The warp map the take's audio is read through instead of `warp` (a flexed clip keeps its
+   *  audio at the performed timing, docs/quant.md Q1). Empty / undefined: `warp`. Makes the blob v3. */
+  audioWarp?: TrackWarpAnchor[];
 }
 
 /** An automation lane: LANE_* kind, index (value, macro or perf source), points sorted by t with
@@ -208,12 +211,16 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       return e;
     });
     const sorted = [...events].sort((a, b) => a.t - b.t);
-    const warp = [...(c.warp ?? [])].map((a, k) => {
-      finite(a.takeSec, `clip ${i} anchor ${k} takeSec`);
-      finite(a.clipT, `clip ${i} anchor ${k} clipT`);
-      return a;
-    });
-    warp.sort((a, b) => a.clipT - b.clipT);
+    const anchors = (list: TrackWarpAnchor[] | undefined, what: string) => {
+      const out = [...(list ?? [])].map((a, k) => {
+        finite(a.takeSec, `clip ${i} ${what} ${k} takeSec`);
+        finite(a.clipT, `clip ${i} ${what} ${k} clipT`);
+        return a;
+      });
+      return out.sort((a, b) => a.clipT - b.clipT);
+    };
+    const warp = anchors(c.warp, 'anchor');
+    const audioWarp = anchors(c.audioWarp, 'audio anchor');
     const morph = (c.morph ?? []).map((m, k) => {
       const t = finite(m.t, `clip ${i} morph ${k} t`);
       if (t < 0) fail(`clip ${i} morph ${k} t must be >= 0`);
@@ -240,11 +247,11 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       });
       return { kind: l.kind, index: l.index, points: [...points].sort((a, b) => a.t - b.t) };
     });
-    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, morph, audio, lanes };
+    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, audioWarp, morph, audio, lanes };
   });
 
   const nEvents = clips.reduce((n, c) => n + c.events.length, 0);
-  const nWarp = clips.reduce((n, c) => n + c.warp.length, 0);
+  const nWarp = clips.reduce((n, c) => n + c.warp.length + c.audioWarp.length, 0);
   if (nEvents > MAX_EVENTS) fail(`more than ${MAX_EVENTS} events`);
   if (nWarp > MAX_WARP) fail(`more than ${MAX_WARP} warp anchors`);
   const nMorph = clips.reduce((n, c) => n + c.morph.length, 0);
@@ -254,7 +261,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
   if (nLanes > MAX_LANES) fail(`more than ${MAX_LANES} automation lanes`);
   if (nPoints > MAX_LANE_POINTS) fail(`more than ${MAX_LANE_POINTS} automation points`);
   // The oldest version that holds everything, so existing tracks and fixtures stay byte-identical.
-  const v3 = nLanes > 0 || clips.some((c) => c.audio >= 0);
+  const v3 = nLanes > 0 || clips.some((c) => c.audio >= 0 || c.audioWarp.length > 0);
   const v2 = v3 || nMorph > 0;
 
   const w = new Words(
@@ -302,7 +309,10 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       w.i(c.audio);
       w.u(fl);
       w.u(c.lanes.length);
-      w.zeros(3);
+      // The audio warp run follows the clip's own warp run in the warp array.
+      w.u(c.audioWarp.length ? fw + c.warp.length : 0);
+      w.u(c.audioWarp.length);
+      w.zeros(1);
     } else if (v2) {
       w.u(fm);
       w.u(c.morph.length);
@@ -310,7 +320,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     }
     fl += c.lanes.length;
     fe += c.events.length;
-    fw += c.warp.length;
+    fw += c.warp.length + c.audioWarp.length;
     fm += c.morph.length;
   }
   for (const c of clips) {
@@ -333,7 +343,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     }
   }
   for (const c of clips) {
-    for (const a of c.warp) {
+    for (const a of [...c.warp, ...c.audioWarp]) {
       w.f(a.takeSec);
       w.f(a.clipT);
     }

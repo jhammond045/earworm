@@ -16,7 +16,8 @@ import * as S from '../synth/structure';
 import type { ChannelFxType, Port, VoiceModuleType } from '../synth/patch';
 import { parsePreset, type PresetFile } from '../presets/presets';
 import { KIT_SLOTS, LANE_FIXED, LANE_SHAPES, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
-import type { AutoLane, LanePoint } from './types';
+import type { AutoLane, Flex, LanePoint } from './types';
+import { checkFlex } from './flex';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MidiMapping, MorphShape, Note, Perform, PerfTarget, Project, Section, State, Take, Tune } from './types';
 
@@ -218,6 +219,7 @@ function normClip(clip: Clip, section: Section, states: Set<string> | null = nul
     const auto = clip.auto.map((x) => normLane(x, clip.loopLen, grid, null));
     if (!sameItems(auto, clip.auto)) withMorph = { ...withMorph, auto };
   }
+  if (clip.flex) checkFlex(clip.flex);
   if (withMorph.kind === 'beat') {
     const hits = withMorph.hits.map((h) => normHit(h, withMorph.loopLen, grid, min));
     return sameItems(hits, withMorph.hits) ? withMorph : { ...withMorph, hits };
@@ -233,10 +235,17 @@ function convertClip(clip: Clip, factor: number, toGrid: boolean): Clip {
   const loopLen = Math.max(min, conv(clip.loopLen));
   const morph = (clip.morph ?? []).map((m) => ({ ...m, t: wrapT(conv(m.t), loopLen, toGrid) }));
   const auto = clip.auto?.map((x) => ({ ...x, points: sortByT(x.points.map((p) => ({ ...p, t: wrapT(conv(p.t), loopLen, toGrid) }))) }));
-  const base = { loopLen, timeSnap: conv(clip.timeSnap), morph: sortByT(morph), ...(auto ? { auto } : {}) };
+  // Flex lengths are section units too; Q1 only applies flex in grid sections, so it waits there.
+  const f = clip.flex;
+  const flex = f && {
+    ...f, grid: Math.max(toGrid ? 1 : 1e-6, conv(f.grid)), catch: conv(f.catch),
+    feel: f.feel.kind === 'swing' ? { ...f.feel, unit: Math.max(toGrid ? 1 : 1e-6, conv(f.feel.unit)) } : f.feel,
+  };
+  const base = { loopLen, timeSnap: conv(clip.timeSnap), morph: sortByT(morph), ...(auto ? { auto } : {}), ...(flex ? { flex } : {}) };
   if (clip.kind === 'beat') {
     const hits = clip.hits.map((h) => ({ ...h, t: wrapT(conv(h.t), loopLen, toGrid), dur: Math.max(min, conv(h.dur)) }));
-    return { ...clip, ...base, hits };
+    const warp = clip.warp?.map((a) => ({ ...a, clipT: conv(a.clipT) }));
+    return { ...clip, ...base, hits, ...(warp ? { warp } : {}) };
   }
   const notes = clip.notes.map((n) => ({ ...n, t: wrapT(conv(n.t), loopLen, toGrid), dur: Math.max(min, conv(n.dur)) }));
   const warp = clip.warp.map((a) => ({ ...a, clipT: conv(a.clipT) }));
@@ -715,7 +724,18 @@ export const commands = {
     return ops;
   },
 
-  /** Snap note or hit starts to the nearest multiple of `grid` (section units). `ids` limits it to some items. */
+  /** Set a clip's flex setting (docs/quant.md), or remove it (null): how its timing is bent when it
+   *  plays. The notes and the take do not change. */
+  setFlex(doc: Project, a: { section: string; layer: string; flex: Flex | null }): Op[] {
+    const w = where(doc, a.section, a.layer);
+    const c = hasClip(w.section, a.layer) ? (w.section.clips[a.layer] as Clip) : fail('no clip in that section and layer');
+    if (a.flex === null) return c.flex ? [{ op: 'set', path: [...w.clipPath, 'flex'], value: undefined }] : [];
+    const flex = checkFlex(a.flex);
+    return c.flex === flex ? [] : [{ op: 'set', path: [...w.clipPath, 'flex'], value: flex }];
+  },
+
+  /** Snap note or hit starts to the nearest multiple of `grid` (section units). `ids` limits it to some items.
+   *  The app's Quantize button turns flex on instead (setFlex); this writes the times for good. */
   quantize(doc: Project, a: { section: string; layer: string; grid: number; ids?: string[] }): Op[] {
     const w = where(doc, a.section, a.layer);
     if (fin(a.grid, 'grid') <= 0) fail('grid must be above 0');

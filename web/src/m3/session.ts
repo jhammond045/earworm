@@ -12,6 +12,8 @@ export interface TakeData {
   audio: Float32Array | null;
   /** 25-float frame records; slot 0 holds the repaired pitch. */
   frames: Float32Array;
+  /** Flex anchors (Take.anchors). Missing on takes from before they were found. */
+  anchors?: Float32Array | null;
 }
 
 export type ChangeKind = 'change' | 'swap';
@@ -19,6 +21,7 @@ type Listener = (doc: Project, kind: ChangeKind, entry: JournalEntry | null) => 
 
 export const audioRef = (takeId: string) => `audio-${takeId}`;
 export const framesRef = (takeId: string) => `frames-${takeId}`;
+export const anchorsRef = (takeId: string) => `anchors-${takeId}`;
 
 /** What the compiler's grainFor returns (project/compile.ts GrainFor). */
 export interface GrainSource { data: Float32Array; rate: number; refCents: number | null }
@@ -122,8 +125,8 @@ export class Session {
       const blobs = this.blobs;
       p = (async () => {
         try {
-          const [frames, audio] = await Promise.all([blobs.get(framesRef(id)), blobs.get(audioRef(id))]);
-          if (blobs === this.blobs && frames) this.takes.set(id, { frames, audio });
+          const [frames, audio, anchors] = await Promise.all([blobs.get(framesRef(id)), blobs.get(audioRef(id)), blobs.get(anchorsRef(id))]);
+          if (blobs === this.blobs && frames) this.takes.set(id, { frames, audio, anchors });
         } catch (e) {
           this.blobError = e instanceof Error ? e.message : String(e);
         } finally {
@@ -156,12 +159,24 @@ export class Session {
     return null;
   }
 
+  /** A take's flex anchors, or null while they load or when it has none. */
+  anchorsFor(take: Take): Float32Array | null {
+    if (!take.anchors) return null;
+    const d = this.takes.get(take.id);
+    if (d) return d.anchors ?? null;
+    void this.loadTake(take.id).then(() => {
+      if (this.takes.has(take.id)) this.emit(this.store.doc, 'change', null);
+    });
+    return null;
+  }
+
   /** Keep a new take: in memory at once, in the blob store in the background (errors are remembered, not thrown). */
   async putTake(id: string, data: TakeData): Promise<void> {
     this.takes.set(id, data);
     try {
       await this.blobs.put(framesRef(id), data.frames);
       if (data.audio) await this.blobs.put(audioRef(id), data.audio);
+      if (data.anchors) await this.blobs.put(anchorsRef(id), data.anchors);
     } catch (e) {
       this.blobError = e instanceof Error ? e.message : String(e);
       throw e;

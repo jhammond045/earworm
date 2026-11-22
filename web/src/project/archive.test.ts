@@ -35,7 +35,7 @@ describe('project zip', () => {
     const packed = zipStore([{ name: 'project.json', data: new TextEncoder().encode(JSON.stringify(old)) }]);
     const migrated = await importProject(packed);
     expect(migrated.savedSchema).toBe(1);
-    expect(migrated.doc.schema).toBe(4);
+    expect(migrated.doc.schema).toBe(5);
     expect(migrated.doc.metro?.bar).toBe(4);
     expect(migrated.doc.layers[0].patch.voices.length).toBe(1);
     expect(migrated.doc.layers[0].states[0].values['partials1.tilt']).toBe(0.5);

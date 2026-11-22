@@ -129,6 +129,17 @@
           <label data-tour="takes">Take <select id="takeStack" aria-label="Which take the ribbon follows"></select></label>
           <span id="tlNote" class="hint">Drag a note, a hit or a morph marker. Drag a hit up or down to another kit slot. Double-click empty space to add one.</span>
         </div>
+        <div class="tl-flex" role="group" aria-label="Feel: quantize when the track plays">
+          <label><input type="checkbox" id="flexOn"> Feel</label>
+          <label>Grid <select id="flexGrid" aria-label="Feel grid"></select></label>
+          <label><input type="checkbox" id="flexTriplets"> Triplets</label>
+          <label>Feel <select id="flexFeel" aria-label="Feel"><option value="straight">Straight</option><option value="swing">Swing</option></select></label>
+          <label id="flexSwingWrap">Swing <input type="number" id="flexSwing" min="50" max="75" step="1" aria-label="Swing, percent"> %</label>
+          <label>Strength <input type="range" id="flexStrength" min="0" max="100" step="1" aria-label="Feel strength"> <output id="flexStrengthOut"></output></label>
+          <label>Catch ± <input type="number" id="flexCatch" min="0" max="500" step="1" aria-label="Catch, ms"> ms</label>
+          <span id="flexKit" class="flex-kit">Kit slots <input type="number" min="0" max="100" step="5" aria-label="Kit slot 1 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 2 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 3 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 4 strength, percent"> %</span>
+          <span id="flexNote" class="hint"></span>
+        </div>
         <div class="tl-body">
           <div id="tlNames" class="tl-names"></div>
           <div class="tl-scroll" id="tlScroll">

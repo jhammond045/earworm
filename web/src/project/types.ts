@@ -12,8 +12,9 @@
 //   normalized 0..1. The classic patch's values map to the old 96 parameters (synth/classic.ts).
 
 /** 4: layers carry a patch and states carry values by key (docs/synth.md, stage S1); notes carry a
- *  velocity. Older documents are upgraded by migrate.ts. */
-export const SCHEMA = 4;
+ *  velocity. 5: clips may carry a flex setting, beat clips a warp map, takes their flex anchors
+ *  (docs/quant.md, Q1); all optional. Older documents are upgraded by migrate.ts. */
+export const SCHEMA = 5;
 
 /** Click track. The engine plays it live only; exports and the mic never contain it. */
 export interface Metro {
@@ -250,7 +251,36 @@ export interface ClipBase {
   morph: MorphMarker[];
   /** Automation lanes, one per target (stage S5). Missing means none. */
   auto?: AutoLane[];
+  /** Flex quantize (docs/quant.md): applied when the track plays and exports, never written into
+   *  the notes. Missing: plays as performed. */
+  flex?: Flex;
 }
+
+/** How a clip's timing is bent at play time (docs/quant.md "The model"). Stage Q1 has the grid
+ *  feels; a groove and another layer's timing come with Q3, the audio modes with Q2, anchor edits
+ *  and sensitivity with Q4. */
+export interface Flex {
+  on: boolean;
+  /** Slot size in section units (240 = 16ths in a grid section). */
+  grid: number;
+  /** Add the triplet slots of that size; each anchor goes to the nearer slot. */
+  triplets: boolean;
+  feel: FlexFeel;
+  /** 0..1: how far each anchor moves toward its slot. A lane on 'flex.strength' replaces it, read
+   *  once per anchor at its slot. */
+  strength: number;
+  /** Beat layers: a factor 0..1 per kit slot on the strength of the anchors of that slot. */
+  slotStrength?: number[];
+  /** Section units: anchors further than this from their slot are not pulled (they ride along). */
+  catch: number;
+}
+
+/** Straight: the section's grid. Swing: every second slot of a pair of `unit` falls at `amount`
+ *  of the pair (0.5 straight, 0.66 a triplet feel), in section units. */
+export type FlexFeel = { kind: 'straight' } | { kind: 'swing'; amount: number; unit: number };
+
+/** Lane target read by the compiler, never by the engine. */
+export const FLEX_STRENGTH = 'flex.strength';
 
 export interface MelodyClip extends ClipBase {
   kind: 'melody' | 'texture';
@@ -262,6 +292,9 @@ export interface MelodyClip extends ClipBase {
 export interface BeatClip extends ClipBase {
   kind: 'beat';
   hits: Hit[];
+  /** Take seconds -> clip time at each hit start, written when a take is placed (schema 5), so the
+   *  take's flex anchors can be placed on the clip. Missing on older clips. */
+  warp?: WarpAnchor[];
 }
 
 export type Clip = MelodyClip | BeatClip;
@@ -283,4 +316,10 @@ export interface Take {
   root: number;
   scale: number;
   bpm: number | null;
+  /** Flex anchors found after the second pass: Float32 blob, three floats each (take seconds,
+   *  weight, flags: bit 0 hard, bits 1-2 onset/note/hit/peak, bits 3-4 kit slot). Missing on
+   *  takes from before schema 5: their clips use their note and hit starts. */
+  anchors?: BlobRef;
+  /** The detector version that found them (crates/analysis/src/anchors.rs VERSION). */
+  anchorsVersion?: number;
 }

@@ -147,7 +147,7 @@ export const LESSONS: Lesson[] = [
       { id: 'layer', title: 'Rename a layer', target: 'layer-edit', advance: 'layer', action: 'Rename the layer',
         body: 'The name is the column you see on the pattern. Remove layer drops it, and its notes, when another layer remains.' },
       { id: 'quantize', title: 'Zoom, snap and quantize', target: 'quantize', advance: 'quantize', action: 'Zoom or quantize',
-        body: 'Zoom changes how much of the timeline you see. Snap is the grid a drag lands on. Quantize moves the notes or hits on this lane onto that grid. Drag a hit up or down to put it on another kit slot.' },
+        body: 'Zoom changes how much of the timeline you see. Snap is the grid a drag lands on. Quantize turns on Feel for this lane: it plays the notes or hits on that grid while keeping how you played them, so Strength can bring some of the feel back. Drag a hit up or down to put it on another kit slot.' },
     ],
   },
   {

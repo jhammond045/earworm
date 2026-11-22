@@ -203,6 +203,34 @@ describe('encodeTrack morph markers (v2)', () => {
   });
 });
 
+describe('encodeTrack audio warp (v3, flex quantize)', () => {
+  it('writes the audio warp run after the clip\'s own warp run', () => {
+    const t: TrackInput = {
+      sections: [{ feel: 'free', length: 4 }],
+      clips: [
+        { section: 0, layer: 0, loopLen: 4, events: [], warp: [{ takeSec: 0, clipT: 0.5 }, { takeSec: 2, clipT: 2.5 }] },
+        {
+          section: 0, layer: 1, loopLen: 4, events: [], audio: 8,
+          warp: [{ takeSec: 1, clipT: 1.25 }, { takeSec: 0, clipT: 0.2 }],
+          audioWarp: [{ takeSec: 0, clipT: 0 }, { takeSec: 3, clipT: 3 }, { takeSec: 1, clipT: 1 }],
+        },
+      ],
+    };
+    const b = encodeTrack(t);
+    const u = words(b), f = floats(b);
+    expect(u[0]).toBe(0x33545745);
+    expect(u[4]).toBe(7);
+    const c = 8 + 8;
+    // Clip 1: warp run 2..4, audio warp run 4..7 (words 13 and 14).
+    expect(Array.from(u.slice(c + 16 + 6, c + 16 + 8))).toEqual([2, 2]);
+    expect(Array.from(u.slice(c + 16 + 13, c + 16 + 16))).toEqual([4, 3, 0]);
+    expect(Array.from(u.slice(c + 13, c + 16))).toEqual([0, 0, 0]);
+    const w = c + 32;
+    const pairs = Array.from({ length: 7 }, (_, k) => [f[w + 2 * k], f[w + 2 * k + 1]]);
+    expect(pairs).toEqual([[0, 0.5], [2, 2.5], [0, Math.fround(0.2)], [1, 1.25], [0, 0], [1, 1], [3, 3]]);
+  });
+});
+
 describe('encodeCurve', () => {
   it('writes magic, count and records', () => {
     const fr = new Float32Array(2 * CURVE_STRIDE).map((_, i) => i * 0.5);

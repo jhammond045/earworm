@@ -3,7 +3,7 @@
 
 import { decodeBytes, decodeFile, loadSources, MAX_SOURCE_S, trimAndCap, type SavedSource } from '../influence/audio';
 import { stateVocab, vocabIndices } from '../synth/classic';
-import { layoutOf } from '../synth/patch';
+import { inputAt, layoutOf } from '../synth/patch';
 import { download, encodeWav } from '../common/wav';
 import { KlontHost, wantsFallback } from '../m1/klont-host';
 import { OfflineRenderer } from '../m1/offline';
@@ -26,7 +26,8 @@ import { measureRoundTrip } from '../m3/roundtrip';
 import { Session } from '../m3/session';
 import { liveMatch, type LiveMatch, type Match } from '../m4/match';
 import { commands, newId } from '../project/commands';
-import { Compiler } from '../project/compile';
+import { Compiler, sectionUnitsPerSec } from '../project/compile';
+import { ANCHOR_HARD, ANCHOR_LEN, quantizeFlex } from '../project/flex';
 import { cleanupPlan, unusedRefs } from '../project/cleanup';
 import { exportProject, importProject } from '../project/archive';
 import { historyResets } from '../project/migrate';
@@ -36,7 +37,7 @@ const UPGRADED = 'This project was saved by an earlier version and has been upgr
 import { applyOps } from '../project/patch';
 import { ProjectDb, flushOnHide, idbKv, memoryKv, storageEstimate, type Kv } from '../project/persist';
 import { MACRO_NAMES, N_MACROS, P } from '../gen/params';
-import { MAX_STATES, PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project, type Tune as TuneFields } from '../project/types';
+import { MAX_STATES, PPQ, defaultMetro, type GestureDepth, type HitShape, type Influence, type Layer, type Metro, type MorphShape, type Project, type Tune as TuneFields, type Clip, type Flex } from '../project/types';
 import { GlTimeline } from './gl-timeline';
 import { startLogo } from './logo';
 import { AppCapture } from './capture';
@@ -436,6 +437,7 @@ async function main(): Promise<void> {
     const zoom = $<HTMLSelectElement>('zoom');
     if (document.activeElement !== zoom) zoom.value = String(app.ui.zoom);
     fillSnap();
+    fillFlex();
     const m = doc.metro ?? defaultMetro();
     btn('metro').setAttribute('aria-pressed', String(m.on));
     btn('metro').classList.toggle('down', m.on);
@@ -555,6 +557,109 @@ async function main(): Promise<void> {
     if (document.activeElement !== sel && match) sel.value = String(match.value);
   }
 
+  /** Feel grids: a beat down to an eighth of a beat (quarter notes to 32nds in 4/4). */
+  const FLEX_GRIDS = [{ label: 'Beat', value: PPQ }, { label: '1/2 beat', value: PPQ / 2 }, { label: '1/4 beat', value: PPQ / 4 }, { label: '1/8 beat', value: PPQ / 8 }];
+
+  /** The Feel row (docs/quant.md "Interface sketch"): the selected layer's clip in this section. */
+  function fillFlex(): void {
+    const sec = section();
+    const l = layer();
+    const clip = sec && l ? sec.clips[l.id] : undefined;
+    const f = clip?.flex;
+    const grid = sec?.feel === 'grid';
+    const ups = sec ? sectionUnitsPerSec(sec) : 1;
+    const on = num('flexOn');
+    on.disabled = !clip || !grid;
+    if (document.activeElement !== on) on.checked = !!f?.on;
+    const sel = $<HTMLSelectElement>('flexGrid');
+    const value = f?.grid ?? PPQ / 4;
+    const choices = FLEX_GRIDS.some((c) => c.value === value) ? FLEX_GRIDS : [...FLEX_GRIDS, { label: `${+(value / PPQ).toFixed(3)} beat`, value }];
+    const sig = choices.map((c) => c.value).join(',');
+    if (sel.dataset.choices !== sig) {
+      sel.dataset.choices = sig;
+      sel.replaceChildren(...choices.map((c) => new Option(c.label, String(c.value))));
+    }
+    if (document.activeElement !== sel) sel.value = String(value);
+    const editing = !!f && grid;
+    for (const id of ['flexGrid', 'flexTriplets', 'flexFeel', 'flexSwing', 'flexStrength', 'flexCatch']) num(id).disabled = !editing;
+    if (document.activeElement !== num('flexTriplets')) num('flexTriplets').checked = !!f?.triplets;
+    const feel = $<HTMLSelectElement>('flexFeel');
+    if (document.activeElement !== feel) feel.value = f?.feel.kind ?? 'straight';
+    $('flexSwingWrap').hidden = f?.feel.kind !== 'swing';
+    if (document.activeElement !== num('flexSwing')) num('flexSwing').value = String(Math.round((f?.feel.kind === 'swing' ? f.feel.amount : 0.58) * 100));
+    const strength = Math.round((f?.strength ?? 1) * 100);
+    if (document.activeElement !== num('flexStrength')) num('flexStrength').value = String(strength);
+    $('flexStrengthOut').textContent = `${strength}%`;
+    if (document.activeElement !== num('flexCatch')) num('flexCatch').value = String(Math.round(((f?.catch ?? value / 2) / ups) * 1000));
+    const kit = $('flexKit');
+    kit.hidden = l?.kind !== 'beat';
+    kit.querySelectorAll('input').forEach((el, k) => {
+      el.disabled = !editing;
+      if (document.activeElement !== el) el.value = String(Math.round((f?.slotStrength?.[k] ?? 1) * 100));
+    });
+    $('flexNote').textContent = clip ? flexNote(clip, l!, grid) : '';
+  }
+
+  /** What the Feel row says about the clip: what its anchors are, and what Q1 cannot move yet. */
+  function flexNote(clip: Clip, l: Layer, grid: boolean): string {
+    if (!grid) return 'Free sections have no grid to quantize to.';
+    const take = clip.take ? app.doc.takes[clip.take] : undefined;
+    const stored = take ? session.anchorsFor(take) : null;
+    const placed = clip.kind === 'beat' ? !!clip.warp?.length : clip.warp.length > 0;
+    let what: string;
+    if (stored && placed) {
+      const n = stored.length / ANCHOR_LEN;
+      let soft = 0;
+      for (let i = 2; i < stored.length; i += ANCHOR_LEN) if ((stored[i] & ANCHOR_HARD) === 0) soft++;
+      what = `Anchors: ${n} from the take${soft ? ` (${soft} soft)` : ''}.`;
+    } else {
+      what = `Anchors: the ${clip.kind === 'beat' ? 'hit' : 'note'} starts.`;
+    }
+    const raw = inputAt(l.patch) >= 0 && clip.take ? ' The raw input plays at the timing it was performed until stretching is built.' : '';
+    return clip.flex?.on ? `${what}${raw}` : 'Off: the clip plays as performed.';
+  }
+
+  /** Change the selected clip's Feel. */
+  function setFlex(change: (f: Flex) => Flex): void {
+    const sec = section();
+    const l = layer();
+    const clip = sec && l ? sec.clips[l.id] : undefined;
+    if (!sec || !l || !clip) return;
+    const grid = clip.timeSnap > 0 ? clip.timeSnap : PPQ / 4;
+    const f = change(clip.flex ?? { ...quantizeFlex(undefined, grid), on: false });
+    if (app.run(() => app.store.dispatch('setFlex', { section: sec.id, layer: l.id, flex: f }))) acted('quantize');
+  }
+
+  num('flexOn').addEventListener('change', () => setFlex((f) => ({ ...f, on: num('flexOn').checked })));
+  $<HTMLSelectElement>('flexGrid').addEventListener('change', () => {
+    const g = Number($<HTMLSelectElement>('flexGrid').value);
+    setFlex((f) => ({ ...f, grid: g, catch: f.catch === f.grid / 2 ? g / 2 : f.catch, feel: f.feel.kind === 'swing' ? { ...f.feel, unit: g } : f.feel }));
+  });
+  num('flexTriplets').addEventListener('change', () => setFlex((f) => ({ ...f, triplets: num('flexTriplets').checked })));
+  $<HTMLSelectElement>('flexFeel').addEventListener('change', () => {
+    const swing = $<HTMLSelectElement>('flexFeel').value === 'swing';
+    setFlex((f) => ({ ...f, feel: swing ? { kind: 'swing', amount: Number(num('flexSwing').value) / 100 || 0.58, unit: f.grid } : { kind: 'straight' } }));
+  });
+  num('flexSwing').addEventListener('change', () => {
+    const amount = Math.min(0.75, Math.max(0.5, Number(num('flexSwing').value) / 100 || 0.5));
+    setFlex((f) => (f.feel.kind === 'swing' ? { ...f, feel: { ...f.feel, amount } } : f));
+  });
+  num('flexStrength').addEventListener('input', () => { $('flexStrengthOut').textContent = `${num('flexStrength').value}%`; });
+  num('flexStrength').addEventListener('change', () => setFlex((f) => ({ ...f, strength: Number(num('flexStrength').value) / 100 })));
+  num('flexCatch').addEventListener('change', () => {
+    const sec = section();
+    const ms = Math.max(0, Number(num('flexCatch').value) || 0);
+    if (sec) setFlex((f) => ({ ...f, catch: (ms / 1000) * sectionUnitsPerSec(sec) }));
+  });
+  $('flexKit').querySelectorAll('input').forEach((el, k) => el.addEventListener('change', () => {
+    const v = Math.min(1, Math.max(0, Number(el.value) / 100 || 0));
+    setFlex((f) => {
+      const s = [...(f.slotStrength ?? [1, 1, 1, 1])];
+      s[k] = v;
+      return { ...f, slotStrength: s };
+    });
+  }));
+
   function pushTune(l: Layer, patch: Partial<TuneFields>): void {
     const host = app.host;
     const i = app.doc.layers.findIndex((x) => x.id === l.id);
@@ -601,6 +706,7 @@ async function main(): Promise<void> {
   app.sync.framesFor = (take) => session.framesFor(take);
   app.sync.grainFor = (l) => session.grainFor(l);
   app.sync.audioFor = (t) => session.audioFor(t);
+  app.sync.anchorsFor = (t) => session.anchorsFor(t);
   app.sync.onPass = (r) => {
     if (r.errors.length) app.fail(`Engine: ${r.errors.join('; ')}`);
     else if (!r.skipped) $('engineStatus').textContent = `Engine in sync. ${r.uploads.length} blobs, ${r.loadMs.toFixed(0)} ms.`;
@@ -800,8 +906,11 @@ async function main(): Promise<void> {
     if (!sec || !l) return;
     const clip = sec.clips[l.id];
     if (!clip) { app.fail('That lane has nothing to quantize yet.'); return; }
-    const grid = clip.timeSnap > 0 ? clip.timeSnap : sec.feel === 'grid' ? PPQ / 4 : 0.25;
-    if (app.run(() => app.store.dispatch('quantize', { section: sec.id, layer: l.id, grid }))) acted('quantize');
+    if (sec.feel !== 'grid') { app.fail('Quantize needs a grid section; free sections have no grid.'); return; }
+    // Quantize turns Feel on at full strength with the Snap value as the grid (docs/quant.md): the
+    // notes keep their played timing and the clip plays them on the grid.
+    const grid = clip.timeSnap > 0 ? clip.timeSnap : PPQ / 4;
+    if (app.run(() => app.store.dispatch('setFlex', { section: sec.id, layer: l.id, flex: quantizeFlex(clip.flex, grid) }))) acted('quantize');
   });
   btn('dupSection').addEventListener('click', () => {
     const sec = section();
@@ -1604,6 +1713,7 @@ async function main(): Promise<void> {
       const uploads = compiler.compile(app.doc, (take, lay) => app.sync.cachedCurve(take, lay) ?? session.framesFor(take), {
         grainFor: (lay) => session.grainFor(lay),
         audioFor: (t) => session.audioFor(t),
+        anchorsFor: (t) => session.anchorsFor(t),
       });
       const song = uploadsToSong(uploads);
       const seconds = songSeconds(app.doc);

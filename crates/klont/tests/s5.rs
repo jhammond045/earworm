@@ -4,7 +4,8 @@
 //! - live playback after Play from a stop matches an export (the Play-time reset);
 //! - the raw-input mix at 0 and 1 nulls against the synth alone and the raw input alone;
 //! - a take with an automated mix sweep renders bit-identically twice;
-//! - the offset between the raw input and the synth it drives, live and on playback.
+//! - the offset between the raw input and the synth it drives, live and on playback;
+//! - (flex quantize, docs/quant.md Q1) a clip's take audio reads its own warp map when it has one.
 //!
 //! The recorded-pass check (record, undo, journal replay) is in web/src/record/record.test.ts.
 
@@ -43,9 +44,15 @@ struct Lane {
 /// A v3 track: one free section `len` seconds long, one clip on layer 0 with these notes
 /// (t, dur, cents), its take curve in `curve`, its take audio in `audio`, and lanes.
 fn track(len: f32, notes: &[(f32, f32, f32)], curve: i32, audio: i32, lanes: &[Lane]) -> Vec<u8> {
+    track_warped(len, notes, curve, audio, lanes, &[], &[])
+}
+
+/// `track` with a warp map and an audio warp map, (take seconds, clip seconds) each.
+fn track_warped(len: f32, notes: &[(f32, f32, f32)], curve: i32, audio: i32, lanes: &[Lane], warp: &[(f32, f32)], audio_warp: &[(f32, f32)]) -> Vec<u8> {
     let mut w = W(Vec::new());
     let n_points: usize = lanes.iter().map(|l| l.points.len()).sum();
-    for x in [TRACK_MAGIC3, 1, 1, notes.len() as u32, 0, 0, 0, lanes.len() as u32] {
+    let n_warp = (warp.len() + audio_warp.len()) as u32;
+    for x in [TRACK_MAGIC3, 1, 1, notes.len() as u32, n_warp, 0, 0, lanes.len() as u32] {
         w.u(x);
     }
     w.u(FEEL_FREE);
@@ -56,7 +63,8 @@ fn track(len: f32, notes: &[(f32, f32, f32)], curve: i32, audio: i32, lanes: &[L
     w.u(1);
     w.u(0);
     w.u(0);
-    for x in [0, 0, len.to_bits(), 0, notes.len() as u32, curve as u32, 0, 0, 0, 0, audio as u32, 0, lanes.len() as u32, 0, 0, 0] {
+    let (nw, naw) = (warp.len() as u32, audio_warp.len() as u32);
+    for x in [0, 0, len.to_bits(), 0, notes.len() as u32, curve as u32, 0, nw, 0, 0, audio as u32, 0, lanes.len() as u32, nw, naw, 0] {
         w.u(x);
     }
     for &(t, dur, cents) in notes {
@@ -67,6 +75,10 @@ fn track(len: f32, notes: &[(f32, f32, f32)], curve: i32, audio: i32, lanes: &[L
         w.u(0);
         w.f(1.0);
         (6..16).for_each(|_| w.f(0.0));
+    }
+    for &(take, clip) in warp.iter().chain(audio_warp) {
+        w.f(take);
+        w.f(clip);
     }
     w.u(n_points as u32);
     let mut first = 0;
@@ -206,11 +218,15 @@ fn take(secs: f32, onset: usize) -> Take {
 /// A fresh engine playing `patch` on layer 0 with the take's curve and audio, a note held
 /// from 0 to `secs` - 0.5 at A3, and `lanes`.
 fn take_engine(t: &Take, patch: &[u8], secs: f32, lanes: &[Lane]) -> Box<Engine> {
+    take_engine_warped(t, patch, secs, lanes, &[], &[])
+}
+
+fn take_engine_warped(t: &Take, patch: &[u8], secs: f32, lanes: &[Lane], warp: &[(f32, f32)], audio_warp: &[(f32, f32)]) -> Box<Engine> {
     let mut e = Engine::new(SR, 4096);
     assert_eq!(e.load_bytes(0, LOAD_PATCH, patch), LOAD_OK);
     assert_eq!(e.load_bytes(0, LOAD_CURVE, &curve_blob(&t.frames)), LOAD_OK);
     assert_eq!(e.load_bytes(TAKE_SAMPLE, LOAD_SAMPLE, &klont::classic::sample_blob(SR, f32::NAN, &t.audio)), LOAD_OK);
-    let blob = track(secs, &[(0.0, secs - 0.5, 4500.0)], 0, TAKE_SAMPLE as i32, lanes);
+    let blob = track_warped(secs, &[(0.0, secs - 0.5, 4500.0)], 0, TAKE_SAMPLE as i32, lanes, warp, audio_warp);
     assert_eq!(e.load_bytes(0, LOAD_TRACK, &blob), LOAD_OK);
     e.push(MSG_PLAY, 0, 0, 0, 0.0, 0);
     e
@@ -455,4 +471,23 @@ fn a_hand_move_while_recording_takes_the_value_from_its_lane() {
     let (lane_only, _) = render(&mut lane_only, (1.0 * SR) as usize, 4096);
     assert_eq!(plain, lane_only, "not recording: the lane stays in charge");
     assert!(max_diff_db(&recording, &lane_only) > -20.0, "recording: the hand's value is heard");
+}
+
+#[test]
+fn a_flexed_clip_reads_its_take_audio_through_its_own_warp_map() {
+    // The raw input alone (mix 1): a warp map that moves the take 0.2 s later changes what is
+    // heard, unless the clip also carries an audio warp map at the take's own time.
+    let secs = 2.0;
+    let n = (secs * SR) as usize;
+    let t = take(secs, 4800);
+    let only: Vec<FxSpec> = vec![(P::T_INPUT, false)];
+    let at1 = build::patch_with(&[sine_voice(0.0)], &only, &[(0, P::input::MIX, 1.0)], &[volume_route()]);
+    let moved = [(0.0, 0.2), (secs, secs + 0.2)];
+    let own = [(0.0, 0.0), (secs, secs)];
+    let (plain, _) = render(&mut take_engine(&t, &at1, secs, &[]), n, 4096);
+    let (warped, _) = render(&mut take_engine_warped(&t, &at1, secs, &[], &moved, &[]), n, 4096);
+    let (kept, _) = render(&mut take_engine_warped(&t, &at1, secs, &[], &moved, &own), n, 4096);
+    assert!(peak(&plain) > 0.05);
+    assert!(max_diff_db(&plain, &warped) > -20.0, "the warp map moves the take's audio");
+    assert_eq!(plain, kept, "the audio warp map keeps the take's audio where it was performed");
 }

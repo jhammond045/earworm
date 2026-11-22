@@ -35,6 +35,14 @@ function v1(): Record<string, unknown> {
 }
 
 describe('migrate', () => {
+  it('4 -> 5 changes only the schema number: flex fields are optional', () => {
+    const doc = { ...newProject('x'), schema: 4 };
+    const out = migrate(doc);
+    expect(out.schema).toBe(5);
+    expect({ ...out, schema: 4 }).toEqual(doc);
+    expect(out.sections).toBe(doc.sections);
+  });
+
   it('1 -> 2 adds an empty morph lane to every clip and sets the schema', () => {
     const doc = v1();
     const frozen = JSON.stringify(doc);
@@ -106,7 +114,7 @@ describe('migrate', () => {
       notes: [{ id: 'n', t: 0, dur: 480, cents: 4800, hard: 0.5 }] } };
     old.layers[0].states[0].base[3] = 0.123; // src.tilt
     old.layers[1].kit[2].params[3] = 0.456; // kit slot 3's src.tilt
-    const out = migrate(old);
+    const out = migrate(old, 4);
     expect(out.schema).toBe(4);
     expect(out.layers[0].patch).toEqual(classicPatch('melody'));
     expect(out.layers[1].patch).toEqual(classicPatch('beat'));

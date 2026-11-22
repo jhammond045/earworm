@@ -1125,8 +1125,9 @@ impl Engine {
 }
 
 /// Where clip `ci`'s take audio is read for the control tick at transport position `pos`: the
-/// take second the warp map gives (as for its frames, which the curve pool reads ahead by their
-/// lag), and the step per output sample over the tick. None without take audio.
+/// take second its audio warp map gives (the clip's warp map unless a flexed clip keeps its
+/// audio at the performed timing; the frames, read through the clip's warp map, are read ahead
+/// by their lag), and the step per output sample over the tick. None without take audio.
 fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64) -> Option<RawSrc> {
     let clip = track.clip(ci);
     if clip.audio < 0 || !(clip.loop_len > 0.0) {
@@ -1136,7 +1137,7 @@ fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64
     let sec = track.section(clip.section as usize);
     let slope = if sec.feel == crate::seq::FEEL_FREE { 1.0 } else { 60.0 / (sec.bpm.max(1.0) * crate::seq::PPQ) };
     let t = pos - (pos / clip.loop_len).floor() * clip.loop_len;
-    let warp = track.warp(clip);
+    let warp = track.audio_warp(clip);
     let a = curve::warp_to_take(warp, t, slope);
     let b = curve::warp_to_take(warp, t + ups * TICK as f64, slope);
     let rate = s.rate as f64;

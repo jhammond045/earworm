@@ -163,6 +163,19 @@ describe('golden renders', () => {
     verdict('m1-demo', worst(ref, { l: res.left, r: res.right }, frames));
   }, 60_000);
 
+  // Flex quantize (docs/quant.md, Q1): with Feel off a project plays exactly as before, so every
+  // fixture still compiles to the track blob the compiler of its day stored.
+  it('with Feel off every fixture compiles to its stored track blob, byte for byte', () => {
+    for (const name of Object.keys(summary)) {
+      const dir = resolve(fixtures, name);
+      const list: RefUpload[] = JSON.parse(readFileSync(resolve(dir, 'uploads.json'), 'utf8'));
+      const stored = readFileSync(resolve(dir, 'uploads', list.find((u) => u.kind === OLD.LOAD_TRACK)!.file));
+      const { doc, curves, blobs } = loadCase(dir);
+      const track = compileCurrent(migrate(doc), curves, blobs).find((u) => u.what === 'track')!;
+      expect(Buffer.from(track.blob).equals(stored), name).toBe(true);
+    }
+  });
+
   it('a schema 3 project zip imports, plays and says its undo history starts fresh', async () => {
     const dir = resolve(fixtures, 'sung-melody');
     const { doc, curves, blobs } = loadCase(dir);
@@ -172,7 +185,7 @@ describe('golden renders', () => {
     const got = await importProject(zip.bytes);
     expect(got.savedSchema).toBe(3);
     expect(historyResets(got.savedSchema)).toBe(true);
-    expect(got.doc.schema).toBe(4);
+    expect(got.doc.schema).toBe(5);
     const { ex } = instantiateEngine(curWasm, SR, CHUNK);
     const res = await renderSong(ex, uploadsToSong(compileCurrent(got.doc, curves, got.blobs)), { maxSeconds: 6 });
     expect(res.peak).toBeGreaterThan(0.1);
