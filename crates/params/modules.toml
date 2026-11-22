@@ -304,6 +304,29 @@ unit      = ""
 smooth_ms = 15
 doc       = "How far the playback speed follows the voice pitch. 0 plays the sample at its own speed for every note."
 
+[[desc]]
+id        = "input.mix"
+group     = "space"
+scale     = "lin"
+min       = 0.0
+max       = 1.0
+neutral   = 0.0
+unit      = ""
+smooth_ms = 20
+scalable  = 1
+doc       = "Raw input against the synth: 0 is only the synth, 1 only the raw input (the mic, or the take on playback). An equal-power crossfade."
+
+[[desc]]
+id        = "input.trim"
+group     = "space"
+scale     = "lin"
+min       = -24.0
+max       = 12.0
+neutral   = 0.0
+unit      = "dB"
+smooth_ms = 20
+doc       = "Gain on the raw input before the blend."
+
 [[module]]
 type   = "partials"
 kind   = "voice"
@@ -436,3 +459,10 @@ kind   = "channel"
 code   = 25
 cost   = 5.5
 params = ["cutoff:filt.cutoff", "res:filt.res", "morph:filt.morph"]
+
+[[module]]
+type   = "input"
+kind   = "channel"
+code   = 26
+cost   = 1.0
+params = ["mix:input.mix", "trim:input.trim"]

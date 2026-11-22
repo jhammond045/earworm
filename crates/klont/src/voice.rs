@@ -607,6 +607,21 @@ impl Voice {
     }
 
     /// Silence at once and clear all state.
+    /// Play from a stop: every random sequence of the voice (jitter, clicks, noise modules, LFO
+    /// drift and steps) from the start, as `new(sr, seed)` sets them.
+    pub fn reseed(&mut self, seed: u32) {
+        let s = seed ^ 0x5bd1_e995;
+        self.partials.reseed(seed);
+        self.click.s = Click::new(self.sr, seed ^ 0x1234_5679);
+        self.click.e = Click::new(self.sr, seed ^ 0x9e37_79b1);
+        for (j, n) in self.noises.iter_mut().enumerate() {
+            n.src = NoiseSrc::new(seed ^ 0x68e3_1da4u32.wrapping_mul(j as u32 + 1));
+        }
+        for (j, l) in self.lfos.iter_mut().enumerate() {
+            *l = LfoSrc::new(s ^ LFO_SALT[j]);
+        }
+    }
+
     pub fn kill(&mut self) {
         self.reset_all();
     }

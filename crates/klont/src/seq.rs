@@ -5,16 +5,17 @@
 //! # Track blob (`ew_load` kind LOAD_TRACK)
 //!
 //! 32-bit little-endian words. `u32` words are integers, the rest are f32.
-//! Two versions load: v1 (magic "EWT1") and v2 (magic "EWT2", M4), which adds
-//! the morph markers below. The layout shown is v2; v1 differs in that header
-//! word 6 is 0, clips are 8 words (the first eight below) and there is no
-//! morph array.
+//! Three versions load: v1 (magic "EWT1"), v2 (magic "EWT2", M4), which adds
+//! the morph markers below, and v3 (magic "EWT3", S5), which adds each clip's
+//! take audio and automation lanes. The layout shown is v3; v2 differs in that
+//! header word 7 is 0, clips are 12 words (words 10 and 11 are 0) and there is
+//! no lane section; v1 also has header word 6 0, 8-word clips and no morph array.
 //!
 //! ```text
 //! header, 8 words:
 //!   u32 magic TRACK_MAGIC or TRACK_MAGIC2, u32 n_sections, u32 n_clips,
 //!   u32 n_events, u32 n_warp, u32 flags (bit 0: loop the track),
-//!   u32 n_morph (v2; 0 in v1), u32 0
+//!   u32 n_morph (v2; 0 in v1), u32 n_lanes (v3; 0 before)
 //! sections, n_sections x 8 words:
 //!   u32 feel (FEEL_GRID or FEEL_FREE),
 //!   f32 length (ticks for grid, 960 per beat; seconds for free),
@@ -27,6 +28,9 @@
 //!   i32 curve (curve slot, -1 for none), u32 first_warp, u32 n_warp,
 //!   (v2, 4 more words:) u32 first_morph, u32 n_morph (a run in the morph
 //!   array, sorted by t), 2 x u32 0
+//!   (v3: those last two words are i32 audio (sample id of the take's audio in
+//!   the sample pool, -1 none) and u32 first_lane; then u32 n_lanes, 3 x u32 0:
+//!   16 words in all)
 //! events, n_events x 16 words (one record for notes and hits):
 //!   0 t, 1 dur (section units), 2 cents (NaN: kit slot pitch), 3 hard (0..1),
 //!   4 u32 slot (kit slot for hits), 5 strength (0..1, velocity),
@@ -37,6 +41,14 @@
 //! morph markers (v2), n_morph x 4 words:
 //!   f32 t (section units), u32 state index (< MAX_STATES), f32 len_ms (>= 0),
 //!   u32 shape (MORPH_LINE, _EASE, _LATE, _STEP, _WOBBLE)
+//! lanes (v3): u32 n_points, then n_lanes x 4 words:
+//!   u32 target kind (LANE_VALUE, _MACRO, _LEVEL, _PAN, _PERF), u32 index (the
+//!   value, macro 0..7 or perf source 0..2; 0 otherwise), u32 first_point,
+//!   u32 n_points (a run in the points array, sorted by t)
+//! then n_points x 3 words: f32 t (section units), f32 v (in the target's
+//!   units: normalized for a value or macro, dB for level, -1..1 for pan and
+//!   bend, 0..1 for the wheel and pressure), u32 shape to the next point
+//!   (LANE_LINE, _EASE, _STEP)
 //! ```
 //!
 //! A clip plays in its section on its layer. At most one clip per (section,
@@ -55,6 +67,16 @@
 //! clamped to 0..1. Milliseconds come from the transport's rate at that tick
 //! (a tempo ramp inside one morph is not integrated). One marker means that
 //! state throughout. Markers with t >= loop_len never apply.
+//!
+//! # Automation lanes (resolution step 2)
+//!
+//! While the transport plays, each lane of a layer's clip in the current
+//! section gives its target a value at the clip position p (the section
+//! position modulo loop_len): before the first point the first point's value,
+//! after the last the last's, between two points the first point's shape to
+//! the next (line, smoothstep ease, or step: the first value until the next
+//! point). The value replaces the stored one (after the morph, before
+//! Influence), see `Track::lane_value`. Points with t >= loop_len never apply.
 //!
 //! # Transport rules
 //!
@@ -81,6 +103,17 @@ use crate::protocol::{MAX_CURVES, MAX_LAYERS, MAX_STATES};
 pub const PPQ: f64 = 960.0;
 pub const TRACK_MAGIC: u32 = 0x3154_5745; // "EWT1"
 pub const TRACK_MAGIC2: u32 = 0x3254_5745; // "EWT2"
+pub const TRACK_MAGIC3: u32 = 0x3354_5745; // "EWT3"
+pub const LANE_VALUE: u32 = 0;
+pub const LANE_MACRO: u32 = 1;
+pub const LANE_LEVEL: u32 = 2;
+pub const LANE_PAN: u32 = 3;
+pub const LANE_PERF: u32 = 4;
+pub const LANE_LINE: u32 = 0;
+pub const LANE_EASE: u32 = 1;
+pub const LANE_STEP: u32 = 2;
+pub const MAX_LANES: usize = 1024;
+pub const MAX_LANE_POINTS: usize = 65536;
 pub const MORPH_LINE: u32 = 0;
 pub const MORPH_EASE: u32 = 1;
 pub const MORPH_LATE: u32 = 2;
@@ -125,6 +158,27 @@ pub struct Clip {
     /// Run in the morph array (always empty for a v1 blob).
     pub first_morph: u32,
     pub n_morph: u32,
+    /// Sample id of the take's audio (v3), -1 none.
+    pub audio: i32,
+    /// Run in the lane array (v3).
+    pub first_lane: u32,
+    pub n_lanes: u32,
+}
+
+/// One automation lane (v3): its target and its run of points.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lane {
+    pub kind: u32,
+    pub index: u32,
+    pub first: u32,
+    pub n: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LanePoint {
+    pub t: f64,
+    pub v: f32,
+    pub shape: u32,
 }
 
 /// One morph marker, as in the blob.
@@ -181,6 +235,9 @@ const HEADER_WORDS: usize = 8;
 const SECTION_WORDS: usize = 8;
 const CLIP_WORDS: usize = 8;
 const CLIP_WORDS2: usize = 12;
+const CLIP_WORDS3: usize = 16;
+const LANE_WORDS: usize = 4;
+const POINT_WORDS: usize = 3;
 const WARP_WORDS: usize = 2;
 const MORPH_WORDS: usize = 4;
 
@@ -240,12 +297,15 @@ struct Dims {
     events: usize,
     warp: usize,
     morph: usize,
+    lanes: usize,
+    points: usize,
     v2: bool,
+    v3: bool,
 }
 
 impl Dims {
     fn clip_words(&self) -> usize {
-        if self.v2 { CLIP_WORDS2 } else { CLIP_WORDS }
+        if self.v3 { CLIP_WORDS3 } else if self.v2 { CLIP_WORDS2 } else { CLIP_WORDS }
     }
     fn ev_base(&self) -> usize {
         HEADER_WORDS + self.sections * SECTION_WORDS + self.clips * self.clip_words()
@@ -255,6 +315,16 @@ impl Dims {
     }
     fn morph_base(&self) -> usize {
         self.warp_base() + self.warp * WARP_WORDS
+    }
+    /// The lane section starts with its point count (v3).
+    fn lane_base(&self) -> usize {
+        self.morph_base() + self.morph * MORPH_WORDS + 1
+    }
+    fn point_base(&self) -> usize {
+        self.lane_base() + self.lanes * LANE_WORDS
+    }
+    fn words(&self) -> usize {
+        if self.v3 { self.point_base() + self.points * POINT_WORDS } else { self.morph_base() + self.morph * MORPH_WORDS }
     }
 }
 
@@ -266,9 +336,17 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
     } else {
         (0, 0)
     };
+    let (audio, first_lane, n_lanes) = if d.v3 {
+        (word(b, o + 10)? as i32, word(b, o + 11)?, word(b, o + 12)?)
+    } else {
+        (-1, 0, 0)
+    };
     let clip = Clip {
         first_morph,
         n_morph,
+        audio,
+        first_lane,
+        n_lanes,
         section: word(b, o)?,
         layer: word(b, o + 1)?,
         loop_len: fword(b, o + 2)? as f64,
@@ -291,6 +369,9 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
         || !in_run(clip.first_event, clip.n_events, n_events)
         || !in_run(clip.first_warp, clip.n_warp, n_warp)
         || !in_run(clip.first_morph, clip.n_morph, d.morph)
+        || !in_run(clip.first_lane, clip.n_lanes, d.lanes)
+        || clip.audio < -1
+        || clip.audio >= crate::protocol::MAX_SAMPLES as i32
     {
         return Err(LoadError::Malformed);
     }
@@ -351,6 +432,32 @@ fn read_morph(b: &[u8], base: usize, i: usize) -> Result<Morph, LoadError> {
     Ok(m)
 }
 
+fn read_lane(b: &[u8], d: &Dims, i: usize) -> Result<Lane, LoadError> {
+    let o = d.lane_base() + i * LANE_WORDS;
+    let l = Lane { kind: word(b, o)?, index: word(b, o + 1)?, first: word(b, o + 2)?, n: word(b, o + 3)? };
+    let ok_index = match l.kind {
+        LANE_VALUE => (l.index as usize) < crate::protocol::MAX_VALUES,
+        LANE_MACRO => (l.index as usize) < crate::protocol::N_MACROS,
+        LANE_LEVEL | LANE_PAN => l.index == 0,
+        LANE_PERF => l.index < 3,
+        _ => false,
+    };
+    let in_run = (l.first as usize).checked_add(l.n as usize).is_some_and(|e| e <= d.points);
+    if !ok_index || !in_run {
+        return Err(LoadError::Malformed);
+    }
+    Ok(l)
+}
+
+fn read_point(b: &[u8], d: &Dims, i: usize) -> Result<LanePoint, LoadError> {
+    let o = d.point_base() + i * POINT_WORDS;
+    let p = LanePoint { t: fword(b, o)? as f64, v: fword(b, o + 1)?, shape: word(b, o + 2)? };
+    if !(p.t.is_finite() && p.t >= 0.0 && p.v.is_finite()) || p.shape > LANE_STEP {
+        return Err(LoadError::Malformed);
+    }
+    Ok(p)
+}
+
 /// The compiled arrangement: fixed-capacity pools filled by `load`.
 pub struct Track {
     sections: Vec<Section>,
@@ -358,6 +465,8 @@ pub struct Track {
     events: Vec<Event>,
     warp: Vec<WarpAnchor>,
     morph: Vec<Morph>,
+    lanes: Vec<Lane>,
+    points: Vec<LanePoint>,
     looping: bool,
     /// Clip index per (section, layer), NO_CLIP when none.
     lut: Vec<u32>,
@@ -378,6 +487,8 @@ impl Track {
             events: Vec::with_capacity(MAX_EVENTS),
             warp: Vec::with_capacity(MAX_WARP),
             morph: Vec::with_capacity(MAX_MORPH),
+            lanes: Vec::with_capacity(MAX_LANES),
+            points: Vec::with_capacity(MAX_LANE_POINTS),
             looping: false,
             lut: vec![NO_CLIP; MAX_SECTIONS * MAX_LAYERS],
         }
@@ -395,17 +506,21 @@ impl Track {
             return Err(LoadError::Malformed);
         }
         let magic = word(bytes, 0)?;
-        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 {
+        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 && magic != TRACK_MAGIC3 {
             return Err(LoadError::BadMagic);
         }
-        let v2 = magic == TRACK_MAGIC2;
-        let d = Dims {
+        let v3 = magic == TRACK_MAGIC3;
+        let v2 = magic == TRACK_MAGIC2 || v3;
+        let mut d = Dims {
             sections: word(bytes, 1)? as usize,
             clips: word(bytes, 2)? as usize,
             events: word(bytes, 3)? as usize,
             warp: word(bytes, 4)? as usize,
             morph: if v2 { word(bytes, 6)? as usize } else { 0 },
+            lanes: if v3 { word(bytes, 7)? as usize } else { 0 },
+            points: 0,
             v2,
+            v3,
         };
         let flags = word(bytes, 5)?;
         if d.sections > MAX_SECTIONS
@@ -413,10 +528,17 @@ impl Track {
             || d.events > MAX_EVENTS
             || d.warp > MAX_WARP
             || d.morph > MAX_MORPH
+            || d.lanes > MAX_LANES
         {
             return Err(LoadError::TooBig);
         }
-        let words = d.morph_base() + d.morph * MORPH_WORDS;
+        if v3 {
+            d.points = word(bytes, d.lane_base() - 1)? as usize;
+            if d.points > MAX_LANE_POINTS {
+                return Err(LoadError::TooBig);
+            }
+        }
+        let words = d.words();
         if bytes.len() != words * 4 {
             return Err(LoadError::Malformed);
         }
@@ -434,6 +556,20 @@ impl Track {
         }
         for i in 0..d.morph {
             read_morph(bytes, morph_base, i)?;
+        }
+        for i in 0..d.lanes {
+            let l = read_lane(bytes, &d, i)?;
+            let mut last = 0.0;
+            for k in 0..l.n as usize {
+                let p = read_point(bytes, &d, l.first as usize + k)?;
+                if p.t < last {
+                    return Err(LoadError::Malformed);
+                }
+                last = p.t;
+            }
+        }
+        for i in 0..d.points {
+            read_point(bytes, &d, i)?;
         }
         for i in 0..d.clips {
             let c = read_clip(bytes, &d, i)?;
@@ -469,6 +605,8 @@ impl Track {
         self.events.clear();
         self.warp.clear();
         self.morph.clear();
+        self.lanes.clear();
+        self.points.clear();
         self.lut.fill(NO_CLIP);
         self.looping = flags & 1 != 0;
         for i in 0..d.sections {
@@ -500,7 +638,53 @@ impl Track {
                 self.morph.push(m);
             }
         }
+        for i in 0..d.lanes {
+            if let Ok(l) = read_lane(bytes, &d, i) {
+                self.lanes.push(l);
+            }
+        }
+        for i in 0..d.points {
+            if let Ok(p) = read_point(bytes, &d, i) {
+                self.points.push(p);
+            }
+        }
         Ok(())
+    }
+
+    /// The automation lanes of a clip.
+    pub fn clip_lanes(&self, clip: &Clip) -> &[Lane] {
+        let a = clip.first_lane as usize;
+        &self.lanes[a..a + clip.n_lanes as usize]
+    }
+
+    /// Step 2 of resolution: lane `lane` of clip `clip` at section position `pos`. None when
+    /// no point of it applies (empty, or every point past the loop end).
+    pub fn lane_value(&self, clip: &Clip, lane: &Lane, pos: f64) -> Option<f32> {
+        let all = &self.points[lane.first as usize..(lane.first + lane.n) as usize];
+        let len = clip.loop_len;
+        let pts = &all[..all.partition_point(|p| p.t < len)];
+        let n = pts.len();
+        if n == 0 {
+            return None;
+        }
+        let w = ((pos + EPS) / len).floor().max(0.0);
+        let p = (pos - w * len).max(0.0);
+        let k = pts.partition_point(|q| q.t <= p + EPS);
+        if k == 0 {
+            return Some(pts[0].v);
+        }
+        if k >= n {
+            return Some(pts[n - 1].v);
+        }
+        let (a, b) = (pts[k - 1], pts[k]);
+        let span = b.t - a.t;
+        let x = if span > 0.0 { ((p - a.t) / span).clamp(0.0, 1.0) } else { 1.0 };
+        let x = match a.shape {
+            LANE_STEP => 0.0,
+            LANE_EASE => x * x * (3.0 - 2.0 * x),
+            _ => x,
+        } as f32;
+        Some(if x <= 0.0 { a.v } else { a.v + (b.v - a.v) * x })
     }
 
     /// The morph markers of a clip, sorted by t.
@@ -1819,7 +2003,7 @@ mod tests {
             assert_eq!(t.clip_morph(t.clip(0)).len(), 2, "{what}");
         }
         let mut w = good.clone();
-        w[0] = 0x3354_5745;
+        w[0] = 0x3454_5745;
         assert_eq!(t.load(&bytes(&w)), Err(LoadError::BadMagic));
     }
 

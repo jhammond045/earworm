@@ -7,7 +7,7 @@
 //! note off, so all of them land on their exact sample.
 
 use crate::curve::{self, CurvePool, CURVE_STRIDE};
-use crate::layer::Layer;
+use crate::layer::{Layer, RawSrc};
 use crate::live::{Action, LiveCapture};
 use crate::metro::Metro;
 use crate::patch::{Patch, MAX_VALUES};
@@ -73,7 +73,17 @@ pub struct Engine {
     clock: u64,
     peak: (f32, f32),
     dc: (DcBlocker, DcBlocker),
+    /// The mic delayed by the live tier's level delay, for layers whose raw input is the mic
+    /// (docs/synth.md "The raw input beside the synth"): a ring, its write position, the delay
+    /// in samples, and this call's delayed samples.
+    mic_ring: Vec<f32>,
+    mic_w: usize,
+    mic_delay: usize,
+    raw: Vec<f32>,
 }
+
+/// Longest mic delay the ring holds.
+const MIC_RING: usize = 1 << 13;
 
 #[inline]
 fn soft_clip(x: f32) -> f32 {
@@ -142,7 +152,12 @@ impl Engine {
             clock: 0,
             peak: (0.0, 0.0),
             dc: (DcBlocker::new(sr), DcBlocker::new(sr)),
+            mic_ring: vec![0.0; MIC_RING],
+            mic_w: 0,
+            mic_delay: 0,
+            raw: vec![0.0; max_block],
         });
+        e.mic_delay = ((e.capture.level_delay_s() * sr).round() as usize).min(MIC_RING - 1);
         let addr = |p: *const u8| p as usize as u32;
         e.table = BufferTable {
             input: addr(e.input.as_ptr() as *const u8),
@@ -443,7 +458,7 @@ impl Engine {
                 }
                 MSG_PLAY => {
                     self.metro.cancel();
-                    self.transport.play();
+                    self.start_play();
                 }
                 MSG_STOP => {
                     self.metro.cancel();
@@ -491,6 +506,7 @@ impl Engine {
         let armed = self.capture.armed;
         let beat = armed >= 0 && self.layers[armed as usize].kind == KIND_BEAT;
         let action = self.capture.process(&mut self.input[..frames], beat);
+        self.delay_mic(frames);
         if armed >= 0 {
             let msg = match action {
                 Action::None => None,
@@ -531,7 +547,34 @@ impl Engine {
         self.drain_control(frames);
         self.live_on = false;
         self.capture.frames_count = 0;
+        self.raw[..frames].fill(0.0);
         self.run_block(frames)
+    }
+
+    /// This call's mic (high-passed by the live tier), delayed by `mic_delay` samples, into `raw`.
+    fn delay_mic(&mut self, frames: usize) {
+        let d = self.mic_delay;
+        for i in 0..frames {
+            self.mic_ring[self.mic_w] = self.input[i];
+            self.raw[i] = self.mic_ring[(self.mic_w + MIC_RING - d) & (MIC_RING - 1)];
+            self.mic_w = (self.mic_w + 1) & (MIC_RING - 1);
+        }
+    }
+
+    /// The mic's delay before it joins a layer as its raw input, in samples.
+    pub fn mic_delay(&self) -> usize {
+        self.mic_delay
+    }
+
+    /// Start the transport. From a stop, every layer starts its random sequences and free LFO
+    /// phases again (docs/synth.md "Deterministic playback"), so playback matches an export.
+    fn start_play(&mut self) {
+        if !self.transport.playing() {
+            for l in self.layers.iter_mut() {
+                l.play_reset();
+            }
+        }
+        self.transport.play();
     }
 
     fn adapt_budget(&mut self) {
@@ -600,7 +643,7 @@ impl Engine {
                 if !start {
                     continue;
                 }
-                self.transport.play();
+                self.start_play();
                 if pos >= frames {
                     break;
                 }
@@ -757,8 +800,9 @@ impl Engine {
 
     fn render_span(&mut self, a: usize, b: usize) {
         let (l, r) = (&mut self.out_l[a..b], &mut self.out_r[a..b]);
+        let mic = &self.raw[a..b];
         for layer in self.layers.iter_mut() {
-            layer.render(l, r, &self.samples);
+            layer.render(l, r, &self.samples, mic);
         }
     }
 
@@ -826,7 +870,31 @@ impl Engine {
         let mic = if self.live_on && self.layers.iter().any(|l| l.listen) { Some(self.capture.listen_record()) } else { None };
         let playing = self.transport.playing();
         let (section, pos) = (self.transport.section(), self.transport.pos());
+        let ups = self.transport.units_per_sample();
+        let armed = self.capture.armed;
+        let delay_s = self.mic_delay as f64 / self.sr as f64;
         for (li, l) in self.layers.iter_mut().enumerate() {
+            // Step 2: the lanes of the clip playing on this layer.
+            let clip_i = if playing { self.track.clip_index_for(section, li) } else { None };
+            l.auto_begin();
+            if let Some(ci) = clip_i {
+                let clip = self.track.clip(ci);
+                for lane in self.track.clip_lanes(clip) {
+                    if let Some(v) = self.track.lane_value(clip, lane, pos) {
+                        l.auto_set(lane.kind, lane.index as usize, v);
+                    }
+                }
+            }
+            l.auto_end();
+            // The raw input: the mic while the layer listens or is armed, else its clip's take.
+            let raw = if !l.has_input() {
+                RawSrc::None
+            } else if self.live_on && (l.listen || armed == li as i32) {
+                RawSrc::Mic
+            } else {
+                clip_i.and_then(|ci| take_audio(&self.track, &self.samples, ci, pos, ups, delay_s)).unwrap_or(RawSrc::None)
+            };
+            l.set_raw(raw);
             let mut rec = [0.0f32; CURVE_STRIDE];
             let have = if !l.wants_features() {
                 false
@@ -1027,6 +1095,25 @@ impl Engine {
         l.macros_live(&mut u);
         m[M_MACRO_LIVE..M_MACRO_LIVE + N_MACROS].copy_from_slice(&u);
     }
+}
+
+/// Where clip `ci`'s take audio is read for the control tick at transport position `pos`: the
+/// take second the warp map gives (as for its frames), `delay_s` earlier, and the step per
+/// output sample over the tick. None without take audio.
+fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64, delay_s: f64) -> Option<RawSrc> {
+    let clip = track.clip(ci);
+    if clip.audio < 0 || !(clip.loop_len > 0.0) {
+        return None;
+    }
+    let s = samples.get(clip.audio as usize)?;
+    let sec = track.section(clip.section as usize);
+    let slope = if sec.feel == crate::seq::FEEL_FREE { 1.0 } else { 60.0 / (sec.bpm.max(1.0) * crate::seq::PPQ) };
+    let t = pos - (pos / clip.loop_len).floor() * clip.loop_len;
+    let warp = track.warp(clip);
+    let a = curve::warp_to_take(warp, t, slope);
+    let b = curve::warp_to_take(warp, t + ups * TICK as f64, slope);
+    let rate = s.rate as f64;
+    Some(RawSrc::Take { sample: clip.audio as u8, pos: (a - delay_s) * rate, step: (b - a) * rate / TICK as f64 })
 }
 
 /// The frame of layer `li`'s clip take in `section` at transport position `pos` (section

@@ -231,6 +231,11 @@ impl Partials {
         self.spec_key = None;
     }
 
+    /// The random sequence from `seed`, as `new` starts it.
+    pub fn reseed(&mut self, seed: u32) {
+        self.noise = Noise::new(seed);
+    }
+
     /// Note start: a restart keeps phases and amplitudes; ring and jitter start over.
     pub fn note_start(&mut self) {
         self.ring = [1.0; MAX_PARTIALS];

@@ -2,7 +2,7 @@
 // Do not edit by hand; run `pnpm gen:params`.
 
 /// Descriptors: the 96 of the Klont vocabulary (DESCS), then the module table's own.
-pub const N_DESCS: usize = 119;
+pub const N_DESCS: usize = 121;
 pub const D_AMP_GAIN: usize = 96;
 pub const D_ENV_MODE: usize = 97;
 pub const D_LFO_WAVE: usize = 98;
@@ -26,8 +26,10 @@ pub const D_SAMPLER_LOOP: usize = 115;
 pub const D_SAMPLER_LOOP_START: usize = 116;
 pub const D_SAMPLER_LOOP_LEN: usize = 117;
 pub const D_SAMPLER_FOLLOW: usize = 118;
+pub const D_INPUT_MIX: usize = 119;
+pub const D_INPUT_TRIM: usize = 120;
 
-pub static EXTRA_DESCS: [crate::Desc; 23] = [
+pub static EXTRA_DESCS: [crate::Desc; 25] = [
     crate::Desc { id: "amp.gain", group: crate::Group::Tone, scale: crate::Scale::Lin, min: 0.0, max: 2.0, neutral: 1.0, unit: "", smooth_ms: 15.0, doc: "Gain of an amp module. 1 leaves the level as it is." },
     crate::Desc { id: "env.mode", group: crate::Group::Shape, scale: crate::Scale::Lin, min: 0.0, max: 2.0, neutral: 0.0, unit: "", smooth_ms: 0.0, doc: "0 ADSR: note-off starts the release. 1 decay: starts at full, falls with decay, and note-off adds the release. 2 one-shot: starts at full, falls with decay, ignores note-off." },
     crate::Desc { id: "lfo.wave", group: crate::Group::Motion, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 0.0, unit: "", smooth_ms: 15.0, doc: "Wave of an LFO, in steps of 0.2: sine, triangle, saw, square, random steps, drift (smoothed random). 0 and 1 are the two waves of the old fixed LFOs." },
@@ -51,12 +53,14 @@ pub static EXTRA_DESCS: [crate::Desc; 23] = [
     crate::Desc { id: "sampler.loop_start", group: crate::Group::Shape, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 0.0, unit: "", smooth_ms: 15.0, doc: "Start of the loop, as a part of the sample's length." },
     crate::Desc { id: "sampler.loop_len", group: crate::Group::Shape, scale: crate::Scale::Log, min: 0.001, max: 1.0, neutral: 1.0, unit: "", smooth_ms: 15.0, doc: "Length of the loop, as a part of the sample's length." },
     crate::Desc { id: "sampler.follow", group: crate::Group::Tone, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 1.0, unit: "", smooth_ms: 15.0, doc: "How far the playback speed follows the voice pitch. 0 plays the sample at its own speed for every note." },
+    crate::Desc { id: "input.mix", group: crate::Group::Space, scale: crate::Scale::Lin, min: 0.0, max: 1.0, neutral: 0.0, unit: "", smooth_ms: 20.0, doc: "Raw input against the synth: 0 is only the synth, 1 only the raw input (the mic, or the take on playback). An equal-power crossfade." },
+    crate::Desc { id: "input.trim", group: crate::Group::Space, scale: crate::Scale::Lin, min: -24.0, max: 12.0, neutral: 0.0, unit: "dB", smooth_ms: 20.0, doc: "Gain on the raw input before the blend." },
 ];
 
 /// Steps of a stepped value (0: continuous).
-pub static STEPS: [u8; N_DESCS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0, 0, 0, 0, 7, 25, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
+pub static STEPS: [u8; N_DESCS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0, 0, 0, 0, 7, 25, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0];
 /// Values a `scale` route may multiply.
-pub static SCALABLE: [bool; N_DESCS] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false, false, false, false, true, false, true, false, false, false, false, false];
+pub static SCALABLE: [bool; N_DESCS] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false, false, false, false, true, false, true, false, false, false, false, false, true, false];
 
 pub const T_PARTIALS: u32 = 1;
 pub const T_OSC: u32 = 2;
@@ -77,6 +81,7 @@ pub const T_TAPE: u32 = 22;
 pub const T_DELAY: u32 = 23;
 pub const T_REVERB: u32 = 24;
 pub const T_CFILTER: u32 = 25;
+pub const T_INPUT: u32 = 26;
 
 /// Cost of one voice route per sample (ns), of a partial bank that rebuilds every tick, and the
 /// number of classic voices a layer may spend (modules.toml [cost]).
@@ -84,7 +89,7 @@ pub const COST_ROUTE: f32 = 0.25;
 pub const COST_REBUILD: f32 = 11.0;
 pub const COST_VOICES: f32 = 8.0;
 
-pub static MODULE_TYPES: [crate::ModuleType; 19] = [
+pub static MODULE_TYPES: [crate::ModuleType; 20] = [
     crate::ModuleType { name: "partials", code: 1, kind: crate::ModKind::Voice, cost: 18.5, n_values: 29, params: &[crate::ModParam { name: "level", desc: 0, count: 1 }, crate::ModParam { name: "tilt", desc: 3, count: 1 }, crate::ModParam { name: "oddeven", desc: 4, count: 1 }, crate::ModParam { name: "stretch", desc: 5, count: 1 }, crate::ModParam { name: "jitter", desc: 6, count: 1 }, crate::ModParam { name: "modal", desc: 7, count: 1 }, crate::ModParam { name: "damp", desc: 8, count: 1 }, crate::ModParam { name: "f1_freq", desc: 9, count: 1 }, crate::ModParam { name: "f1_gain", desc: 10, count: 1 }, crate::ModParam { name: "f2_freq", desc: 11, count: 1 }, crate::ModParam { name: "f2_gain", desc: 12, count: 1 }, crate::ModParam { name: "tone_bands", desc: 64, count: 16 }, crate::ModParam { name: "octave", desc: 102, count: 1 }, crate::ModParam { name: "fine", desc: 103, count: 1 }] },
     crate::ModuleType { name: "osc", code: 2, kind: crate::ModKind::Voice, cost: 2.5, n_values: 7, params: &[crate::ModParam { name: "level", desc: 104, count: 1 }, crate::ModParam { name: "wave", desc: 105, count: 1 }, crate::ModParam { name: "pw", desc: 106, count: 1 }, crate::ModParam { name: "octave", desc: 107, count: 1 }, crate::ModParam { name: "semi", desc: 108, count: 1 }, crate::ModParam { name: "fine", desc: 109, count: 1 }, crate::ModParam { name: "pm", desc: 110, count: 1 }] },
     crate::ModuleType { name: "noise", code: 3, kind: crate::ModKind::Voice, cost: 2.0, n_values: 2, params: &[crate::ModParam { name: "level", desc: 111, count: 1 }, crate::ModParam { name: "colour", desc: 112, count: 1 }] },
@@ -104,6 +109,7 @@ pub static MODULE_TYPES: [crate::ModuleType; 19] = [
     crate::ModuleType { name: "delay", code: 23, kind: crate::ModKind::Channel, cost: 10.0, n_values: 4, params: &[crate::ModParam { name: "time", desc: 55, count: 1 }, crate::ModParam { name: "feedback", desc: 56, count: 1 }, crate::ModParam { name: "shift", desc: 57, count: 1 }, crate::ModParam { name: "mix", desc: 58, count: 1 }] },
     crate::ModuleType { name: "reverb", code: 24, kind: crate::ModKind::Channel, cost: 29.5, n_values: 4, params: &[crate::ModParam { name: "size", desc: 59, count: 1 }, crate::ModParam { name: "damp", desc: 60, count: 1 }, crate::ModParam { name: "mix", desc: 61, count: 1 }, crate::ModParam { name: "freeze", desc: 62, count: 1 }] },
     crate::ModuleType { name: "cfilter", code: 25, kind: crate::ModKind::Channel, cost: 5.5, n_values: 3, params: &[crate::ModParam { name: "cutoff", desc: 30, count: 1 }, crate::ModParam { name: "res", desc: 31, count: 1 }, crate::ModParam { name: "morph", desc: 32, count: 1 }] },
+    crate::ModuleType { name: "input", code: 26, kind: crate::ModKind::Channel, cost: 1.0, n_values: 2, params: &[crate::ModParam { name: "mix", desc: 119, count: 1 }, crate::ModParam { name: "trim", desc: 120, count: 1 }] },
 ];
 
 /// Value offsets of each parameter inside its module.
@@ -240,4 +246,9 @@ pub mod cfilter {
     pub const RES: usize = 1;
     pub const MORPH: usize = 2;
     pub const N: usize = 3;
+}
+pub mod input {
+    pub const MIX: usize = 0;
+    pub const TRIM: usize = 1;
+    pub const N: usize = 2;
 }

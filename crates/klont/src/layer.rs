@@ -14,7 +14,10 @@
 //!    scene the engine asks for state 0. A layer that
 //!    never got states keeps what `LOAD_LAYER` and live messages set. A new
 //!    patch starts every value at the patch's starting value.
-//! 2. Automation: arrives with recording (stage S5).
+//! 2. Automation: while the transport plays, each lane of the layer's clip
+//!    replaces its value, macro, level, pan or performance source (`auto_*`;
+//!    the engine evaluates the lanes each control tick). A value or macro
+//!    with no lane keeps what step 1 gave it.
 //! 3. Influence: each value whose group bit is in the mask moves toward the
 //!    target by the amount.
 //! 4. Layer routes: sources that are one per layer (macros, the mod wheel,
@@ -36,6 +39,13 @@
 //! to stereo, the stereo effects follow, and width is last (today's order).
 //! A filter runs mono or stereo depending on where it sits. A bypassed effect
 //! is skipped; bypass is not structure, so switching it keeps notes sounding.
+//!
+//! The raw input (stage S5, docs/synth.md "The raw input beside the synth"):
+//! a channel with an `input` element blends the raw input (the mic, or the
+//! take's audio on playback; `set_raw`) with the synth at that element.
+//! Effects before it run on the synth or, marked raw, on the raw input; the
+//! effects after it on the blend. Without the element the channel runs as it
+//! always has.
 //!
 //! Structure changes (docs/synth.md "Changing the structure"): a new patch
 //! that is more than a route-shaper or bypass edit, arriving while the layer
@@ -245,6 +255,22 @@ impl ChanFilter {
 
 use crate::modules::cl as modules_cl;
 
+/// Linear read of `d` at fractional position `pos` (0 outside it).
+#[inline]
+fn read_lin(d: &[f32], pos: f64) -> f32 {
+    if !(pos >= 0.0) {
+        return 0.0;
+    }
+    let i = pos as usize;
+    let f = (pos - i as f64) as f32;
+    let a = d.get(i).copied().unwrap_or(0.0);
+    if f == 0.0 {
+        return a;
+    }
+    let b = d.get(i + 1).copied().unwrap_or(0.0);
+    a + (b - a) * f
+}
+
 /// The channel's effect instances, allocated at start-up: as many of each as a chain may hold.
 struct Channel {
     crush: [Crush; MAX_CHANNEL],
@@ -292,6 +318,60 @@ impl Channel {
 
 /// The structure-change fade (docs/synth.md "Changing the structure").
 const FADE_S: f32 = 0.005;
+
+/// Where a layer's raw input comes from this tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RawSrc {
+    None,
+    /// The engine's delayed mic, handed to `render`.
+    Mic,
+    /// A take's audio in the sample pool: its frame position at the tick start and the step per
+    /// output sample.
+    Take { sample: u8, pos: f64, step: f64 },
+}
+
+/// Gains of the blend at mix `m` (0..1) and raw trim `trim` (linear): exactly synth-only at 0
+/// and raw-only at 1, equal power between.
+pub fn blend_gains(m: f32, trim: f32) -> (f32, f32) {
+    if !(m > 0.0) {
+        (1.0, 0.0)
+    } else if m >= 1.0 {
+        (0.0, trim)
+    } else {
+        let a = m * std::f32::consts::FRAC_PI_2;
+        (a.cos(), a.sin() * trim)
+    }
+}
+
+/// A gain that ramps to its target across one control tick.
+#[derive(Clone, Copy, Debug, Default)]
+struct Ramp {
+    g: f32,
+    t: f32,
+    d: f32,
+}
+
+impl Ramp {
+    /// New target for the coming tick; the step is fixed so splitting the tick changes nothing.
+    fn aim(&mut self, t: f32) {
+        self.t = t;
+        self.d = (t - self.g) / TICK as f32;
+    }
+    fn jump(&mut self, t: f32) {
+        *self = Ramp { g: t, t, d: 0.0 };
+    }
+    #[inline]
+    fn next(&mut self) -> f32 {
+        self.g += self.d;
+        if (self.g - self.t) * self.d > 0.0 {
+            self.g = self.t;
+        }
+        self.g
+    }
+    fn moving(&self) -> bool {
+        (self.g - self.t).abs() > 1e-6
+    }
+}
 
 /// Per voice patch: the values its voice routes and voicing swap write.
 struct Touched {
@@ -416,6 +496,27 @@ pub struct Layer {
     lr_out: [f32; MAX_LAYER_ROUTES],
     /// The voice the meters show (the loudest), or usize::MAX.
     meter_voice: usize,
+
+    /// Step 2, automation (NaN: no lane this tick). `auto_list` holds the values with a lane;
+    /// `auto_fresh` marks the ones a lane set this tick.
+    auto: Box<[f32; MAX_VALUES]>,
+    auto_fresh: Box<[bool; MAX_VALUES]>,
+    auto_list: Box<[u16; MAX_VALUES]>,
+    auto_n: usize,
+    auto_macro: [f32; N_MACROS],
+    auto_level: f32,
+    auto_pan: f32,
+    auto_perf: [f32; 3],
+    /// Which of the macro, level, pan and perf lanes were set this tick.
+    auto_other: [bool; N_MACROS + 5],
+
+    /// The raw input this tick, its read position in the take, whether it sounds, and the
+    /// blend's gains (synth, raw).
+    raw: RawSrc,
+    raw_pos: f64,
+    raw_on: bool,
+    gs: Ramp,
+    gx: Ramp,
 }
 
 /// A scene move: to state `to` over `len` samples, `done` so far; `applied` is the blend
@@ -534,6 +635,20 @@ impl Layer {
             lr_fresh: true,
             lr_out: [f32::NAN; MAX_LAYER_ROUTES],
             meter_voice: usize::MAX,
+            auto: Box::new([f32::NAN; MAX_VALUES]),
+            auto_fresh: Box::new([false; MAX_VALUES]),
+            auto_list: Box::new([0; MAX_VALUES]),
+            auto_n: 0,
+            auto_macro: [f32::NAN; N_MACROS],
+            auto_level: f32::NAN,
+            auto_pan: f32::NAN,
+            auto_perf: [f32::NAN; 3],
+            auto_other: [false; N_MACROS + 5],
+            raw: RawSrc::None,
+            raw_pos: 0.0,
+            raw_on: false,
+            gs: Ramp { g: 1.0, t: 1.0, d: 0.0 },
+            gx: Ramp::default(),
         };
         let classic = crate::classic::patch_blob(KIND_MELODY, index as u32);
         let mut p = Patch::new_boxed();
@@ -605,6 +720,7 @@ impl Layer {
         self.n_states = 0;
         self.morph_applied = None;
         self.scene = None;
+        self.auto_clear();
     }
 
     /// The patch that values, states and layer blobs are for: the one waiting, if any.
@@ -647,6 +763,9 @@ impl Layer {
         self.norm[..n].copy_from_slice(&self.target[..n]);
         self.map_all();
         self.settled = true;
+        let (gs, gx) = self.blend_target();
+        self.gs.jump(gs);
+        self.gx.jump(gx);
     }
 
     /// Voices the patch may sound at once, and its cost per voice and per layer (ns per sample)
@@ -910,7 +1029,7 @@ impl Layer {
         let a = if self.infl_amount.is_nan() { 0.0 } else { self.infl_amount.clamp(0.0, 1.0) };
         let fz = |x: f32| if x.is_finite() { x } else { 0.0 };
         for i in 0..n {
-            let b = fz(self.base[i]);
+            let b = if self.auto[i].is_finite() { self.auto[i] } else { fz(self.base[i]) };
             self.pre[i] = if self.groups[i] & self.infl_mask != 0 {
                 ((1.0 - a) * b + a * fz(self.influence[i])).clamp(0.0, 1.0)
             } else {
@@ -927,9 +1046,12 @@ impl Layer {
     /// their values as they stand), and the sung features of `frame`.
     fn update_sources(&mut self, frame: Option<&[f32; CURVE_STRIDE]>) {
         for k in 0..N_MACROS {
-            self.lsrc[LS_MACRO + k] = if self.macros[k].is_nan() { 0.5 } else { self.macros[k] };
+            let m = if self.auto_macro[k].is_finite() { self.auto_macro[k] } else { self.macros[k] };
+            self.lsrc[LS_MACRO + k] = if m.is_nan() { 0.5 } else { m };
         }
-        self.lsrc[LS_PERF..LS_PERF + 3].copy_from_slice(&self.perf);
+        for k in 0..3 {
+            self.lsrc[LS_PERF + k] = if self.auto_perf[k].is_finite() { self.auto_perf[k] } else { self.perf[k] };
+        }
         let dt = TICK as f32 / self.sr;
         let p = &*self.patch;
         for k in 0..MAX_LAYER_LFOS {
@@ -1376,13 +1498,171 @@ impl Layer {
         }
         ch.stereo_filter = stereo_filter;
         self.mono_on = mono;
-        let lvl = if self.mute { 0.0 } else { dsp::db_to_lin(self.level_db) };
-        let a = (self.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+        let level = if self.auto_level.is_finite() { self.auto_level.clamp(-60.0, 12.0) } else { self.level_db };
+        let pan = if self.auto_pan.is_finite() { self.auto_pan.clamp(-1.0, 1.0) } else { self.pan };
+        let lvl = if self.mute { 0.0 } else { dsp::db_to_lin(level) };
+        let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         self.gl_t = lvl * a.cos();
         self.gr_t = lvl * a.sin();
         // Fixed per tick so the ramp does not depend on how the tick is split.
         self.gl_step = (self.gl_t - self.gl) / TICK as f32;
         self.gr_step = (self.gr_t - self.gr) / TICK as f32;
+        let (gs, gx) = self.blend_target();
+        self.gs.aim(gs);
+        self.gx.aim(gx);
+    }
+
+    /// The blend's gains from the `input` element's values (synth only without one).
+    fn blend_target(&self) -> (f32, f32) {
+        match self.patch.input {
+            Some(c) => {
+                let b = self.patch.channel[c as usize].base as usize;
+                blend_gains(self.real[b + P::input::MIX], dsp::db_to_lin(self.real[b + P::input::TRIM]))
+            }
+            None => (1.0, 0.0),
+        }
+    }
+
+    // ------------------------------------------------------------ automation (step 2)
+
+    /// Start a tick's lanes: every lane value must be set again or it is dropped at `auto_end`.
+    pub fn auto_begin(&mut self) {
+        for &i in &self.auto_list[..self.auto_n] {
+            self.auto_fresh[i as usize] = false;
+        }
+        self.auto_other = [false; N_MACROS + 5];
+    }
+
+    /// A lane's value for value `i` (normalized), macro, level (dB), pan or perf source.
+    pub fn auto_set(&mut self, kind: u32, index: usize, v: f32) {
+        use crate::seq::{LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE};
+        if !v.is_finite() {
+            return;
+        }
+        match kind {
+            LANE_VALUE if index < self.n_values() && !self.pending => {
+                let v = v.clamp(0.0, 1.0);
+                if self.auto[index].is_nan() {
+                    self.auto_list[self.auto_n] = index as u16;
+                    self.auto_n += 1;
+                }
+                if self.auto[index] != v {
+                    self.auto[index] = v;
+                    self.dirty = true;
+                }
+                self.auto_fresh[index] = true;
+            }
+            LANE_MACRO if index < N_MACROS => {
+                let v = v.clamp(0.0, 1.0);
+                if self.auto_macro[index] != v {
+                    self.auto_macro[index] = v;
+                    self.dirty = true;
+                }
+                self.auto_other[index] = true;
+            }
+            LANE_LEVEL => {
+                self.auto_level = v;
+                self.auto_other[N_MACROS] = true;
+            }
+            LANE_PAN => {
+                self.auto_pan = v;
+                self.auto_other[N_MACROS + 1] = true;
+            }
+            LANE_PERF if index < 3 => {
+                self.auto_perf[index] = if index == 1 { v.clamp(-1.0, 1.0) } else { v.clamp(0.0, 1.0) };
+                self.auto_other[N_MACROS + 2 + index] = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// End a tick's lanes: whatever no lane set this tick goes back to its stored value.
+    pub fn auto_end(&mut self) {
+        let mut k = 0;
+        for x in 0..self.auto_n {
+            let i = self.auto_list[x] as usize;
+            if self.auto_fresh[i] {
+                self.auto_list[k] = i as u16;
+                k += 1;
+            } else {
+                self.auto[i] = f32::NAN;
+                self.dirty = true;
+            }
+        }
+        self.auto_n = k;
+        for m in 0..N_MACROS {
+            if !self.auto_other[m] && !self.auto_macro[m].is_nan() {
+                self.auto_macro[m] = f32::NAN;
+                self.dirty = true;
+            }
+        }
+        if !self.auto_other[N_MACROS] {
+            self.auto_level = f32::NAN;
+        }
+        if !self.auto_other[N_MACROS + 1] {
+            self.auto_pan = f32::NAN;
+        }
+        for k in 0..3 {
+            if !self.auto_other[N_MACROS + 2 + k] {
+                self.auto_perf[k] = f32::NAN;
+            }
+        }
+    }
+
+    /// Drop every lane value (a new patch: the indices mean something else now).
+    fn auto_clear(&mut self) {
+        for &i in &self.auto_list[..self.auto_n] {
+            self.auto[i as usize] = f32::NAN;
+        }
+        self.auto_n = 0;
+        self.auto_macro = [f32::NAN; N_MACROS];
+        self.auto_level = f32::NAN;
+        self.auto_pan = f32::NAN;
+        self.auto_perf = [f32::NAN; 3];
+    }
+
+    // ------------------------------------------------------------ raw input
+
+    /// The layer has an `input` element: it wants a raw source each tick.
+    pub fn has_input(&self) -> bool {
+        self.patch.input.is_some() && !self.pending
+    }
+
+    /// Where the raw input comes from this tick (before `voices_tick`).
+    pub fn set_raw(&mut self, src: RawSrc) {
+        self.raw = if self.has_input() { src } else { RawSrc::None };
+        if let RawSrc::Take { pos, .. } = self.raw {
+            self.raw_pos = pos;
+        }
+        self.raw_on = self.raw != RawSrc::None;
+    }
+
+    // ------------------------------------------------------------ play reset
+
+    /// Play from a stop (docs/synth.md "Deterministic playback", rule 2): free LFO phases restart
+    /// and every random source starts its sequence again, as in a fresh engine, so live playback
+    /// from a point matches an export from that point. Effect tails are cleared too.
+    pub fn play_reset(&mut self) {
+        let seed = self.seed;
+        for (v, voice) in self.voices.iter_mut().enumerate() {
+            voice.reseed(seed ^ (v as u32 + 1).wrapping_mul(0x85EB_CA6B));
+        }
+        for l in self.lfos.iter_mut() {
+            l.start();
+        }
+        self.reset_noise();
+        self.grain.reseed(seed ^ 0x7f4a_7c15);
+        let sr = self.sr;
+        for j in 0..MAX_CHANNEL {
+            self.chan.crush[j] = Crush::new(sr, seed ^ 0x27d4_eb2f ^ (j as u32).wrapping_mul(0x9e37_79b9));
+            self.chan.tape[j].reseed(seed ^ 0x1656_67b1 ^ (j as u32).wrapping_mul(0x9e37_79b9));
+            self.chan.filter[j].svf.iter_mut().for_each(|f| f.reset());
+        }
+        for j in 0..MAX_REVERBS {
+            self.chan.reverb[j].reseed(seed ^ 0xc2b2_ae35 ^ (j as u32).wrapping_mul(0x9e37_79b9));
+        }
+        self.chan.delay.iter_mut().for_each(|d| d.restart());
+        self.lr_fresh = true;
     }
 
     /// Steps 3 and 4 when needed, then the per-tick smoothing and mapping of the values.
@@ -1516,7 +1796,10 @@ impl Layer {
             || self.noise_banks.iter().any(|n| n.on)
             || self.grain.active()
             || self.stereo_on
-            || gain_moving;
+            || gain_moving
+            || self.raw_on
+            || self.gs.moving()
+            || self.gx.moving();
         // Notes that waited for a new structure start now, as if at the start of this tick.
         if !self.pending && self.n_queued > 0 {
             let n = std::mem::replace(&mut self.n_queued, 0);
@@ -1553,8 +1836,9 @@ impl Layer {
         }
     }
 
-    /// Render `n` samples (n <= TICK) of this layer, adding into `l` and `r`.
-    pub fn render(&mut self, l: &mut [f32], r: &mut [f32], pool: &SamplePool) {
+    /// Render `n` samples (n <= TICK) of this layer, adding into `l` and `r`. `mic` is the
+    /// engine's delayed mic for the same samples (read when the raw input is the mic).
+    pub fn render(&mut self, l: &mut [f32], r: &mut [f32], pool: &SamplePool, mic: &[f32]) {
         let n = l.len();
         if !self.layer_on {
             return;
@@ -1570,6 +1854,10 @@ impl Layer {
             nb.render(bus);
         }
         self.grain.render(bus, pool);
+        if let Some(blend) = self.patch.input {
+            self.render_blend(l, r, pool, mic, blend as usize);
+            return;
+        }
         let p = &*self.patch;
         let (dl, dr) = (self.gl_step, self.gr_step);
         let w = self.real[p.width as usize];
@@ -1622,6 +1910,107 @@ impl Layer {
             (a, b) = width(a, b, w);
             if self.pending {
                 // The structure-change fade: linear to silence, then silence until the swap.
+                if self.fade_left > 0 {
+                    self.fade_left -= 1;
+                    self.fade_g = self.fade_left as f32 / self.fade_len as f32;
+                }
+                a *= self.fade_g;
+                b *= self.fade_g;
+            }
+            peak = peak.max(a.abs()).max(b.abs());
+            l[i] += a;
+            r[i] += b;
+        }
+        self.peak = self.peak.max(peak);
+    }
+
+    /// The channel of a patch with an `input` element (module docs): the synth (`bus`) and the
+    /// raw input run through the effects before the element on their own paths, the element
+    /// blends them, and the effects after it run on the blend. Level and pan apply to both paths;
+    /// a path that reaches the stereo part before the blend is spread to stereo on its own.
+    fn render_blend(&mut self, l: &mut [f32], r: &mut [f32], pool: &SamplePool, mic: &[f32], blend: usize) {
+        let n = l.len();
+        let mut raw = [0.0f32; TICK];
+        match self.raw {
+            RawSrc::Mic => raw[..n].copy_from_slice(&mic[..n]),
+            RawSrc::Take { sample, step, .. } => {
+                if let Some(sr) = pool.get(sample as usize) {
+                    let d = pool.data(sr.region);
+                    let mut pos = self.raw_pos;
+                    for x in raw[..n].iter_mut() {
+                        *x = read_lin(d, pos);
+                        pos += step;
+                    }
+                    self.raw_pos = pos;
+                }
+            }
+            RawSrc::None => {}
+        }
+        let p = &*self.patch;
+        let (dl, dr) = (self.gl_step, self.gr_step);
+        let w = self.real[p.width as usize];
+        let (mono, stereo) = (self.mono_on, self.stereo_on);
+        let ch = &mut self.chan;
+        let split = ch.split;
+        let mut peak = 0.0f32;
+        for i in 0..n {
+            let (gs, gx) = (self.gs.next(), self.gx.next());
+            // Mono part: [s] the synth, [x] the raw input; after the blend, s carries the blend.
+            let (mut s, mut x) = (self.bus[i], raw[i]);
+            let mut blended = false;
+            for (c, fx) in p.channel()[..split].iter().enumerate() {
+                if c == blend {
+                    s = gs * s + gx * x;
+                    blended = true;
+                    continue;
+                }
+                if fx.bypass || !mono {
+                    continue;
+                }
+                let j = ch.inst[c] as usize;
+                let y = if fx.raw { &mut x } else { &mut s };
+                match fx.code {
+                    P::T_CRUSH => *y = ch.crush[j].process(*y),
+                    P::T_TAPE => *y = ch.tape[j].process(*y),
+                    P::T_CFILTER if ch.filter[j].on => *y = ch.filter[j].process(0, *y),
+                    _ => {}
+                }
+            }
+            self.gl += dl;
+            self.gr += dr;
+            if (self.gl - self.gl_t) * dl > 0.0 {
+                self.gl = self.gl_t;
+            }
+            if (self.gr - self.gr_t) * dr > 0.0 {
+                self.gr = self.gr_t;
+            }
+            let (mut a, mut b) = (s * self.gl, s * self.gr);
+            let (mut xa, mut xb) = (x * self.gl, x * self.gr);
+            for (c, fx) in p.channel().iter().enumerate().skip(split) {
+                if c == blend {
+                    a = gs * a + gx * xa;
+                    b = gs * b + gx * xb;
+                    blended = true;
+                    continue;
+                }
+                if fx.bypass || !stereo {
+                    continue;
+                }
+                let j = ch.inst[c] as usize;
+                let (ya, yb) = if fx.raw { (&mut xa, &mut xb) } else { (&mut a, &mut b) };
+                match fx.code {
+                    P::T_DELAY => (*ya, *yb) = ch.delay[j].process(*ya, *yb),
+                    P::T_REVERB => (*ya, *yb) = ch.reverb[j].process(*ya, *yb),
+                    P::T_CFILTER if ch.filter[j].on => {
+                        let f = &mut ch.filter[j];
+                        (*ya, *yb) = (f.process(0, *ya), f.process(1, *yb));
+                    }
+                    _ => {}
+                }
+            }
+            debug_assert!(blended);
+            (a, b) = width(a, b, w);
+            if self.pending {
                 if self.fade_left > 0 {
                     self.fade_left -= 1;
                     self.fade_g = self.fade_left as f32 / self.fade_len as f32;

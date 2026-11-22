@@ -28,17 +28,19 @@ export const EXTRA_DESCS: readonly Desc[] = [
   { id: "sampler.loop_start", group: 'shape', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 15.0, doc: "Start of the loop, as a part of the sample's length." },
   { id: "sampler.loop_len", group: 'shape', scale: 'log', min: 0.001, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "Length of the loop, as a part of the sample's length." },
   { id: "sampler.follow", group: 'tone', scale: 'lin', min: 0.0, max: 1.0, neutral: 1.0, unit: "", smoothMs: 15.0, doc: "How far the playback speed follows the voice pitch. 0 plays the sample at its own speed for every note." },
+  { id: "input.mix", group: 'space', scale: 'lin', min: 0.0, max: 1.0, neutral: 0.0, unit: "", smoothMs: 20.0, doc: "Raw input against the synth: 0 is only the synth, 1 only the raw input (the mic, or the take on playback). An equal-power crossfade." },
+  { id: "input.trim", group: 'space', scale: 'lin', min: -24.0, max: 12.0, neutral: 0.0, unit: "dB", smoothMs: 20.0, doc: "Gain on the raw input before the blend." },
 ];
 
 /** Every descriptor, by value descriptor id. */
 export const ALL_DESCS: readonly Desc[] = [...DESCS, ...EXTRA_DESCS];
-export const N_DESCS = 119;
+export const N_DESCS = 121;
 
 /** Descriptor id by descriptor name. */
 export const DESC_ID: Readonly<Record<string, number>> = Object.fromEntries(ALL_DESCS.map((d, i) => [d.id, i]));
 
-export const STEPS: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0, 0, 0, 0, 7, 25, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
-export const SCALABLE: readonly boolean[] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false, false, false, false, true, false, true, false, false, false, false, false];
+export const STEPS: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 7, 0, 0, 0, 0, 7, 25, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0];
+export const SCALABLE: readonly boolean[] = [true, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, true, false, false, false, false, false, false, true, false, true, false, false, false, false, false, true, false];
 
 export type ModKind = 'voice' | 'source' | 'layer' | 'channel';
 export interface ModParam { name: string; desc: number; count: number }
@@ -67,6 +69,7 @@ export const MODULE_TYPES: Readonly<Record<string, ModuleType>> = {
   delay: { type: 'delay', code: 23, kind: 'channel', cost: 10.0, nValues: 4, params: [{ name: 'time', desc: 55, count: 1 }, { name: 'feedback', desc: 56, count: 1 }, { name: 'shift', desc: 57, count: 1 }, { name: 'mix', desc: 58, count: 1 }] },
   reverb: { type: 'reverb', code: 24, kind: 'channel', cost: 29.5, nValues: 4, params: [{ name: 'size', desc: 59, count: 1 }, { name: 'damp', desc: 60, count: 1 }, { name: 'mix', desc: 61, count: 1 }, { name: 'freeze', desc: 62, count: 1 }] },
   cfilter: { type: 'cfilter', code: 25, kind: 'channel', cost: 5.5, nValues: 3, params: [{ name: 'cutoff', desc: 30, count: 1 }, { name: 'res', desc: 31, count: 1 }, { name: 'morph', desc: 32, count: 1 }] },
+  input: { type: 'input', code: 26, kind: 'channel', cost: 1.0, nValues: 2, params: [{ name: 'mix', desc: 119, count: 1 }, { name: 'trim', desc: 120, count: 1 }] },
 };
 
 if (DESCS.length !== COUNT) throw new Error('modules.ts: vocabulary size changed; run pnpm gen:params');

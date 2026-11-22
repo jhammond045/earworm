@@ -156,6 +156,22 @@ impl Tape {
             drop_depth: 0.0,
         }
     }
+    /// Back to the state `new(sample_rate, seed)` leaves it in, without allocating.
+    pub fn reseed(&mut self, seed: u32) {
+        let mut noise = Noise::new(seed);
+        self.wow_ph = 0.5 * (noise.next() + 1.0);
+        self.fl_ph = 0.5 * (noise.next() + 1.0);
+        self.noise = noise;
+        self.line.clear();
+        self.amt_t = 0.0;
+        self.amt = 0.0;
+        self.rnd = 0.0;
+        self.rnd2 = 0.0;
+        self.tick = 0;
+        self.drop_pos = 0;
+        self.drop_len = 0;
+        self.drop_depth = 0.0;
+    }
     pub fn set(&mut self, amt: f32) {
         self.amt_t = fin(amt, 0.0).clamp(0.0, 1.0);
     }
@@ -292,6 +308,28 @@ impl StereoDelay {
             win_left: 1,
             first: true,
         }
+    }
+    /// Back to the state `new` leaves it in, without allocating (play from a stop).
+    pub fn restart(&mut self) {
+        for i in 0..2 {
+            self.lines[i].clear();
+            self.pbuf[i].clear();
+            self.lp[i] = OnePole::new(OnePole::coef_hz(6000.0, self.sr));
+        }
+        self.time_t = 0.25 * self.sr;
+        self.time = 0.25 * self.sr;
+        self.fb_t = 0.0;
+        self.fb = 0.0;
+        self.mix_t = 0.0;
+        self.mix = 0.0;
+        self.shift = 0.0;
+        self.ratio = 1.0;
+        self.eng = 0.0;
+        self.pp = 0.0;
+        self.peak_cur = 0.0;
+        self.peak_prev = 0.0;
+        self.win_left = 1;
+        self.first = true;
     }
     pub fn set(&mut self, time_s: f32, feedback: f32, shift_semitones: f32, mix: f32) {
         self.time_t = (fin(time_s, 0.25) * self.sr).clamp(self.min_time, self.max_time);
@@ -503,24 +541,6 @@ impl Reverb {
                 }
             }
         }
-        let mut noise = Noise::new(seed);
-        let mut rc = [0.0; 8];
-        let mut rs = [0.0; 8];
-        let mut rcw = [0.0; 8];
-        let mut rsw = [0.0; 8];
-        let mut inl = [0.0; 8];
-        let mut inr = [0.0; 8];
-        for i in 0..8 {
-            let ph = std::f32::consts::PI * (noise.next() + 1.0);
-            rc[i] = ph.cos();
-            rs[i] = ph.sin();
-            let w = TAU * REVERB_MOD_HZ[i] / sr;
-            rcw[i] = w.cos();
-            rsw[i] = w.sin();
-            let th = std::f32::consts::FRAC_PI_2 * (i as f32 + 0.5) / 8.0;
-            inl[i] = IN_SIGN[i] * th.cos();
-            inr[i] = IN_SIGN[i] * th.sin();
-        }
         let mut s = Self {
             sr,
             lines: std::array::from_fn(|_| DelayLine::new(n)),
@@ -537,12 +557,12 @@ impl Reverb {
             modamp: 1.0,
             mod_t: 1.0,
             depth_cap: 0.0008 * sr,
-            rc,
-            rs,
-            rcw,
-            rsw,
-            inl,
-            inr,
+            rc: [0.0; 8],
+            rs: [0.0; 8],
+            rcw: [0.0; 8],
+            rsw: [0.0; 8],
+            inl: [0.0; 8],
+            inr: [0.0; 8],
             p_size: f32::NAN,
             p_damp: f32::NAN,
             p_freeze: f32::NAN,
@@ -556,8 +576,47 @@ impl Reverb {
             peak: 0.0,
             first: true,
         };
-        s.retarget(0.5, 0.3, 0.0, true);
+        s.reseed(seed);
         s
+    }
+
+    /// The state `new(sample_rate, seed)` leaves it in, without allocating: the modulation
+    /// phases from the seed, empty lines, the starting size (play from a stop).
+    pub fn reseed(&mut self, seed: u32) {
+        let sr = self.sr;
+        let mut noise = Noise::new(seed);
+        for i in 0..8 {
+            let ph = std::f32::consts::PI * (noise.next() + 1.0);
+            self.rc[i] = ph.cos();
+            self.rs[i] = ph.sin();
+            let w = TAU * REVERB_MOD_HZ[i] / sr;
+            self.rcw[i] = w.cos();
+            self.rsw[i] = w.sin();
+            let th = std::f32::consts::FRAC_PI_2 * (i as f32 + 0.5) / 8.0;
+            self.inl[i] = IN_SIGN[i] * th.cos();
+            self.inr[i] = IN_SIGN[i] * th.sin();
+            self.lines[i].clear();
+        }
+        self.lp = [0.0; 8];
+        self.len = [0.0; 8];
+        self.len_t = [0.0; 8];
+        self.g = [0.0; 8];
+        self.g_t = [0.0; 8];
+        self.a = 1.0;
+        self.a_t = 1.0;
+        self.kin = 0.0;
+        self.kin_t = 0.0;
+        self.modamp = 1.0;
+        self.mod_t = 1.0;
+        self.p_size = f32::NAN;
+        self.p_damp = f32::NAN;
+        self.p_freeze = f32::NAN;
+        self.glide = 0;
+        self.mix_t = 0.0;
+        self.mix = 0.0;
+        self.peak = 0.0;
+        self.first = true;
+        self.retarget(0.5, 0.3, 0.0, true);
     }
 
     fn nearest_prime(&self, x: f32) -> f32 {

@@ -172,6 +172,13 @@ impl GrainCloud {
         self.timer[v] = 0.0;
     }
 
+    /// Play from a stop: no grains, spawn timers at the start, the random sequence from `seed`.
+    pub fn reseed(&mut self, seed: u32) {
+        self.clear_grains();
+        self.timer = [0.0; VOICES_PER_LAYER];
+        self.rng = Noise::new(seed);
+    }
+
     pub fn clear_grains(&mut self) {
         for g in self.grains.iter_mut() {
             g.on = false;

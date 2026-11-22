@@ -34,7 +34,9 @@
 //!    mods     n_mods    x [type code, value base]       (mods[0] is the envelope that ends the voice;
 //!             an envelope's type code + MOD_ONSET restarts it at each sung onset)
 //!    routes   n_routes  x ROUTE_WORDS
-//! channel   n_channel x [type code (+ CH_BYPASS: passes its input through), value base]
+//! channel   n_channel x [type code (+ CH_BYPASS: passes its input through; + CH_RAW: before
+//!           the `input` element, runs on the raw input), value base]. At most one `input`
+//!           element, never bypassed: the point where the raw input joins (stage S5).
 //! layer LFOs n_layer_lfos x [type code (lfo), value base]  (outside every voice patch's values)
 //! layer routes n_layer_routes x ROUTE_WORDS
 //! ```
@@ -64,6 +66,9 @@ pub const MAX_REVERBS: usize = 1;
 /// Added to a channel effect's type code: the effect is bypassed. Bypass is not structure, so
 /// toggling it keeps the layer's notes sounding.
 pub const CH_BYPASS: u32 = 1 << 16;
+/// Added to a channel effect's type code: before the `input` element, the effect runs on the raw
+/// input instead of the synth (docs/synth.md "The raw input beside the synth").
+pub const CH_RAW: u32 = 1 << 17;
 /// Cable ports: an input that is summed into a processor, or an oscillator's phase input.
 pub const PORT_IN: u8 = 0;
 pub const PORT_PM: u8 = 1;
@@ -409,6 +414,8 @@ pub struct ChannelFx {
     pub code: u32,
     pub base: u16,
     pub bypass: bool,
+    /// Before the `input` element: runs on the raw input, not the synth.
+    pub raw: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -425,6 +432,8 @@ pub struct Patch {
     pub layer_routes: [Route; MAX_LAYER_ROUTES],
     pub n_layer_lfos: usize,
     pub layer_lfos: [Mod; MAX_LAYER_LFOS],
+    /// Index in the channel of the `input` element (the mix point), if any.
+    pub input: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,6 +483,7 @@ impl Patch {
             layer_routes: [Route::EMPTY; MAX_LAYER_ROUTES],
             n_layer_lfos: 0,
             layer_lfos: [Mod::default(); MAX_LAYER_LFOS],
+            input: None,
         })
     }
 
@@ -519,7 +529,7 @@ impl Patch {
             && self.n_voices == o.n_voices
             && self.voices().iter().zip(o.voices()).all(|(a, b)| vp_eq(a, b))
             && self.n_channel == o.n_channel
-            && self.channel().iter().zip(o.channel()).all(|(a, b)| (a.code, a.base) == (b.code, b.base))
+            && self.channel().iter().zip(o.channel()).all(|(a, b)| (a.code, a.base, a.raw) == (b.code, b.base, b.raw))
             && self.width == o.width
             && self.layer_lfos() == o.layer_lfos()
             && self.n_layer_routes == o.n_layer_routes
@@ -566,13 +576,20 @@ impl Patch {
             }
         }
         let (mut delays, mut reverbs, mut stereo) = (0, 0, false);
+        self.input = None;
         for c in 0..n_channel {
             let word = w.u()?;
-            let (code, bypass) = (word & !CH_BYPASS, word & CH_BYPASS != 0);
+            let (code, bypass, raw) = (word & !(CH_BYPASS | CH_RAW), word & CH_BYPASS != 0, word & CH_RAW != 0);
             let base = w.u()? as usize;
             let t = P::module_type(code).ok_or(Malformed)?;
             check(t.kind == P::ModKind::Channel && base + t.n_values <= n_values)?;
+            // The raw path exists only before the mix point, and the mix point is not an effect.
+            check(!raw || (self.input.is_none() && code != P::T_INPUT))?;
             match code {
+                P::T_INPUT => {
+                    check(self.input.is_none() && !bypass)?;
+                    self.input = Some(c as u8);
+                }
                 P::T_DELAY => {
                     delays += 1;
                     stereo = true;
@@ -587,9 +604,10 @@ impl Patch {
                 // spread it to stereo (as today), so they must come first.
                 _ => check(!stereo)?,
             }
-            self.channel[c] = ChannelFx { code, base: base as u16, bypass };
+            self.channel[c] = ChannelFx { code, base: base as u16, bypass, raw };
         }
         check(delays <= MAX_DELAYS && reverbs <= MAX_REVERBS)?;
+        check(self.input.is_some() || self.channel().iter().all(|fx| !fx.raw))?;
         self.n_layer_lfos = n_layer_lfos;
         for k in 0..n_layer_lfos {
             let code = w.u()?;

@@ -399,6 +399,12 @@ impl LiveCapture {
         r
     }
 
+    /// The live tier's level analysis delay, seconds: how long after the mic hears a change the
+    /// sung level shows it.
+    pub fn level_delay_s(&self) -> f32 {
+        self.tier.delays().level_s
+    }
+
     /// Tuned carrier pitch with the octave applied (meters), NaN unknown.
     pub fn carrier(&self) -> f32 {
         if self.tuned.is_finite() { self.tuned + self.octave() } else { f32::NAN }
