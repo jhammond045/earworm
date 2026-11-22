@@ -1,0 +1,16 @@
+[package]
+name = "poly-experiment"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Throwaway feasibility prototype for docs/poly.md. Not part of the app's
+# workspace: build and run it from here (see the header of src/main.rs).
+[workspace]
+
+[dependencies]
+dsp = { path = "../../crates/dsp" }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
