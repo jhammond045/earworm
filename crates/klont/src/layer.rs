@@ -57,6 +57,7 @@
 
 use crate::curve::{self, CurvePool, CURVE_STRIDE};
 use crate::modules::LfoSrc;
+use crate::notecurve;
 use crate::grain::{GrainCloud, VoiceGrain};
 use crate::patch::*;
 use crate::protocol::*;
@@ -96,6 +97,11 @@ struct Slot {
     clip_end: f64,
     /// Seconds of take time per clip unit with no anchors (free sections: 1).
     default_slope: f64,
+    /// The note's own curve (a poly take's note): note-curve slot plus one (0: none), its index,
+    /// and the note's pitch, which the curve's pitch offsets are from.
+    note_curve: u32,
+    note_index: u32,
+    cents: f32,
 }
 
 impl Default for Slot {
@@ -112,6 +118,9 @@ impl Default for Slot {
             clip_t: 0.0,
             clip_end: 0.0,
             default_slope: 1.0,
+            note_curve: 0,
+            note_index: 0,
+            cents: f32::NAN,
         }
     }
 }
@@ -1255,6 +1264,8 @@ impl Layer {
             clip_t: e.t,
             clip_end: e.t + e.dur,
             default_slope,
+            note_curve: e.note_curve,
+            note_index: e.note_index,
             ..Slot::default()
         };
         let mut note = Note {
@@ -1271,6 +1282,7 @@ impl Layer {
             note.cents = if e.cents.is_finite() { e.cents } else { 4800.0 };
         }
         self.shape_note(&mut note, e);
+        slot.cents = note.cents;
         self.start_voice(slot, &note, track, curves, len);
     }
 
@@ -1442,6 +1454,7 @@ impl Layer {
         self.slots[v] = Slot { age: self.age, ..slot };
         let mut nf = [0.0f32; CURVE_STRIDE];
         let frame = self.read_frame(v, track, curves, &mut nf);
+        self.voices[v].note_intensity = self.note_intensity(v, track, curves);
         let k = slot.vp;
         if self.voices[v].vp != k {
             self.voices[v].bind(&self.patch.voices[k], k);
@@ -1765,13 +1778,48 @@ impl Layer {
             *out = self.follow_rec;
             return true;
         }
-        if s.curve < 0 || !s.seq {
+        if (s.curve < 0 && s.note_curve == 0) || !s.seq {
             return false;
         }
+        let sec = self.take_sec(v, track);
+        let have = s.curve >= 0 && curves.read(s.curve as usize, sec, out);
+        if s.note_curve == 0 {
+            return have;
+        }
+        // A poly take's note (docs/poly.md P3): the whole input's features from the take's curve
+        // (openness, breath, the vowel bands), the note's own over them.
+        let Some(r) = curves.notes.read(s.note_curve as usize - 1, s.note_index as usize, sec) else { return have };
+        if !have {
+            *out = [0.0; CURVE_STRIDE];
+        }
+        let pitch = s.cents + r[notecurve::PITCH];
+        out[frame::PITCH] = pitch;
+        out[curve::TUNED] = pitch;
+        out[frame::CONFIDENCE] = 1.0;
+        out[frame::LOUDNESS] = r[notecurve::VOLUME];
+        out[frame::HARDNESS] = r[notecurve::HARDNESS];
+        out[frame::ONSET] = r[notecurve::ONSET];
+        out[frame::VOICING] = frame::VOICED;
+        true
+    }
+
+    /// Take seconds of voice `v` now: its clip time (held after the note's end) through the
+    /// clip's warp map.
+    fn take_sec(&self, v: usize, track: &Track) -> f64 {
+        let s = &self.slots[v];
         let clip: &Clip = track.clip(s.clip as usize);
         let t = s.clip_t.min(s.clip_end);
-        let sec = curve::warp_to_take(track.warp(clip), t, s.default_slope);
-        curves.read(s.curve as usize, sec, out)
+        curve::warp_to_take(track.warp(clip), t, s.default_slope)
+    }
+
+    /// The intensity of voice `v`'s note from its own curve, or NaN (then the voice reads it from
+    /// the frame's bands).
+    fn note_intensity(&self, v: usize, track: &Track, curves: &CurvePool) -> f32 {
+        let s = &self.slots[v];
+        if s.note_curve == 0 || !s.seq || s.follow {
+            return f32::NAN;
+        }
+        curves.notes.read(s.note_curve as usize - 1, s.note_index as usize, self.take_sec(v, track)).map_or(f32::NAN, |r| r[notecurve::INTENSITY])
     }
 
     /// Per tick, after `control_tick`: each sounding voice gets its controls.
@@ -1787,6 +1835,7 @@ impl Layer {
                 continue;
             }
             let frame = self.read_frame(v, track, curves, &mut nf);
+            self.voices[v].note_intensity = self.note_intensity(v, track, curves);
             let k = self.slots[v].vp;
             let lv = Self::view(&self.norm[..], &self.real[..], &self.patch.descs, &self.touched[k], dep, self.max_partials[v], self.follow_gain, &self.lsrc);
             self.voices[v].control(&self.patch.voices[k], &lv, frame.then_some(&nf), TICK);

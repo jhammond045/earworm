@@ -368,6 +368,13 @@ impl Engine {
                 Err(crate::curve::CurveError::TooBig) => LOAD_TOO_BIG,
                 Err(crate::curve::CurveError::Malformed) => LOAD_MALFORMED,
             },
+            LOAD_NOTE_CURVES => match self.curves.notes.load(slot as usize, bytes) {
+                Ok(()) => LOAD_OK,
+                Err(crate::notecurve::NoteCurveError::BadSlot) => LOAD_BAD_SLOT,
+                Err(crate::notecurve::NoteCurveError::BadMagic) => LOAD_BAD_MAGIC,
+                Err(crate::notecurve::NoteCurveError::TooBig) => LOAD_TOO_BIG,
+                Err(crate::notecurve::NoteCurveError::Malformed) => LOAD_MALFORMED,
+            },
             _ => LOAD_BAD_KIND,
         }
     }

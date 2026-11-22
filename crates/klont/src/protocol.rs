@@ -18,6 +18,8 @@ pub const MAX_CURVES: usize = 64;
 /// Floats in the curve pool shared by all curves: 2^21 floats is 8 MB, about
 /// 14 minutes of 25-float frames at 100 per second.
 pub const CURVE_POOL_FLOATS: usize = 1 << 21;
+/// Floats in the note-curve pool (`notecurve.rs`, 4 MB): about 200,000 note records.
+pub const NOTE_CURVE_POOL_FLOATS: usize = 1 << 20;
 /// Staging area the host copies a blob into before `ew_load`: 16 MB, so a 59 s take at 48 kHz
 /// (its audio, the raw input on playback, S5) fits in one blob.
 pub const STAGING_BYTES: usize = 16 << 20;
@@ -183,6 +185,9 @@ pub const LOAD_STATES: u32 = 5;
 /// A patch equal to the loaded one changes nothing; any other silences the
 /// layer's voices and returns its values to the patch's starting values.
 pub const LOAD_PATCH: u32 = 6;
+/// The note curves of a poly take; slot = note-curve id 0..MAX_CURVES. Layout in `notecurve.rs`.
+/// Notes of a v4 track blob name their slot (docs/poly.md, P3).
+pub const LOAD_NOTE_CURVES: u32 = 7;
 
 pub const LOAD_OK: i32 = 0;
 pub const LOAD_BAD_KIND: i32 = -1;

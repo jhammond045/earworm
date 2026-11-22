@@ -323,6 +323,9 @@ pub struct Voice {
     keep_click: bool,
     peak_acc: f32,
     peak_last: f32,
+    /// A poly take's note: its intensity from the note's own curve, set by the layer before each
+    /// start and control; NaN reads intensity from the frame's bands.
+    pub note_intensity: f32,
 }
 
 #[inline]
@@ -427,6 +430,7 @@ impl Voice {
             keep_click: false,
             peak_acc: 0.0,
             peak_last: 0.0,
+            note_intensity: f32::NAN,
         }
     }
 
@@ -753,6 +757,9 @@ impl Voice {
         let mut s = Sources { note: self.note_src, voice: [f32::NAN; N_FEATURES], layer: *lv.lsrc };
         if let Some(f) = frame {
             s.voice = features(f);
+            if self.note_intensity.is_finite() {
+                s.voice[N_FEATURES - 1] = self.note_intensity;
+            }
         }
         s
     }

@@ -38,6 +38,8 @@
 //!   4 u32 slot (kit slot for hits), 5 strength (0..1, velocity),
 //!   6 attack, 7 burst, 8 bend, 9 hold, 10 vowel, 11 tone, 12 end_stop,
 //!   13 end_click (hit shape, TDD HitShape; NaN or 0 when unused), 14 0, 15 0
+//!   (v4, magic "EWT4", docs/poly.md P3: 14 i32 note-curve slot (LOAD_NOTE_CURVES; -1 none),
+//!   15 u32 the note's index in that slot's note table; otherwise v4 is v3)
 //! warp anchors, n_warp x 2 words:
 //!   f32 take_sec, f32 clip_t (section units), sorted by clip_t
 //! morph markers (v2), n_morph x 4 words:
@@ -106,6 +108,7 @@ pub const PPQ: f64 = 960.0;
 pub const TRACK_MAGIC: u32 = 0x3154_5745; // "EWT1"
 pub const TRACK_MAGIC2: u32 = 0x3254_5745; // "EWT2"
 pub const TRACK_MAGIC3: u32 = 0x3354_5745; // "EWT3"
+pub const TRACK_MAGIC4: u32 = 0x3454_5745; // "EWT4"
 pub const LANE_VALUE: u32 = 0;
 pub const LANE_MACRO: u32 = 1;
 pub const LANE_LEVEL: u32 = 2;
@@ -222,6 +225,10 @@ pub struct Event {
     pub tone: f32,
     pub end_stop: f32,
     pub end_click: f32,
+    /// The note's own curve (v4, a note of a poly take): its note-curve slot plus one (0: none)
+    /// and its index in that slot's note table.
+    pub note_curve: u32,
+    pub note_index: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -388,9 +395,18 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
     Ok(clip)
 }
 
-fn read_event(b: &[u8], base: usize, i: usize) -> Result<Event, LoadError> {
+fn read_event(b: &[u8], base: usize, i: usize, v4: bool) -> Result<Event, LoadError> {
     let o = base + i * EVENT_WORDS;
     let f = |k: usize| fword(b, o + k);
+    let (note_curve, note_index) = if v4 {
+        let slot = word(b, o + 14)? as i32;
+        if slot < -1 || slot >= MAX_CURVES as i32 {
+            return Err(LoadError::Malformed);
+        }
+        ((slot + 1) as u32, word(b, o + 15)?)
+    } else {
+        (0, 0)
+    };
     let e = Event {
         t: f(0)? as f64,
         dur: f(1)? as f64,
@@ -406,6 +422,8 @@ fn read_event(b: &[u8], base: usize, i: usize) -> Result<Event, LoadError> {
         tone: f(11)?,
         end_stop: f(12)?,
         end_click: f(13)?,
+        note_curve,
+        note_index,
     };
     if !(e.t.is_finite() && e.t >= 0.0 && e.dur.is_finite() && e.dur >= 0.0) {
         return Err(LoadError::Malformed);
@@ -516,10 +534,11 @@ impl Track {
             return Err(LoadError::Malformed);
         }
         let magic = word(bytes, 0)?;
-        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 && magic != TRACK_MAGIC3 {
+        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 && magic != TRACK_MAGIC3 && magic != TRACK_MAGIC4 {
             return Err(LoadError::BadMagic);
         }
-        let v3 = magic == TRACK_MAGIC3;
+        let v4 = magic == TRACK_MAGIC4;
+        let v3 = magic == TRACK_MAGIC3 || v4;
         let v2 = magic == TRACK_MAGIC2 || v3;
         let mut d = Dims {
             sections: word(bytes, 1)? as usize,
@@ -559,7 +578,7 @@ impl Track {
             read_section(bytes, i)?;
         }
         for i in 0..d.events {
-            read_event(bytes, ev_base, i)?;
+            read_event(bytes, ev_base, i, v4)?;
         }
         for i in 0..d.warp {
             read_warp(bytes, warp_base, i)?;
@@ -585,7 +604,7 @@ impl Track {
             let c = read_clip(bytes, &d, i)?;
             let mut last = 0.0;
             for k in 0..c.n_events as usize {
-                let e = read_event(bytes, ev_base, c.first_event as usize + k)?;
+                let e = read_event(bytes, ev_base, c.first_event as usize + k, v4)?;
                 if e.t < last {
                     return Err(LoadError::Malformed);
                 }
@@ -636,7 +655,7 @@ impl Track {
             }
         }
         for i in 0..d.events {
-            if let Ok(e) = read_event(bytes, ev_base, i) {
+            if let Ok(e) = read_event(bytes, ev_base, i, v4) {
                 self.events.push(e);
             }
         }
@@ -2024,7 +2043,7 @@ mod tests {
             assert_eq!(t.clip_morph(t.clip(0)).len(), 2, "{what}");
         }
         let mut w = good.clone();
-        w[0] = 0x3454_5745;
+        w[0] = 0x3554_5745; // "EWT5"
         assert_eq!(t.load(&bytes(&w)), Err(LoadError::BadMagic));
     }
 

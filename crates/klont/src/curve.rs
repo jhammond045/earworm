@@ -52,6 +52,8 @@ pub struct CurvePool {
     /// How many frames ahead of the asked take time `read` reads: the lag of stored frames
     /// behind their audio, so features line up with the take's audio.
     lead: f64,
+    /// The note curves of poly takes, read with the take curves (docs/poly.md, P3).
+    pub notes: crate::notecurve::NoteCurves,
 }
 
 impl Default for CurvePool {
@@ -62,7 +64,7 @@ impl Default for CurvePool {
 
 impl CurvePool {
     pub fn new() -> Self {
-        Self { data: vec![0.0; CURVE_POOL_FLOATS], slots: [Slot::default(); MAX_CURVES], used: 0, lead: 0.0 }
+        Self { data: vec![0.0; CURVE_POOL_FLOATS], slots: [Slot::default(); MAX_CURVES], used: 0, lead: 0.0, notes: crate::notecurve::NoteCurves::new() }
     }
 
     /// Read every curve `frames` frames ahead of the asked time (see `read`).

@@ -14,6 +14,7 @@ pub mod grain;
 pub mod layer;
 pub mod live;
 mod metro;
+pub mod notecurve;
 pub mod modules;
 pub mod patch;
 pub mod protocol;
