@@ -289,7 +289,7 @@ impl Model {
 
 /// Four f32 lanes: wasm SIMD in the browser, plain arrays natively (which the compiler vectorizes
 /// itself). Each lane adds its own products in the same order either way, with no fused
-/// multiply-add, so the wasm build and the native one compute the same numbers.
+/// multiply-add, so the sums are the same in both builds.
 #[cfg(target_arch = "wasm32")]
 mod f4 {
     use core::arch::wasm32::{f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_splat, v128};
