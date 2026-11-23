@@ -18,8 +18,9 @@ import {
 } from '../m1/protocol';
 import { classicPatch, classicVectors, isClassic } from '../synth/classic';
 import { inputAt, layoutOf, patchBlob, type Patch } from '../synth/patch';
-import { KIT_SLOTS, LANE_SHAPES, MORPH_SHAPES, PPQ, type AutoLane, type Hit, type Layer, type MorphMarker, type Project, type Section, type Take } from './types';
-import { MIN_GAP_SEC, flexActive, flexAudio, flexClip, stretchMap } from './flex';
+import { KIT_SLOTS, LANE_SHAPES, MORPH_SHAPES, PPQ, type AutoLane, type Clip, type Hit, type Layer, type MorphMarker, type Note, type Project, type Section, type Take } from './types';
+import { MIN_GAP_SEC, clipAnchors, flexActive, flexAudio, flexClip, mapTime, quantize, stretchMap, type Moved } from './flex';
+import { lockOf, metersOf, playedAnchors, remapEvents, remapRuns, remapStretch, remapWarp, sectionPlayedLength } from './meter';
 
 export interface Upload {
   /** LOAD_TRACK, LOAD_PATCH, LOAD_LAYER, LOAD_CURVE, LOAD_SAMPLE or LOAD_STATES (m1/protocol.ts). */
@@ -261,10 +262,12 @@ export class Compiler {
     const slotSig = [...this.slotOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
     const audioSig = [...this.audioOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
     const noteSig = [...this.noteSlotOf].map(([id, s]) => `${id}=${s}:${this.noteSent[s]?.notes ?? 0}`).sort().join(',');
-    // A flexed clip's take anchors arrive after the document does.
+    // A flexed or locked clip's take anchors arrive after the document does.
     const anchors = (t: Take) => opts.anchorsFor?.(t) ?? null;
-    const flexSig = doc.sections.flatMap((s) => Object.values(s.clips).filter((c) => c.flex?.on && c.take).map((c) => `${c.take}:${anchors(doc.takes[c.take]) ? 1 : 0}`)).join(',');
-    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${noteSig}|${morphSig(doc)}|${laneSig(doc)}|${flexSig}`;
+    const flexSig = doc.sections.flatMap((s) => Object.values(s.clips).filter((c) => (c.flex?.on || c.meter) && c.take).map((c) => `${c.take}:${anchors(doc.takes[c.take]) ? 1 : 0}`)).join(',');
+    // Meters live outside the sections; Meter 1's beats per bar also follow the click's bar.
+    const meterSig = doc.meters ? JSON.stringify(doc.meters) : `${doc.metro?.bar ?? 4}`;
+    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${noteSig}|${morphSig(doc)}|${laneSig(doc)}|${flexSig}|${meterSig}`;
     if (doc.sections !== this.lastSections || key !== this.lastTrackKey) {
       out.push({ kind: LOAD_TRACK, slot: 0, blob: encodeTrack(this.trackInput(doc, anchors)), what: 'track' });
       this.lastSections = doc.sections;
@@ -392,7 +395,8 @@ export class Compiler {
   private trackInput(doc: Project, anchorsFor: AnchorsFor): TrackInput {
     const sections = doc.sections.map((s) => ({
       feel: s.feel,
-      length: sectionLength(s),
+      // Meter 1's pattern sets the played length (docs/meter.md "Locking"); without one, the written.
+      length: sectionPlayedLength(doc, s),
       bpm: s.feel === 'grid' ? s.bpm : undefined,
       repeats: Math.max(1, Math.round(s.repeats)),
       rampMs: s.rampMs,
@@ -415,6 +419,31 @@ export class Compiler {
         const stretched = stretch.length && stretch.length <= MAX_STRETCH_POINTS
           ? { audioWarp: stretch, audioMode: flexAudio(c.flex!, l.kind) === 'hits' ? AUDIO_HITS : AUDIO_SMOOTH }
           : null;
+        // Meter remap (docs/meter.md, R1), after Feel: a locked clip whose section plays a pattern.
+        const remapped = this.remap(doc, s, c, l, take, audio, flexed, stretch, anchorsFor);
+        if (remapped) {
+          const { loopLen, events, warp, stretched: rs } = remapped;
+          const morph = morphFor(c.morph?.filter((m) => m.t < loopLen), l);
+          const laneList = lanesFor(c.auto?.map((x) => ({ ...x, points: x.points.filter((p) => p.t < loopLen) })), l);
+          if (c.kind === 'beat') {
+            clips.push({ section: si, layer: li, loopLen, curve: -1, events: hitEvents(events as Hit[]), morph, audio, lanes: laneList, ...rs });
+            return;
+          }
+          const oct = 1200 * l.tune.octave;
+          const curve = c.take ? (this.slotOf.get(c.take) ?? -1) : -1;
+          const noteSlot = c.take ? (this.noteSlotOf.get(c.take) ?? -1) : -1;
+          const nNotes = noteSlot >= 0 ? (this.noteSent[noteSlot]?.notes ?? 0) : 0;
+          clips.push({
+            section: si, layer: li, loopLen, curve,
+            events: (events as Note[]).map((n) => ({
+              t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1,
+              ...(n.curve !== undefined && n.curve >= 0 && n.curve < nNotes ? { noteCurve: noteSlot, noteIndex: n.curve } : {}),
+            })),
+            warp: curve >= 0 || audio >= 0 || nNotes > 0 ? warp : [],
+            morph, audio, lanes: laneList, ...rs,
+          });
+          return;
+        }
         if (c.kind === 'beat') {
           clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(flexed?.hits ?? c.hits), morph: morphFor(c.morph, l), audio, lanes, ...stretched });
           return;
@@ -449,6 +478,54 @@ export class Compiler {
     });
     return { sections, clips, loop: doc.loop };
   }
+
+  /** A locked clip played by its meter's pattern (docs/meter.md "What moves, and how"): the runs
+   *  cut at the clip's own hard anchors as Feel plays them, and the notes or hits, the curves'
+   *  warp map and the take audio's stretch map built from them. null: the clip plays as written
+   *  (free, no pattern in this section, a free section, or the pattern keeps every beat in order). */
+  private remap(doc: Project, s: Section, c: Clip, l: Layer, take: Take | undefined, audio: number,
+    flexed: ReturnType<typeof flexClip> | null, flexStretch: ReturnType<typeof stretchMap>, anchorsFor: AnchorsFor) {
+    if (s.feel !== 'grid' || !c.meter) return null;
+    const lock = lockOf(doc, s, c);
+    if (!lock) return null;
+    const ups = sectionUnitsPerSec(s);
+    const L = c.loopLen;
+    const stored = take ? anchorsFor(take) : null;
+    const raw = clipAnchors(c, stored, ups);
+    const moved = flexed?.moved;
+    const played = playedAnchors(raw, moved && moved.length ? (t) => mapTime(moved, L, t) : null, L);
+    const r = remapRuns({ loopLen: L, perBar: lock.meter.bars.beats, pattern: lock.pattern, ups, anchors: played });
+    if (!r) return null;
+    const events = c.kind === 'beat'
+      ? remapEvents(flexed?.hits ?? c.hits, r, L, false)
+      : remapEvents(flexed?.notes ?? c.notes, r, L, true);
+    const warp = c.kind === 'beat' ? [] : remapWarp(flexed?.warp ?? c.warp, r, 1 / ups);
+    // The take audio: the Feel stretch map, or the take at its placement, cut into the runs. Hits
+    // mode unless Feel says otherwise.
+    let stretched: { audioWarp: ReturnType<typeof stretchMap>; audioMode: number } | null = null;
+    if (take && audio >= 0) {
+      const minGap = MIN_GAP_SEC * ups;
+      const base = flexStretch.length ? flexStretch : stretchMap(placed(c, stored, ups, minGap), L, ups, take.frameCount / 100, minGap);
+      const map = base.length ? remapStretch(base, r, ups, minGap) : [];
+      if (map.length && map.length <= MAX_STRETCH_POINTS) {
+        stretched = { audioWarp: map, audioMode: c.flex?.on && flexed ? (flexAudio(c.flex, l.kind) === 'hits' ? AUDIO_HITS : AUDIO_SMOOTH) : AUDIO_HITS };
+      }
+    }
+    return { loopLen: r.loopLen, events, warp, stretched };
+  }
+}
+
+/** A clip's anchors where they were played, as a time map that moves nothing: the take at its
+ *  placement, for a remap without Feel. Anchors too close together ride along as Feel's do. */
+function placed(c: Clip, stored: Float32Array | null, ups: number, minGap: number): Moved[] {
+  let anchors = clipAnchors(c, stored, ups).filter((a) => a.sec !== undefined);
+  if (!anchors.length) {
+    const warp = c.kind === 'beat' ? (c.warp ?? []) : c.warp;
+    anchors = warp.length
+      ? warp.map((w) => ({ t: ((w.clipT % c.loopLen) + c.loopLen) % c.loopLen, w: 1, hard: true, kit: -1, sec: w.takeSec }))
+      : [{ t: 0, w: 1, hard: true, kit: -1, sec: 0 }];
+  }
+  return quantize(anchors, { grid: PPQ, triplets: false, feel: { kind: 'straight' }, strength: () => 0, catch: 0, minGap, loopLen: c.loopLen });
 }
 
 /** Morph markers for the engine: state ids become indices into the layer's states, shape names become codes.

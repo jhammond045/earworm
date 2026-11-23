@@ -147,7 +147,20 @@ const v5to6: Step = {
   },
 };
 
-const STEPS: Step[] = [v1to2, v2to3, v3to4, v4to5, v5to6];
+/** 6 -> 7 (docs/meter.md, R1): meters, a section's patterns and a clip's lock are optional
+ *  fields; a document without them plays as before. Only the number changes, so that an older
+ *  build refuses a document whose clips it would play in the wrong meter. */
+const v6to7: Step = {
+  from: 6,
+  doc(doc) {
+    return { ...doc, schema: 7 };
+  },
+  value(v) {
+    return v;
+  },
+};
+
+const STEPS: Step[] = [v1to2, v2to3, v3to4, v4to5, v5to6, v6to7];
 
 function stepsFrom(schema: unknown): Step[] {
   if (typeof schema !== 'number' || !Number.isInteger(schema) || schema < 1) {

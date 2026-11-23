@@ -13,8 +13,10 @@
 
 /** 4: layers carry a patch and states carry values by key (docs/synth.md, stage S1); notes carry a
  *  velocity. 5: clips may carry a flex setting, beat clips a warp map, takes their flex anchors
- *  (docs/quant.md, Q1); all optional. Older documents are upgraded by migrate.ts. */
-export const SCHEMA = 6;
+ *  (docs/quant.md, Q1); all optional. 6: poly takes and their notes' curves (docs/poly.md, P3).
+ *  7: meters, a section's patterns and a clip's lock (docs/meter.md, R1); all optional. Older
+ *  documents are upgraded by migrate.ts. */
+export const SCHEMA = 7;
 
 /** Click track. The engine plays it live only; exports and the mic never contain it. */
 export interface Metro {
@@ -26,7 +28,8 @@ export interface Metro {
   layerId: string;
   /** Kit slot 0..3. */
   slot: number;
-  /** Beats per bar. The downbeat is accented, and a count-in is this long. */
+  /** Beats per bar, the same number as Meter 1's typed beats (docs/meter.md question 6). The
+   *  downbeat of each bar as Meter 1 plays it is accented, and a count-in is this long. */
   bar: number;
 }
 
@@ -67,6 +70,19 @@ export interface Project {
   /** Live play (docs/synth.md "Live use"): the MIDI controller map, which layer each MIDI
    *  channel plays, and what the XY pad moves. Missing means none of them is set. */
   perform?: Perform;
+  /** Meters (docs/meter.md): bars over each section's beats that clips lock to. The first is
+   *  Meter 1: it sets each section's bars and, while it plays a pattern there, its played length.
+   *  Missing: one typed meter as long as the click's bar. */
+  meters?: Meter[];
+}
+
+/** A meter (docs/meter.md "The model"). Stage R1 has typed bars: `beats` per bar from each
+ *  section's start. */
+export interface Meter {
+  id: string;
+  /** "Meter 1", "Meter 2", ... */
+  name: string;
+  bars: { from: 'typed'; beats: number };
 }
 
 /** What a MIDI controller or the XY pad sets: a value of a layer's patch by key, or one of the
@@ -104,6 +120,9 @@ export interface Section {
   rampMs: number;
   /** Clips by layer id. At most one clip per (section, layer). */
   clips: Record<string, Clip>;
+  /** Meter remap (docs/meter.md "Patterns"): by meter id, the source beats (1-based) each bar of
+   *  that meter plays, in order. Grid sections only. Missing: as written. */
+  play?: Record<string, number[]>;
 }
 
 export interface GestureDepth { loud: number; open: number; hard: number; breath: number; mouth: number }
@@ -276,6 +295,9 @@ export interface ClipBase {
   /** Flex quantize (docs/quant.md): applied when the track plays and exports, never written into
    *  the notes. Missing: plays as performed. */
   flex?: Flex;
+  /** The meter this clip is locked to (docs/meter.md "Locking"): it plays that meter's pattern in
+   *  its section, after Feel. Missing: free, it plays as written. */
+  meter?: string;
 }
 
 /** How a clip's timing is bent at play time (docs/quant.md "The model"). Stage Q1 has the grid

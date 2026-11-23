@@ -45,10 +45,17 @@ describe('migrate', () => {
 
   it('5 -> 6 changes only the schema number: poly capture fields are optional', () => {
     const doc = { ...newProject('x'), schema: 5 };
-    const out = migrate(doc);
+    const out = migrate(doc, 6);
     expect(out.schema).toBe(6);
     expect({ ...out, schema: 5 }).toEqual(doc);
     expect(out.layers).toBe(doc.layers);
+  });
+
+  it('6 -> 7 changes only the schema number: meter fields are optional', () => {
+    const doc = { ...newProject('x'), schema: 6 };
+    const out = migrate(doc);
+    expect(out.schema).toBe(7);
+    expect({ ...out, schema: 6 }).toEqual(doc);
   });
 
   it('1 -> 2 adds an empty morph lane to every clip and sets the schema', () => {

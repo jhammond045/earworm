@@ -18,7 +18,8 @@ import { parsePreset, type PresetFile } from '../presets/presets';
 import { INSTRUMENTS, KIT_SLOTS, LANE_FIXED, LANE_SHAPES, MAX_CHANNELS, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
 import type { AutoLane, CaptureMode, Flex, LanePoint } from './types';
 import { checkFlex } from './flex';
-import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
+import { MAX_METER_BEATS, MIN_METER_BEATS, checkPattern, meterById, metersOf } from './meter';
+import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Meter, Metro, MorphMarker,
   MidiMapping, MorphShape, Note, Perform, PerfTarget, Project, Section, State, Take, Tune } from './types';
 
 const PARAMS = 96;
@@ -392,7 +393,101 @@ export const commands = {
     if (next.layerId && !doc.layers.some((l) => l.id === next.layerId)) fail('metronome layer is not in this project');
     if (next.voice === cur.voice && next.on === cur.on && next.level === cur.level && next.layerId === cur.layerId && next.slot === cur.slot && next.bar === cur.bar && doc.metro) return [];
     const ops: Op[] = [{ op: 'set', path: ['metro'], value: next }];
+    // The click's bar is Meter 1's beats per bar (docs/meter.md question 6).
+    const m1 = doc.meters?.[0];
+    if (m1 && next.bar !== m1.bars.beats && next.bar >= MIN_METER_BEATS && next.bar <= MAX_METER_BEATS) {
+      ops.push({ op: 'set', path: ['meters', 0, 'bars'], value: { from: 'typed', beats: next.bar } });
+    }
     if (doc.schema < SCHEMA) ops.push({ op: 'set', path: ['schema'], value: SCHEMA });
+    return ops;
+  },
+
+  /** Add a meter (no `id`), change one's name or beats per bar, or remove one (`remove`), which
+   *  frees its clips and drops its patterns (docs/meter.md "The document"). Meter 1's beats per
+   *  bar are also the click's bar. Meter 1 cannot be removed. */
+  setMeter(doc: Project, a: { id?: string; name?: string; beats?: number; remove?: boolean }): Op[] {
+    const list = metersOf(doc);
+    const beats = a.beats !== undefined ? whole(a.beats, 'beats per bar', MIN_METER_BEATS, MAX_METER_BEATS) : undefined;
+    const name = a.name !== undefined ? str(a.name, 'meter name').trim() || fail('a meter needs a name') : undefined;
+    const ops: Op[] = [];
+    if (a.id === undefined) {
+      if (a.remove) fail('which meter to remove?');
+      const used = new Set(list.map((m) => m.name));
+      let n = list.length + 1;
+      while (used.has(`Meter ${n}`)) n++;
+      const m: Meter = { id: newId('meter'), name: name ?? `Meter ${n}`, bars: { from: 'typed', beats: beats ?? 4 } };
+      ops.push({ op: 'set', path: ['meters'], value: [...list, m] });
+    } else {
+      const i = list.findIndex((m) => m.id === a.id);
+      if (i < 0) fail(`no meter "${String(a.id)}" in this project`);
+      if (a.remove) {
+        if (i === 0) fail('Meter 1 cannot be removed: it sets the bars');
+        ops.push({ op: 'set', path: ['meters'], value: list.filter((_, k) => k !== i) });
+        doc.sections.forEach((s, si) => {
+          if (s.play && a.id! in s.play) {
+            const { [a.id!]: _, ...rest } = s.play;
+            ops.push({ op: 'set', path: ['sections', si, 'play'], value: Object.keys(rest).length ? rest : undefined });
+          }
+          for (const [layer, c] of Object.entries(s.clips)) {
+            if (c.meter === a.id) ops.push({ op: 'set', path: ['sections', si, 'clips', layer, 'meter'], value: undefined });
+          }
+        });
+      } else {
+        const m = list[i];
+        const next: Meter = { ...m, name: name ?? m.name, bars: { from: 'typed', beats: beats ?? m.bars.beats } };
+        if (next.name === m.name && next.bars.beats === m.bars.beats) return [];
+        ops.push({ op: 'set', path: ['meters'], value: list.map((x, k) => (k === i ? next : x)) });
+        if (i === 0 && next.bars.beats !== m.bars.beats) {
+          const beat = doc.layers.find((l) => l.kind === 'beat');
+          const metro = doc.metro ?? defaultMetro(beat?.id ?? doc.layers[0]?.id ?? '');
+          ops.push({ op: 'set', path: ['metro'], value: { ...metro, bar: next.bars.beats } });
+        }
+      }
+    }
+    if (doc.schema < SCHEMA) ops.push({ op: 'set', path: ['schema'], value: SCHEMA });
+    return ops;
+  },
+
+  /** A section's pattern for a meter (docs/meter.md "Patterns"): the source beats, 1-based, each
+   *  bar plays in order, or null to play as written. `all` sets it in every grid section ("Copy to
+   *  all sections"). Free sections have no beats. */
+  setMeterPlay(doc: Project, a: { section: string; meter: string; play: number[] | null; all?: boolean }): Op[] {
+    const m = meterById(doc, a.meter) ?? fail(`no meter "${String(a.meter)}" in this project`);
+    const play = a.play === null ? null : checkPattern(a.play, m.bars.beats).slice();
+    const here = secIdx(doc, a.section);
+    if (doc.sections[here].feel !== 'grid') fail('a free section has no beats to play in a new order');
+    const targets = a.all ? doc.sections.map((s, i) => (s.feel === 'grid' ? i : -1)).filter((i) => i >= 0) : [here];
+    const ops: Op[] = [];
+    for (const i of targets) {
+      const s = doc.sections[i];
+      const cur = s.play?.[m.id];
+      if (play === null ? cur === undefined : cur !== undefined && sameItems(cur, play)) continue;
+      const next: Record<string, number[]> = { ...(s.play ?? {}) };
+      if (play === null) delete next[m.id];
+      else next[m.id] = play;
+      ops.push({ op: 'set', path: ['sections', i, 'play'], value: Object.keys(next).length ? next : undefined });
+    }
+    if (ops.length && doc.schema < SCHEMA) ops.push({ op: 'set', path: ['schema'], value: SCHEMA });
+    return ops;
+  },
+
+  /** Lock a layer's clips to a meter, or free them (null): one clip with `section`, otherwise every
+   *  clip of the layer, as the track's lock does (docs/meter.md "Locking"). */
+  lockClips(doc: Project, a: { layer: string; section?: string; meter: string | null }): Op[] {
+    layIdx(doc, a.layer);
+    if (a.meter !== null && !meterById(doc, a.meter)) fail(`no meter "${String(a.meter)}" in this project`);
+    const want = a.meter ?? undefined;
+    const ops: Op[] = [];
+    const idx = a.section !== undefined ? [secIdx(doc, a.section)] : doc.sections.map((_, i) => i);
+    for (const si of idx) {
+      const s = doc.sections[si];
+      if (!hasClip(s, a.layer)) {
+        if (a.section !== undefined) fail('no clip in that section and layer');
+        continue;
+      }
+      if (s.clips[a.layer].meter !== want) ops.push({ op: 'set', path: ['sections', si, 'clips', a.layer, 'meter'], value: want });
+    }
+    if (ops.length && doc.schema < SCHEMA) ops.push({ op: 'set', path: ['schema'], value: SCHEMA });
     return ops;
   },
 
