@@ -33,7 +33,7 @@ A pressed key lights up on screen and sounds exactly as a tap or a MIDI note doe
 ## MIDI
 
 1. Plug in the keyboard, then press **Connect MIDI**. The browser asks for permission.
-2. The line reads **MIDI: <your device name>**, here and in the transport chip.
+2. The line reads **MIDI:** and your device's name, here and in the transport chip.
 3. Play. Notes play the selected layer with their velocity. The mod wheel (CC 1), pitch bend and channel pressure become the **Mod wheel**, **Pitch bend** and **Pressure** sources ([Modulation](05-modulation.md)); they do nothing until a route takes from them.
 
 On a beat layer, notes 36, 38, 42 and 46 (General MIDI kick, snare, closed hat and open hat) play kit slots 1 to 4; other notes play nothing there.

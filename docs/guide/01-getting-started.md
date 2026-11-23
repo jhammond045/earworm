@@ -18,7 +18,9 @@ That is the whole loop of Earworm: a song made of layers, a sound on each layer,
 
 To sing into it, press **Enable mic** in the transport (or reload and press **Start with mic** instead of **Start**), allow the microphone when the browser asks, and hold **Capture** (or hold the **C** key) while you hum. [Capturing your voice](02-capturing-your-voice.md) and the first tutorial, [Hum a melody into a synth line](tutorials/01-hum-a-melody.md), go through it step by step.
 
-![The Learn dialog: nine lessons, and the Melody, Beat and States demos](images/learn-laptop.webp)
+![The Learn dialog: nine lessons, the Melody, Beat and States demos, and a link to this guide](images/learn-laptop.webp)
+
+![Learn on a phone](images/learn-phone.webp)
 
 ## Start, Start with mic, Enable mic
 

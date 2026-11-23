@@ -25,6 +25,8 @@
 
 **Takes land late or early.** Open **Setup** and press **Measure** with the headphones on and near the mic. Earworm plays five chirps and writes the round trip into **Align**. Measure again for each pair of headphones or audio interface.
 
+![Setup on a phone: Align and Measure at the top](images/setup-phone.webp)
+
 **Capture paused.** The audio device changed (headphones plugged or unplugged). Measure again in Setup, then carry on.
 
 **Bluetooth headphones** add a lot of delay, often more than 150 ms, and it can drift. Wired headphones are much better for singing along.

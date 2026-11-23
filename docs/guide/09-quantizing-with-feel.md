@@ -48,6 +48,6 @@ The audio moves too, whenever the layer plays its take's audio: after **Import t
 
 **Import take**, beside Record, puts an audio file on the selected layer from the start of the section, as a take. Earworm reads it as it reads a capture: notes or hits, anchors, and a curve of the sound. It also adds an **input** at full mix, so you hear the file. The status line says what came in, for example **Imported hum.wav: 6.0 s, 10 notes, 10 anchors. The layer plays it as audio (an input element at mix 1).** Then **Quantize it →** to tighten it.
 
-![Feel on a sung take, on a phone](images/tut-feel-phone.webp)
+![The Feel row on a phone](images/quantize-phone.webp)
 
 Next: [Polyphonic takes from guitar or piano](10-polyphonic-takes.md).
