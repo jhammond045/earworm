@@ -107,7 +107,9 @@ The keyboard is a first-class way in. Shortcuts never fire while typing in a tex
 
 | Key | Does |
 | --- | --- |
-| Space | Play or stop when the mic is off. With the mic on, hold to capture (unchanged; see the questions in UI1.md) |
+| Space | Play or stop. On a focused button, box or tab it presses that control instead |
+| C (hold) | Capture into the selected layer (the mic must be on) |
+| R | Start or stop recording a pass |
 | Esc | Stop |
 | Ctrl/⌘ Z, Shift Ctrl/⌘ Z, Ctrl/⌘ Y | Undo, redo |
 | Alt 1, Alt 2, Alt 3 | Track, Sound, Perform |
@@ -177,6 +179,10 @@ Kit slots and morph states keep their own hues, chosen so no two neighbours are 
 
 `--move` is 160 ms ease-out for state changes (a panel switch, a pressed button); nothing moves on its own except the playhead, the meters, the Klont and the logo. With reduced motion, transitions drop to nothing and the Klont stops wobbling.
 
+### Forms and help
+
+One layout for every control in a panel or dialog: the name in a label column (`--label-w`, 6.5em; 5.2em in the layer list; 8.5em in dialogs), the control beside it at full width, and the buttons that act on it lined up under the control column. Slider rows use the same columns, with the value at the right. In a column under 220 px the name goes above its control (a container query). On the page there is no explanatory prose: each panel, fieldset or toolbar that needs explaining has a "?" button whose bubble holds the explanation, and the only text left on the page is live status (what Feel's anchors are, what a match is doing, what was captured).
+
 ### Icons
 
 Text glyphs, always beside a word, never instead of one: ▶ Play, ■ Stop, ● Record, ◉ Capture. A toggle carries a ring that fills when it is on (○ off, ● on), so on and off differ in shape as well as color.
@@ -203,6 +209,8 @@ In priority order. P0 is broken or inaccessible; P1 is the model above; P2 is po
 | 14 | The Feel row folds behind a summary; hints shortened and kept to one line where they repeat the lessons | P2 |
 | 15 | The Mod view's route table fits its column | P2 |
 | 16 | MIDI inputs named in the transport, not only inside Perform | P2 |
+| 17 | Second pass, after the owner's review: every control on the field grid, explanations behind help bubbles, values beside sliders, Influence's aspects as chips, the Mod view's routes as cards | P1 |
+| 18 | One meaning per key: Space plays and stops, hold C captures, R records a pass | P1 |
 
 
 ## 7. After the pass
@@ -216,8 +224,8 @@ Every change on the list was built (UI1.md says how to check each). The same wal
 | Pattern grid height at 1440 × 900 | 2 px (invisible) | 342 px |
 | Phone 390 × 844: space for the work | 299 px, scrolling inside a box | 504 px on load, 702 px once the header scrolls away; the page scrolls |
 | Phone: pattern rows visible on load | 6 | 10 |
-| Controls under 24 px, at 1440 and at 390 | 42 and 2 | 0 and 0 |
-| Text under 4.5:1, dark and light | 0 (dark only existed) | 0 and 0 |
+| Controls under 24 px, at 1440 and at 390 | 42 and 2 | 0 and 0, in both themes |
+| Text under 4.5:1, dark and light, at 1440 and at 390 | 0 (dark only existed) | 0 everywhere |
 | Tab stops to reach the pattern grid / inside it / to the timeline | 30 / 32 / 68 | 33 / 1 / 39 (and one Tab to "Skip to the track") |
 | Light theme | none | System, Light or Dark |
 | Kit slots told apart without color | no | named rows and a shape per slot |
@@ -231,13 +239,14 @@ Every change on the list was built (UI1.md says how to check each). The same wal
 | Phone 390 × 844 | ![](ui-shots/before-phone390-dark.webp) | ![](ui-shots/after-phone390-dark.webp) |
 | Phone, Sound and Perform | ![](ui-shots/before-phone390-perform-scrolled.webp) | ![](ui-shots/after-phone390-sound.webp) ![](ui-shots/after-phone390-perform.webp) |
 | Phone, File | ![](ui-shots/before-phone390-file.webp) | ![](ui-shots/after-phone390-file.webp) |
-| Phone 375 × 812, and light | | ![](ui-shots/after-phone375-dark.webp) ![](ui-shots/after-phone390-light.webp) |
+| Phone 375 × 812, and Layers in light | | ![](ui-shots/after-phone375-dark.webp) ![](ui-shots/after-phone390-light.webp) |
 | Tablet 768 × 1024 | ![](ui-shots/before-tablet768-dark.webp) | ![](ui-shots/after-tablet768-dark.webp) |
 | Tablet 1024 × 768 | ![](ui-shots/before-tablet1024-dark.webp) | ![](ui-shots/after-tablet1024-dark.webp) |
 | Laptop 1440 × 900 | ![](ui-shots/before-laptop-dark.webp) | ![](ui-shots/after-laptop-dark.webp) |
 | Laptop, light system setting | ![](ui-shots/before-laptop-light.webp) | ![](ui-shots/after-laptop-light.webp) |
 | Laptop, Perform | ![](ui-shots/before-laptop-perform.webp) | ![](ui-shots/after-laptop-perform.webp) |
 | Laptop, Mod | ![](ui-shots/before-laptop-mod.webp) | ![](ui-shots/after-laptop-mod.webp) |
+| Laptop, a help bubble and Setup | | ![](ui-shots/after-laptop-help.webp) ![](ui-shots/after-laptop-setup.webp) |
 | Monitor 2560 × 1440 | ![](ui-shots/before-monitor-dark.webp) | ![](ui-shots/after-monitor-dark.webp) |
 | Monitor, Perform, light | | ![](ui-shots/after-monitor-light-perform.webp) |
 
@@ -245,7 +254,6 @@ The before shots on a phone and a tablet were taken before Start, the after shot
 
 ### Left for a later pass
 
-- **Space.** It still means "hold to capture" with the mic on and "play or stop" without it, as the design asked (UI1.md, question 1).
 - **Capture with a real mic** was not walked: headless Chrome here never grants one. The capture path changed only in where its buttons sit and in the ribbon now showing while it runs.
 - **The layer list** has no mute or solo on its rows; mute is in Sound. A row with its own mute toggle needs the list to stop being a listbox.
 - **Sections** are still reached with the stepper; there is no list of them to click.

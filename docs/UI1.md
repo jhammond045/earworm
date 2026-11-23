@@ -1,6 +1,6 @@
 # UI1: the interface pass
 
-Built Nov 22, 2026, from [ui.md](ui.md), after Q2 and P3 landed. The app had grown one control at a time across fifteen stages; this pass audited it at six screen sizes, in both color schemes, by mouse, touch, keyboard and MIDI, and rebuilt the page around one model: a transport that is always there, two places (Track to make the song, Perform to play it), and the selected layer as the thread between them. It also fixes what the audit found broken, chiefly a pattern grid that could not be seen on any screen 960 px and wider. No engine, compiler or project-format code changed: the audio and determinism guarantees of S5 and Q2 stand as they were.
+Built Nov 22, 2026, from [ui.md](ui.md), after Q2 and P3 landed. The app had grown one control at a time across fifteen stages; this pass audited it at six screen sizes, in both color schemes, by mouse, touch, keyboard and MIDI, and rebuilt the page around one model: a transport that is always there, two places (Track to make the song, Perform to play it), and the selected layer as the thread between them. It also fixes what the audit found broken, chiefly a pattern grid that could not be seen on any screen 960 px and wider. After the owner's first look ("much of the layout is still pretty sloppy"), a second pass put every control on one field grid and moved the explanations behind help bubbles. No engine, compiler or project-format code changed: the audio and determinism guarantees of S5 and Q2 stand as they were.
 
 ## What was built
 
@@ -24,7 +24,12 @@ Built Nov 22, 2026, from [ui.md](ui.md), after Q2 and P3 landed. The app had gro
 | Names that no longer collide: the section's Time (Grid or Free), Groove (Straight or Swing) inside Feel, Pitch snap in Tune, MIDI learn, Listen (hold), Teach (hold). The lessons use the new names and say where the metronome's settings went | `index.html`, `main.ts`, `perform.ts`, `app/tutorials.ts` |
 | The next step. After a take lands the status line offers "Quantize it"; after a pass, "See it on the track". Quantize opens the Feel box, whose summary line says its settings when it is folded | `offerNext` and `fillFlex` in `main.ts` |
 | File: Share (Export mix first), Projects, and Tidy, with Delete apart and marked | `index.html` |
-| The Mod view's route table keeps a range on one line and shows an open range as ∞ | `app/synth-ui.ts` |
+| The Mod view's routes are cards (source and amount; the target and its live output; the shaper; what scales it), and an open range reads ∞ | `app/synth-ui.ts`, `style.css` |
+| **Second pass.** One field grid in every panel and dialog: the name in a label column, the control beside it at full width, the buttons that act on it lined up under it. A column under 220 px puts names above controls (a container query) | `style.css` ("forms"), `index.html` |
+| Help bubbles: every explanation that was a paragraph on the page is behind a "?" beside its heading, legend or toolbar; the bubble is a native popover placed beside its button and kept in the window. Only live status stays on the page | `app/help.ts`; `index.html`; `perform.ts`, `synth-ui.ts` |
+| Values beside sliders: level in dB, Tune, the macros, gestures, Influence's amount | `readout` in `main.ts` |
+| Influence's aspects are chips; the theme switch is a segmented control; Perform's top is two toolbars (the layer and how it is played, then MIDI) | `index.html`, `perform.ts`, `style.css` |
+| One meaning per key: Space plays and stops (on a focused button, box or tab it presses that control), hold C captures, R starts and stops a pass. The key list, the lessons and the tooltips say so | the window key handlers in `main.ts`; `index.html`; `tutorials.ts`; `capture.ts` |
 
 ## How to check it
 
@@ -41,6 +46,9 @@ Built Nov 22, 2026, from [ui.md](ui.md), after Q2 and P3 landed. The app had gro
 | Import take with an audio file on Melody | The status line says what was imported and offers "Quantize it"; pressing it opens Feel, "on · 1/4 beat · 100% · smooth" |
 | Chrome DevTools device toolbar at 390 × 844 and 844 × 390, touch on | The dock at the bottom; the page scrolls; dragging empty timeline space pans; two taps add a note |
 | `?` | The list of keys |
+| Space, Space, R, R, hold C | Play, stop, start a pass ("● Recording"), stop it; C without the mic says to press Enable mic |
+| Any "?" | A bubble opens beside it, inside the window; Esc or a click outside closes it |
+| A tablet at 1024 × 768 | The layer list's names sit above their controls; nothing in it is cut off |
 | Learn, "Capture onto the track", Next to "Line the take up" | Setup opens beside the tour bar with Align outlined |
 
 ## Results
@@ -61,6 +69,8 @@ Measured on the build machine in headless Chrome, Nov 22, 2026. The before and a
 | Import take, then Quantize from the status line | A 6 s drum file on Melody: 7 notes, 7 anchors, "Quantize it" offered; pressed, Feel reads "on · 1/4 beat · 100% · smooth" and opens |
 | Export mix | "Mix saved. 30.8× realtime, peak 0.56", from File |
 | A lesson step inside Setup | Setup opens without a backdrop, the tour bar stays usable, Align is outlined |
+| Keys | Space played ("■ Playing") and stopped; R started a pass ("● Recording") and stopped it; C without the mic said "Capture needs the mic: press Enable mic." |
+| After the second pass, both themes, 1440 × 900 and 390 × 844 | No control under 24 px, no text under 4.5:1, no horizontal scroll. Grid 342 px at 1440; on the phone the work runs from 198 px to the dock at 702 px |
 | Console errors during the walks | None |
 | `pnpm test` | All pass: 449 Vitest tests in 57 files (on top of the poly-take commits that landed during the pass), and 365 Rust tests (4 ignored, as before) |
 
@@ -69,15 +79,22 @@ Measured on the build machine in headless Chrome, Nov 22, 2026. The before and a
 - **No More menu on a phone.** The header (File, section, tempo, Loop, Metro, Undo) scrolls away with the page, and the controls used while playing are in the bottom dock. That kept every control one tap away, with nothing hidden in a menu.
 - **The timeline does not grow into free height on a large monitor.** Its height is its lanes (one per layer), so the grid grew instead.
 - **Record left Perform.** The transport's Record is always on screen in both places, so the second one was only a duplicate with a different label.
-- **Space is unchanged.** See question 1.
+- **The keys changed from TDD's design.** TDD had Space hold to capture; the owner chose Space for play and stop only, hold C to capture and R for a pass.
 
 ## What remains
 
-The list is in ui.md, section 7 ("Left for a later pass"). The two that matter most: Space's two meanings, and capture with a real microphone, which headless Chrome here cannot grant, so it was not walked (only its buttons moved; the capture code did not change).
+The list is in ui.md, section 7 ("Left for a later pass"). The one that matters most is capture with a real microphone, which headless Chrome here cannot grant, so it was not walked (only its buttons moved; the capture code did not change).
+
+## Decided
+
+The owner decided the four questions the first draft asked, each as recommended:
+
+1. **Keys.** Space always plays and stops, hold C captures, R starts and stops a pass. Built.
+2. **The light theme** stays warm paper white with dark amber for "on".
+3. **Kit slot colors** stay orange, sky blue, purple and yellow, each with its shape and its named row.
+4. **Undo on a phone** stays in the header, which scrolls away; the dock keeps Play, Stop and the take buttons.
 
 ## Questions for the owner
 
-1. **Space.** It plays and stops with the mic off, and holds to capture with the mic on, as TDD asked. The same key doing two things depending on a setting is the one mode error left. Recommended: Space always plays and stops, hold C captures, and R starts and stops a pass (the keys most DAWs use). Or keep it as it is?
-2. **The light theme.** It is a warm paper white with dark amber for "on". Does it read well to you, or would you rather a neutral grey?
-3. **Kit slot colors.** Kick, snare, hat and open are now orange, sky blue, purple and yellow, each with its own shape and its row named. They changed on the M2 test page too. Can you tell them apart at a glance? Recommended: keep them.
-4. **Undo on a phone.** It scrolls away with the header. Recommended: leave it there (a scroll up reaches it) rather than crowd the dock. Or put it in the dock in place of Import?
+1. **Help for a first visit.** Every explanation is now one press away, behind a "?". The lessons still walk through each feature. Recommended: leave it so. Or should a first visit show a short line under each panel heading until it is dismissed?
+2. **What next.** The two largest things left are a mute button on each layer row (with solo), and a list of sections to click instead of the stepper. Recommended: those two first, in the next UI pass.

@@ -531,7 +531,9 @@ body.learning [data-perf-key], body.learning .knob[data-key] input, body.learnin
 .field .range input { flex: 1; width: auto; min-width: 0; }
 .field .actions { margin: 0; }
 .with-action { display: flex; flex-wrap: wrap; gap: var(--s-2); min-width: 0; }
-.with-action > input, .with-action > select, .with-action > .unit { flex: 1 1 6em; min-width: 0; width: auto; }
+.with-action > input, .with-action > select, .with-action > .unit { flex: 1 1 5em; min-width: 0; width: auto; }
+/* The layer list's names are short, so its controls get the width. */
+#panel-layers { --label-w: 5.2em; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; margin: var(--s-2) 0; }
 .push { margin-left: auto; }
 .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); margin-top: var(--s-3); }
