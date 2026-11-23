@@ -58,13 +58,15 @@ mod native {
 
     #[derive(Clone, Copy)]
     struct N {
+        /// Pitch in cents (MIDI x 100; fractional where the labels or the curves have it).
+        cents: f64,
         on: f64,
         off: f64,
         midi: i32,
     }
 
     fn notes_of(rows: &[Vec<f64>], len: f64) -> Vec<N> {
-        let mut v: Vec<N> = rows.iter().filter(|r| r[0] < len).map(|r| N { on: r[0], off: r[1].min(len), midi: r[2].round() as i32 }).collect();
+        let mut v: Vec<N> = rows.iter().filter(|r| r[0] < len).map(|r| N { on: r[0], off: r[1].min(len), midi: r[2].round() as i32, cents: 100.0 * r[2] }).collect();
         v.sort_by(|a, b| a.on.total_cmp(&b.on));
         v
     }
@@ -173,7 +175,7 @@ mod native {
             let len = audio.len() as f64 / 22050.0;
             let reference = notes_of(&read_tsv(&format!("{dir}/{name}.ref.tsv")).unwrap(), f64::INFINITY);
             let to_n = |v: &[poly::decode::RawNote]| -> Vec<N> {
-                let mut o: Vec<N> = v.iter().map(|n| N { on: poly::decode::frame_time(n.start), off: poly::decode::frame_time(n.end), midi: n.midi }).collect();
+                let mut o: Vec<N> = v.iter().map(|n| N { on: poly::decode::frame_time(n.start), off: poly::decode::frame_time(n.end), midi: n.midi, cents: 100.0 * n.midi as f64 }).collect();
                 o.sort_by(|a, b| a.on.total_cmp(&b.on));
                 o
             };
@@ -228,7 +230,16 @@ mod native {
                         if profile.is_none() {
                             std::fs::write(format!("{dir}/{name}.rs.tsv"), &tsv).unwrap();
                         }
-                        let port: Vec<N> = notes_of(&res.notes.iter().map(|n| vec![n.t, n.t + n.dur, n.midi as f64]).collect::<Vec<_>>(), len);
+                        // A note's pitch: its semitone plus the median of its curve's pitch offsets.
+                        let pitch = |n: &poly::PolyNote| {
+                            let mut v: Vec<f32> = (n.first..n.first + n.n).map(|i| res.records[i * poly::REC_LEN]).collect();
+                            v.sort_by(f32::total_cmp);
+                            n.midi as f64 + v[v.len() / 2] as f64 / 100.0
+                        };
+                        // The semitone is the note's own; the curve only refines `cents`.
+                        let mut port: Vec<N> =
+                            res.notes.iter().filter(|n| n.t < len).map(|n| N { on: n.t, off: (n.t + n.dur).min(len), midi: n.midi, cents: 100.0 * pitch(n) }).collect();
+                        port.sort_by(|a, b| a.on.total_cmp(&b.on));
                         let all = |suffix: &str| read_tsv(&format!("{dir}/{name}.{suffix}")).map(|r| notes_of(&r, len));
                         let reference = all("ref.tsv");
                         let truth = all("notes.tsv").unwrap_or_default();
@@ -236,7 +247,8 @@ mod native {
                         let s_port = score(&truth, &port);
                         let s_ref = reference.as_ref().map(|r| score(&truth, r));
                         let s_bp = all("bp.tsv").map(|b| score(&truth, &b));
-                        results.lock().unwrap().push((name.clone(), len, secs, ident, s_port, s_ref, s_bp, res.notes.len()));
+                        let cents: Vec<f64> = matching(&truth, &port, 0.05).iter().zip(&truth).filter_map(|(m, t)| m.map(|i| (port[i].cents - t.cents).abs())).collect();
+                        results.lock().unwrap().push((name.clone(), len, secs, ident, s_port, s_ref, s_bp, cents));
                     }
                 });
             }
@@ -247,6 +259,8 @@ mod native {
         let (mut ia, mut ib, mut ic) = (0, 0, 0);
         let (mut sp, mut sr, mut sb) = (Score::default(), Score::default(), Score::default());
         let mut worst: Vec<(f64, String)> = Vec::new();
+        let mut cents: Vec<f64> = rows.iter().flat_map(|r| r.7.iter().copied()).collect();
+        cents.sort_by(f64::total_cmp);
         for (name, l, s, ident, p, r, b, _) in &rows {
             len += l;
             secs += s;
@@ -269,6 +283,10 @@ mod native {
         println!("Port against reference: {ib} of {ia} reference notes identical (same pitch, onset within 12 ms): {:.2}%; port notes {ic}", 100.0 * ib as f64 / ia.max(1) as f64);
         for (f, n) in worst.iter().take(3) {
             println!("  lowest: {n} {:.1}%", 100.0 * f);
+        }
+        if !cents.is_empty() {
+            let q = |p: f64| cents[((cents.len() - 1) as f64 * p) as usize];
+            println!("Pitch of found notes against the labels (semitone plus the curve's median offset): median {:.1} cents, p90 {:.1}", q(0.5), q(0.9));
         }
         let line = |what: &str, s: &Score| println!("| {what} | {:.3} | {:.3} | {:.3} | {:.2} ({} of {}) | {} |", s.p(), s.r(), s.f1(), s.restruck(), s.re_tp, s.re_n, s.n_est);
         println!("\n| Notes | Precision | Recall | F1 | Re-struck recall | Notes found |\n| --- | --- | --- | --- | --- | --- |");

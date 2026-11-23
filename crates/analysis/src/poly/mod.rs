@@ -457,8 +457,13 @@ fn partials_mean_db(a: &Activations, t: usize, midi: i32, ks: std::ops::RangeInc
 /// The pitch offset (cents) of a note at frame t from its contour: the strongest contour bin within
 /// 25 bins of the note's, weighted by a Gaussian (sd 5 bins) as Basic Pitch's pitch bends are, then
 /// refined between its neighbours by a parabola.
+///
+/// A semitone's centre is its second contour bin, not its first: the model was trained with
+/// contour labels centred there (`ANNOTATIONS_BASE_FREQUENCY` in Basic Pitch's constants.py is
+/// "the central bin of the first semitone, i.e. the second bin"). Measured from the first bin, as
+/// Basic Pitch's own pitch bends are, every note reads a third of a semitone sharp.
 fn pitch_offset(a: &Activations, t: usize, midi: i32) -> f32 {
-    let c0 = 3 * (midi - model::MIDI_OFFSET) as isize;
+    let c0 = 3 * (midi - model::MIDI_OFFSET) as isize + 1;
     let (mut best, mut at) = (f32::MIN, c0);
     for d in -25isize..=25 {
         let b = c0 + d;
