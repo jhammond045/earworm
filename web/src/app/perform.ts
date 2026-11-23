@@ -244,6 +244,9 @@ export class PerformPanel {
     }
   }
 
+  /** Names of the connected MIDI inputs, for the transport's audio chip. */
+  midiNames(): string[] { return this.inputs().map((x) => x.name ?? x.id); }
+
   private inputs(): MIDIInput[] {
     return this.access ? [...this.access.inputs.values()].filter((i) => i.state === 'connected') : [];
   }

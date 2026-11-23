@@ -165,6 +165,15 @@ async function main(): Promise<void> {
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
 
+  /** The transport's audio chip: the mic, and the MIDI inputs Perform is connected to. */
+  function paintAudioChip(): void {
+    const chip = $('audioState');
+    const midi = perform.midiNames();
+    const text = `${app.stream ? 'Mic on' : 'Mic off'}${midi.length ? ` · MIDI ${midi.join(', ')}` : ''}`;
+    if (chip.textContent !== text) chip.textContent = text;
+    chip.classList.toggle('on', !!app.stream);
+  }
+
   /** A dialog the tour opened to show a step's control, closed when the tour moves on. */
   let tourDialog: HTMLDialogElement | null = null;
 
@@ -509,8 +518,7 @@ async function main(): Promise<void> {
     btn('startMic').hidden = !!app.host;
     const chip = $('audioState');
     chip.hidden = !app.host;
-    chip.textContent = app.stream ? 'Mic on' : 'Mic off';
-    chip.classList.toggle('on', !!app.stream);
+    paintAudioChip();
     $('intoLayer').textContent = layer()?.name ?? '—';
     btn('record').disabled = !app.host;
     num('importTake').disabled = !app.host;
@@ -2027,6 +2035,7 @@ async function main(): Promise<void> {
       });
       if (performance.now() - lastMeters > 200) {
         lastMeters = performance.now();
+        paintAudioChip();
         document.querySelectorAll('#scopes .scope').forEach((el, i) => {
           const voices = m[M_LAYER_VOICES + i] ?? 0;
           const bar = el.querySelector('.bar > span');

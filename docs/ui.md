@@ -113,7 +113,7 @@ The keyboard is a first-class way in. Shortcuts never fire while typing in a tex
 | Alt 1, Alt 2, Alt 3 | Track, Sound, Perform |
 | ? | The list of keys |
 | Pattern grid: arrows, Enter, Delete, Shift ↑↓, 1–4 | Move, add, delete, transpose a semitone, set a hit's kit slot |
-| Timeline: ←→, Shift ↑↓, Delete | Move the selected notes or hits by the snap, transpose a semitone, delete |
+| Timeline: ←→, ↑↓, Shift ←→, Shift ↑↓, Delete | Pick the previous or next note or hit, pick a lane, move it by the snap, a semitone (a hit: its kit slot), delete |
 | Perform: A W S E D F T G Y H U J K, Z and X | Play a chromatic octave from C, octave down and up |
 
 The pattern grid and the timeline are each one Tab stop; the arrows move inside them.
@@ -124,13 +124,13 @@ One grid, five widths. Sizes are CSS pixels.
 
 | Width | Name | Transport | Workspace |
 | --- | --- | --- | --- |
-| under 600 | Phone | One sticky row: Play, Stop, the capture buttons, position, and More (the rest) | One place at a time, picked from a bar at the bottom of the screen (Layers, Track, Sound, Perform). The page scrolls as a whole; nothing scrolls inside a box. The Klont and the voice meters are hidden; the ribbon shows while Capture is held. |
-| 600 to 959 | Tablet portrait | Two rows | As the phone. |
+| under 600 | Phone | At the top, scrolling away with the page: File, the section, tempo, Loop, Metro, Undo, the audio state, Setup and Learn. Fixed at the bottom, where a thumb is: the status line, Play and Stop, Capture, Record and Import, and the place bar | One place at a time, picked from the place bar (Layers, Track, Sound, Perform). The page scrolls as a whole; nothing scrolls inside a box. The Klont and the voice meters are hidden; the ribbon shows while Capture or Record runs. |
+| 600 to 959 | Tablet portrait | As the phone, in two rows | As the phone. A phone on its side (height under 500) puts the place bar, Play and Stop and the take buttons in one bottom row. |
 | 960 to 1279 | Tablet landscape, small laptop | One row | Track: layers (200), the track (rest), Sound (340). Perform: layers (200), Perform (rest). |
 | 1280 to 1919 | Laptop | One row | Track: layers (240), track, Sound (400). Perform: layers (240), Perform. |
-| 1920 and over | Large monitor | One row | Track: layers (280), track, Sound (480), and the base text one step larger. The timeline takes the height the pattern grid does not need. |
+| 1920 and over | Large monitor | One row | Track: layers (280), track, Sound (480), the base text one step larger, a taller pattern grid and a larger Klont. Perform fills the width: bigger keys, and its parts side by side. |
 
-Touch: on a coarse pointer every control is at least 44 px tall, the pattern cells 40, and the timeline pans with a finger on empty space. On a fine pointer controls are 32 px and nothing is under 24.
+Touch: on a coarse pointer every control is at least 44 px tall, the pattern cells 40, and the timeline pans with a finger on empty space. On a fine pointer controls are 32 px and nothing is under 24. A screen shorter than 820 px, at 960 and wider, hides the monitor strip except while capturing, so the track keeps its height.
 
 ## 5. Design language
 
@@ -195,12 +195,61 @@ In priority order. P0 is broken or inaccessible; P1 is the model above; P2 is po
 | 6 | One Tab stop for the pattern grid (roving focus); keys on the timeline; skip links; the key list on ? | P0 |
 | 7 | Transport: one bar with Start and the audio and mic state; setup moved to a Setup dialog; Capture, Record and Import grouped with the selected layer's name | P1 |
 | 8 | Perform as its own place beside Track, full width, with the computer keyboard playing notes | P1 |
-| 9 | Phone and tablet: sticky transport, bottom place bar, the page scrolls as a whole, Klont and meters hidden | P1 |
-| 10 | Large monitor: wider columns, larger base text, the timeline takes the free height | P1 |
+| 9 | Phone and tablet: a bottom dock with the status, Play, Stop and the take buttons, the place bar under it, the page scrolling as a whole, Klont and meters hidden | P1 |
+| 10 | Large monitor: wider columns, larger base text, a taller grid, Perform across the full width | P1 |
 | 11 | Names: section Time (not Feel), Groove (Straight or Swing), MIDI learn, Listen (hold) and Teach (hold), Pitch snap | P1 |
 | 12 | The next step after a take, and after Quantize | P1 |
 | 13 | File grouped (project, share, remove), with Export mix first and Delete apart | P1 |
 | 14 | The Feel row folds behind a summary; hints shortened and kept to one line where they repeat the lessons | P2 |
 | 15 | The Mod view's route table fits its column | P2 |
+| 16 | MIDI inputs named in the transport, not only inside Perform | P2 |
 
-What was built, and the screenshots after it, are in section 7 once the pass is done.
+
+## 7. After the pass
+
+Every change on the list was built (UI1.md says how to check each). The same walk was run again at every size, in both themes, with mouse, touch emulation, the keyboard alone and a virtual MIDI input.
+
+### Measured
+
+| | Before | After |
+| --- | --- | --- |
+| Pattern grid height at 1440 × 900 | 2 px (invisible) | 342 px |
+| Phone 390 × 844: space for the work | 299 px, scrolling inside a box | 504 px on load, 702 px once the header scrolls away; the page scrolls |
+| Phone: pattern rows visible on load | 6 | 10 |
+| Controls under 24 px, at 1440 and at 390 | 42 and 2 | 0 and 0 |
+| Text under 4.5:1, dark and light | 0 (dark only existed) | 0 and 0 |
+| Tab stops to reach the pattern grid / inside it / to the timeline | 30 / 32 / 68 | 33 / 1 / 39 (and one Tab to "Skip to the track") |
+| Light theme | none | System, Light or Dark |
+| Kit slots told apart without color | no | named rows and a shape per slot |
+| Perform's width on a laptop | 380 px column | 1,184 px (the workspace less the layer list) |
+| Computer keyboard in Perform | nothing | a chromatic octave, Z and X for the octave |
+
+### Before and after
+
+| Size | Before | After |
+| --- | --- | --- |
+| Phone 390 × 844 | ![](ui-shots/before-phone390-dark.webp) | ![](ui-shots/after-phone390-dark.webp) |
+| Phone, Sound and Perform | ![](ui-shots/before-phone390-perform-scrolled.webp) | ![](ui-shots/after-phone390-sound.webp) ![](ui-shots/after-phone390-perform.webp) |
+| Phone, File | ![](ui-shots/before-phone390-file.webp) | ![](ui-shots/after-phone390-file.webp) |
+| Phone 375 × 812, and light | | ![](ui-shots/after-phone375-dark.webp) ![](ui-shots/after-phone390-light.webp) |
+| Tablet 768 × 1024 | ![](ui-shots/before-tablet768-dark.webp) | ![](ui-shots/after-tablet768-dark.webp) |
+| Tablet 1024 × 768 | ![](ui-shots/before-tablet1024-dark.webp) | ![](ui-shots/after-tablet1024-dark.webp) |
+| Laptop 1440 × 900 | ![](ui-shots/before-laptop-dark.webp) | ![](ui-shots/after-laptop-dark.webp) |
+| Laptop, light system setting | ![](ui-shots/before-laptop-light.webp) | ![](ui-shots/after-laptop-light.webp) |
+| Laptop, Perform | ![](ui-shots/before-laptop-perform.webp) | ![](ui-shots/after-laptop-perform.webp) |
+| Laptop, Mod | ![](ui-shots/before-laptop-mod.webp) | ![](ui-shots/after-laptop-mod.webp) |
+| Monitor 2560 × 1440 | ![](ui-shots/before-monitor-dark.webp) | ![](ui-shots/after-monitor-dark.webp) |
+| Monitor, Perform, light | | ![](ui-shots/after-monitor-light-perform.webp) |
+
+The before shots on a phone and a tablet were taken before Start, the after shots after it, so the transport's buttons differ in being enabled; the layout is what to compare.
+
+### Left for a later pass
+
+- **Space.** It still means "hold to capture" with the mic on and "play or stop" without it, as the design asked (UI1.md, question 1).
+- **Capture with a real mic** was not walked: headless Chrome here never grants one. The capture path changed only in where its buttons sit and in the ribbon now showing while it runs.
+- **The layer list** has no mute or solo on its rows; mute is in Sound. A row with its own mute toggle needs the list to stop being a listbox.
+- **Sections** are still reached with the stepper; there is no list of them to click.
+- **The undo and redo arrows** come from the system font and look thin beside the rest; drawn icons would match better.
+- **Klont gestures** (pull, squash, shake), still missing from TDD.
+- **The timeline** draws text for nothing itself: note names and morph state names are in the DOM around it (the slot names, the marker list), not on the canvas.
+- **Phone, landscape** (844 × 390): the place bar, Play and Stop and the take buttons share one bottom row, which leaves 214 px under the header before it scrolls away. Two rows of header controls are still a lot at that height.
