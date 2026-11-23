@@ -25,6 +25,7 @@ import { classicPatch } from '../synth/classic';
 import { allRoutes, amountKey, amountNorm, findRoute, kitPrefix, routesInto, type RouteFields, type Scope } from '../synth/routes';
 import { toNorm, toReal } from '../synth/values';
 import type { Advance } from './tutorials';
+import { helpButton } from './help';
 
 export type SoundView = 'simple' | 'patch' | 'mod';
 
@@ -251,10 +252,6 @@ export class SynthPanel {
       box.replaceChildren();
       box.append(this.slotPicker(l), this.structureBar(l));
       for (const c of this.cards(l)) box.append(this.card(l, c));
-      const hint = document.createElement('p');
-      hint.className = 'hint';
-      hint.textContent = 'The bar under a slider shows how far its routes can move it; the mark shows where the sound has it now. Pick a source under Modulate, then press + beside a slider to route it there.';
-      box.append(hint);
     }
     const st = this.app.ui.editState(l);
     const lay = layoutOf(p);
@@ -556,8 +553,8 @@ export class SynthPanel {
       );
       if (m.type === 'sampler' && !l.influence?.grain) {
         const hint = document.createElement('span');
-        hint.className = 'dim';
-        hint.textContent = 'Silent until the layer has a sound source (Influence: File or Listen).';
+        hint.className = 'status';
+        hint.textContent = 'Silent until the layer has a sound (Simple, Influence).';
         row.append(hint);
       }
       return row;
@@ -578,12 +575,12 @@ export class SynthPanel {
         // Before the input: this effect runs on one path, the synth or the raw input.
         row.append(check('raw input only', fx.path === 'raw', (on) => this.edit('setFxPath', { id, path: on ? 'raw' : 'synth' })));
       }
-      if (fx.type === 'input' || input >= 0) {
+      if (fx.type === 'input') {
+        row.append(helpButton('The raw input joins the synth here: the mic while the layer listens or is armed, the take on playback. Effects after it run on the blend of the two.', 'the raw input'));
+      } else if (input >= 0) {
         const hint = document.createElement('span');
         hint.className = 'dim';
-        hint.textContent = fx.type === 'input'
-          ? 'The raw input joins the synth here: the mic while the layer listens or is armed, the take on playback. Effects after it run on the blend.'
-          : i > input ? 'Runs on the blend.' : fx.path === 'raw' ? 'Runs on the raw input before the blend.' : 'Runs on the synth before the blend.';
+        hint.textContent = i > input ? 'on the blend' : fx.path === 'raw' ? 'on the raw input' : 'on the synth';
         row.append(hint);
       }
       row.append(
@@ -652,10 +649,8 @@ export class SynthPanel {
       m.append(n, t, num);
       meters.append(m);
     }
-    const hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = 'From the mic while the layer listens, else from its take while the song plays. The per-note features come from each note\'s own take, or from the mic for the voice Live follow plays.';
-    f.append(lg, row, meters, hint);
+    lg.append(' ', helpButton('What your voice is doing, as this layer hears it: from the mic while the layer listens, else from its take while the song plays. The per-note features come from each note\'s own take, or from the mic for the voice Live follow plays. Each one can be a route\'s source.', 'sung features'));
+    f.append(lg, row, meters);
     return f;
   }
 
@@ -734,7 +729,7 @@ export class SynthPanel {
       cell(`${amount >= 0 ? '+' : ''}${amount.toFixed(2)}${route.mode === 'scale' ? ' ×' : ''}`);
       const tgt = route.target === 'pitch' ? 'pitch' : keyLabel(route.target.replace(/^(bands|oct|k\*):?/, '').replace(/^\./, ''));
       cell(scope === 'layer' && route.target.startsWith('k*.') ? `${tgt} (every kit slot)` : tgt);
-      cell(route.via ? sourceName(route.via, p) : '—');
+      cell(route.via ? sourceName(route.via, p) : '');
       const del = document.createElement('button');
       del.type = 'button';
       del.textContent = '×';
@@ -820,10 +815,8 @@ export class SynthPanel {
     const f = document.createElement('fieldset');
     const lg = document.createElement('legend');
     lg.textContent = 'New route';
-    const hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = 'Or pick a source under Modulate, then press + beside any slider in the Patch view.';
-    f.append(lg, row, hint);
+    lg.append(' ', helpButton('Pick a source and the value it moves, then Add. Or pick a source under Modulate with, then press + beside any slider in the Patch view.', 'new routes'));
+    f.append(lg, row);
     return f;
   }
 
@@ -979,10 +972,8 @@ export class SynthPanel {
     ar.addEventListener('change', () => { if (this.app.runRestoring(() => this.app.store.dispatch('setValues', args(this.app.doc)))) this.acted('amount'); });
     amt.append(ar, ao);
     const unit = r.target === 'pitch' ? `1 is ${Math.round((r.unit ?? 4800) / 100)} semitones` : r.mode === 'scale' ? 'multiplies the target by 1 + amount × the curve' : '1 moves the target across its whole range';
-    const hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = `${unit}. Per state, so a morph can deepen it.${isBipolarSource(r.source) ? ' This source swings both ways; its middle is 0.5 on the curve.' : ''}`;
-    f.append(amt, hint);
+    amt.append(helpButton(`${unit}. The amount is kept per state, so a morph can deepen it.${isBipolarSource(r.source) ? ' This source swings both ways; its middle is 0.5 on the curve.' : ''}`, 'the amount'));
+    f.append(amt);
     return f;
   }
 

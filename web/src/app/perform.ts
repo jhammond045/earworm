@@ -27,6 +27,7 @@ import { captureOf, patchVoices, polyChannels, withInstrument } from '../record/
 import { layoutOf } from '../synth/patch';
 import { channelLayer, mappedTarget, MOD_WHEEL_CC, notePlays, noteCents, parseMidi, percentile, toDefault, type DefaultMapping } from '../perform/midi';
 import { keyLabel, layerFeature, noteName } from './synth-ui';
+import { helpButton } from './help';
 
 /** The computer keyboard in Perform: a chromatic octave from C on the home row and the row above
  *  (as most DAWs lay it out), and the first four home keys for a beat layer's kit slots. */
@@ -388,19 +389,21 @@ export class PerformPanel {
     mode.setAttribute('aria-label', 'Takes into this layer');
     mode.append(new Option('Mono (one line)', 'mono', false, c.mode === 'mono'), new Option('Poly (chords)', 'poly', false, c.mode === 'poly'));
     mode.addEventListener('change', () => set({ ...c, mode: mode.value === 'poly' ? 'poly' : 'mono' }));
-    const modeLab = document.createElement('label');
-    modeLab.append('Takes ', mode);
-    const kids: (HTMLElement | string)[] = [modeLab];
-    const hint = document.createElement('span');
-    hint.className = 'dim';
+    const field = (name: string, control: HTMLElement) => {
+      const lab = document.createElement('label');
+      lab.className = 'field';
+      lab.append(name, control);
+      return lab;
+    };
+    const kids: HTMLElement[] = [field('Takes', mode)];
+    let help: string;
     if (c.mode === 'poly') {
       const inst = document.createElement('select');
       inst.setAttribute('aria-label', 'Instrument');
       const names: Record<Instrument, string> = { guitar: 'guitar (E2–E6)', piano: 'piano (A0–C8)', other: 'other (A1–C7)' };
       for (const k of INSTRUMENTS) inst.append(new Option(names[k], k, false, k === c.instrument));
       inst.addEventListener('change', () => set(withInstrument(c, inst.value as Instrument)));
-      const instLab = document.createElement('label');
-      instLab.append('Instrument ', inst);
+      const instLab = field('Instrument', inst);
       const voices = patchVoices(l);
       const ch = document.createElement('select');
       ch.setAttribute('aria-label', 'Notes at once');
@@ -410,18 +413,28 @@ export class PerformPanel {
         ch.append(o);
       }
       ch.addEventListener('change', () => set({ ...c, channels: Number(ch.value) }));
-      const chLab = document.createElement('label');
-      chLab.append('Notes at once ', ch);
+      const chLab = field('At once', ch);
       kids.push(instLab, chLab);
       const used = polyChannels(l);
-      hint.textContent = `A take comes back as notes a few seconds after you stop, each with its own curve${used < c.channels ? `; this patch plays ${voices} voices, so ${used} at once` : ''}. No live poly sound yet: the layer is silent while you play.`;
+      help = `Poly reads chords and other notes played together from a take: a few seconds after you stop, it comes back as notes, each with its own curve. Instrument sets the range listened to; At once is how many notes may sound together${used < c.channels ? ` (this patch plays ${voices} voices, so ${used})` : ''}. There is no live poly sound yet: the layer is silent while you play.`;
     } else {
-      hint.textContent = 'Poly reads chords and other notes played together (guitar, piano) from a take.';
+      help = 'How a take into this layer is read. Mono hears one line of notes, as sung. Poly reads chords and other notes played together (a guitar, a piano).';
     }
-    kids.push(hint);
-    const row = this.row(...kids);
-    row.dataset.tour = 'capture-mode';
-    return row;
+    const fields = document.createElement('div');
+    fields.className = 'fields one';
+    fields.append(...kids);
+    // The help sits with the field's name, so the select keeps the control column.
+    const name = document.createElement('span');
+    name.append('Takes ', helpButton(help, 'how takes are read'));
+    kids[0].replaceChild(name, kids[0].firstChild!);
+    fields.dataset.tour = 'capture-mode';
+    return fields;
+  }
+
+  private withHelp(f: HTMLFieldSetElement, text: string): HTMLFieldSetElement {
+    const lg = f.querySelector('legend');
+    lg?.append(' ', helpButton(text, lg.textContent ?? 'this'));
+    return f;
   }
 
   private fieldset(legend: string, ...kids: HTMLElement[]): HTMLFieldSetElement {
@@ -496,8 +509,8 @@ export class PerformPanel {
     arm.setAttribute('aria-pressed', String(this.armed === i));
 
     const midiLine = document.createElement('span');
-    midiLine.className = 'dim';
-    const kids: HTMLElement[] = [layLab, listen, arm, midiLine];
+    midiLine.className = 'midi-state';
+    const kids: HTMLElement[] = [midiLine];
     if (!this.midiAvailable) {
       midiLine.textContent = 'This browser has no Web MIDI (Safari, for one). The keys, pad, wheel and macros below still play.';
     } else if (!this.access) {
@@ -517,11 +530,17 @@ export class PerformPanel {
     this.els.learn = learn;
     kids.push(learn);
     const status = document.createElement('p');
-    status.className = 'hint';
+    status.className = 'status';
     status.setAttribute('role', 'status');
     status.textContent = this.statusText;
     this.els.status = status;
-    box.append(this.row(...kids), status);
+    const playBar = document.createElement('div');
+    playBar.className = 'toolbar';
+    playBar.append(layLab, listen, arm);
+    const midi = document.createElement('div');
+    midi.className = 'toolbar midi';
+    midi.append(...kids);
+    box.append(playBar, midi, status);
 
     // Sung features.
     const meters = document.createElement('div');
@@ -630,10 +649,7 @@ export class PerformPanel {
       this.els[`perf${k}`] = input;
       perf.append(lab);
     });
-    const perfHint = document.createElement('p');
-    perfHint.className = 'hint';
-    perfHint.textContent = 'The wheel, bend and pressure move only what routes take from them: add one in the Mod view.';
-    box.append(this.fieldset('Expression', perf, perfHint));
+    box.append(this.withHelp(this.fieldset('Expression', perf), 'Stand-ins for a keyboard\'s mod wheel, pitch bend and pressure. They move only what a route takes from them: add one in Sound, Mod. The bend springs back to the middle when you let go.'));
 
     box.append(this.fieldset('XY pad', ...this.xyPad(l)));
 
@@ -661,16 +677,22 @@ export class PerformPanel {
     time.setAttribute('aria-label', 'Scene time in milliseconds');
     time.addEventListener('change', () => { app.run(() => app.store.dispatch('setLayer', { id: l.id, sceneMs: Number(time.value) })); });
     const tl = document.createElement('label');
-    tl.append('Morph ', time, ' ms');
-    const sceneHint = document.createElement('p');
-    sceneHint.className = 'hint';
-    sceneHint.textContent = l.states.length < 2
-      ? 'Each state of the layer is a scene. Add a state in the Simple view to have two.'
-      : 'A tap morphs to that state. While the song plays a clip with morph markers, the markers win.';
-    box.append(this.fieldset('Scenes', scenes, this.row(tl), sceneHint));
+    tl.className = 'field';
+    const unit = document.createElement('span');
+    unit.className = 'unit';
+    const ms = document.createElement('span');
+    ms.textContent = 'ms';
+    unit.append(time, ms);
+    tl.append('Morph time', unit);
+    const tf = document.createElement('div');
+    tf.className = 'fields one';
+    tf.append(tl);
+    box.append(this.withHelp(this.fieldset('Scenes', scenes, tf),
+      `Each state of the layer is a scene; a tap morphs to it over the morph time. While the song plays a clip with morph markers, the markers win.${l.states.length < 2 ? ' Add a state in Sound, States, to have two.' : ''}`));
 
     // The controller map, channels, timing.
-    box.append(this.fieldset('MIDI', ...this.midiSection(l)));
+    box.append(this.withHelp(this.fieldset('MIDI', ...this.midiSection(l)),
+      'Notes, the mod wheel, bend and pressure work as soon as a device is connected. To map a knob or fader: press MIDI learn, touch a control on screen, then move the controller. The map is kept with the project, and the last map learned for a device is its default for projects that have none. A channel can play a layer of its own. On a beat layer, notes 36, 38, 42 and 46 (General MIDI kick, snare, closed and open hat) play kit slots 1 to 4. The timing line is how long a note takes from the device to the engine.'));
   }
 
   private xyPad(l: Layer): HTMLElement[] {
@@ -735,10 +757,15 @@ export class PerformPanel {
       move(Math.min(1, Math.max(0, x + d[0] * step)), Math.min(1, Math.max(0, y + d[1] * step)));
     });
     const lx = document.createElement('label');
-    lx.append('Across ', axes[0]);
+    lx.className = 'field';
+    lx.append('Across', axes[0]);
     const ly = document.createElement('label');
-    ly.append('Up ', axes[1]);
-    return [this.row(lx, ly), pad];
+    ly.className = 'field';
+    ly.append('Up', axes[1]);
+    const f = document.createElement('div');
+    f.className = 'fields one';
+    f.append(lx, ly);
+    return [f, pad];
   }
 
   private midiSection(l: Layer): HTMLElement[] {
@@ -755,9 +782,8 @@ export class PerformPanel {
       list.append(li);
     }
     const none = document.createElement('p');
-    none.className = 'hint';
-    none.textContent = map.length ? 'Kept with the project. The last map learned for a device is also its default for projects that have none.'
-      : 'No controllers learned yet. Notes, the mod wheel, bend and pressure work without Learn.';
+    none.className = 'status';
+    none.textContent = map.length ? '' : 'No controllers learned yet.';
     out.push(list, none);
 
     const chans = document.createElement('details');
@@ -765,7 +791,7 @@ export class PerformPanel {
     sum.textContent = 'Which layer each MIDI channel plays';
     chans.append(sum);
     const grid = document.createElement('div');
-    grid.className = 'sliders';
+    grid.className = 'fields';
     for (let c = 0; c < MIDI_CHANNELS; c++) {
       const sel = document.createElement('select');
       sel.setAttribute('aria-label', `Layer MIDI channel ${c + 1} plays`);
@@ -774,18 +800,15 @@ export class PerformPanel {
       sel.value = doc.perform?.channels[c] ?? '';
       sel.addEventListener('change', () => { app.run(() => app.store.dispatch('setPerform', { channel: c, layer: sel.value })); });
       const lab = document.createElement('label');
-      lab.append(`Ch ${c + 1} `, sel);
+      lab.className = 'field';
+      lab.append(`Channel ${c + 1}`, sel);
       grid.append(lab);
     }
     chans.append(grid);
-    const beatHint = document.createElement('p');
-    beatHint.className = 'hint';
-    beatHint.textContent = 'On a beat layer, notes 36, 38, 42 and 46 (General MIDI kick, snare, closed and open hat) play kit slots 1 to 4.';
-    chans.append(beatHint);
     out.push(chans);
 
     const timing = document.createElement('p');
-    timing.className = 'hint';
+    timing.className = 'status';
     timing.setAttribute('aria-live', 'off');
     this.els.timing = timing;
     out.push(this.row(timing, this.button('Clear', () => { this.delays.length = 0; this.paintTiming(); }, 'Forget the timings so far')));

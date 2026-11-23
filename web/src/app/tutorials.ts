@@ -95,7 +95,7 @@ export const LESSONS: Lesson[] = [
       { id: 'mic', title: 'Enable the mic', target: 'start', advance: 'next', action: 'Next',
         body: 'Start with mic, or press Enable mic after starting without one. Use wired headphones. Nothing checks for feedback or mutes the speakers.' },
       { id: 'hold', title: 'Hold to capture', target: 'capture', advance: 'capture', action: 'Hold Capture',
-        body: 'Hold Capture, or hold Space. If the track is stopped you hear one bar of count-in, then the section starts and the take is placed where you sang. Let go to keep it. A take under half a second is ignored.' },
+        body: 'Hold Capture, or hold C. If the track is stopped you hear one bar of count-in, then the section starts and the take is placed where you sang. Let go to keep it. A take under half a second is ignored.' },
       { id: 'align', title: 'Line the take up', target: 'align', advance: 'next', action: 'Next',
         body: 'Align is the round trip, in milliseconds, from the speakers back to the mic. The take is placed that much earlier, so a note you sang on the beat lands on the beat. 30 ms is the guess until you have measured your headphones.' },
     ],

@@ -65,8 +65,8 @@
       </nav>
       <span class="cluster takes" role="group" aria-label="Put a take on the selected layer">
         <span class="into">Into <strong id="intoLayer">—</strong></span>
-        <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">◉ Capture</button>
-        <button type="button" id="record" class="toggle" disabled aria-pressed="false" title="Press to record a pass, press again to stop: the mic into the selected layer, and the notes, knob moves and scene taps you play, as one undo step.">● Record</button>
+        <button type="button" id="capture" data-tour="capture" disabled aria-keyshortcuts="C" title="Hold (or hold C) to record into the selected layer. A stopped song gets a one-bar count-in.">◉ Capture</button>
+        <button type="button" id="record" class="toggle" disabled aria-pressed="false" aria-keyshortcuts="R" title="Press (or R) to record a pass, again to stop: the mic into the selected layer, and the notes, knob moves and scene taps you play, as one undo step.">● Record</button>
         <label class="file-button" title="Put an audio file on the selected layer as a take, from the start of the section, so Feel can quantize and stretch it.">Import<span class="long">&nbsp;take</span> <input type="file" id="importTake" accept="audio/*" disabled aria-label="Import an audio file as a take"></label>
       </span>
     </div>
@@ -82,49 +82,51 @@
   </div>
   <div class="workspace">
     <aside class="panel" id="panel-layers" data-tour="layers" role="tabpanel" aria-labelledby="tab-layers" tabindex="-1">
-      <h2>Layers</h2>
+      <h2>Layers <button type="button" class="help" popovertarget="h-layers" aria-label="About layers">?</button></h2>
+      <div id="h-layers" class="bubble" popover>Each layer is one instrument. A circle is a melody, a square a beat and a diamond a texture; a muted layer says mute. Capture, Record, Import, Sound and Perform all act on the selected layer.</div>
       <div id="layerList" class="layers" role="listbox" aria-label="Layers"></div>
-      <div class="row" data-tour="layer-edit">
-        <label>Name <input id="layerName" type="text" aria-label="Layer name"></label>
-        <button type="button" id="removeLayer">Remove</button>
+      <div class="add" role="group" aria-label="Add a layer">
+        <button type="button" id="addMelody" title="Add a melody layer">+ Melody</button>
+        <button type="button" id="addBeat" title="Add a beat layer">+ Beat</button>
+        <button type="button" id="addTexture" title="Add a texture layer">+ Texture</button>
       </div>
-      <div class="row add">
-        <span class="dim">Add</span>
-        <button type="button" id="addMelody" title="Add a melody layer">● Melody</button>
-        <button type="button" id="addBeat" title="Add a beat layer">■ Beat</button>
-        <button type="button" id="addTexture" title="Add a texture layer">◆ Texture</button>
+      <div class="fields" data-tour="layer-edit">
+        <div class="field">
+          <label for="layerName">Name</label>
+          <span class="with-action"><input id="layerName" type="text" aria-label="Layer name"><button type="button" id="removeLayer" title="Remove this layer">Remove</button></span>
+        </div>
       </div>
       <div id="captureMode" class="capture-mode"></div>
-      <h2 class="sub">Section</h2>
-      <div class="section-edit" data-tour="section-edit">
-        <label>Name <input id="secRename" type="text" aria-label="Section name"></label>
-        <label id="beatsLabel">Beats <input id="beats" type="number" min="1" max="64" step="1" value="8" aria-label="Section length in beats"></label>
-        <label id="secondsLabel" hidden>Seconds <input id="seconds" type="number" min="1" max="120" step="1" value="8" aria-label="Section length in seconds"></label>
-        <label data-tour="feel">Time
+      <h2 class="sub">Section <button type="button" class="help" popovertarget="h-section" aria-label="About the section">?</button></h2>
+      <div id="h-section" class="bubble" popover>The section the pattern and timeline show; the stepper in the transport picks it. Grid counts beats at the tempo, Free counts seconds. Repeats is how many times it plays. Ramp is how long the tempo takes to arrive from the section before.</div>
+      <div class="fields section-edit" data-tour="section-edit">
+        <label class="field">Name <input id="secRename" type="text" aria-label="Section name"></label>
+        <label class="field" data-tour="feel">Time
           <select id="feel" aria-label="Section time, on a grid or free">
             <option value="grid">Grid</option>
             <option value="free">Free</option>
           </select>
         </label>
-        <label>Repeats <input id="repeats" type="number" min="1" max="32" step="1" value="1" aria-label="How many times the section plays"></label>
-        <label>Ramp <span class="unit"><input id="ramp" type="number" min="0" max="60000" step="10" value="0" aria-label="Tempo ramp from the previous section, milliseconds"> ms</span></label>
-        <div class="row">
-          <button type="button" id="secEarlier" aria-label="Move this section earlier">↑ Earlier</button>
-          <button type="button" id="secLater" aria-label="Move this section later">↓ Later</button>
-          <button type="button" id="dupSection">Copy</button>
-          <button type="button" id="removeSection">Remove</button>
-          <button type="button" id="addSection">+ Section</button>
-        </div>
+        <label class="field" id="beatsLabel">Beats <input id="beats" type="number" min="1" max="64" step="1" value="8" aria-label="Section length in beats"></label>
+        <label class="field" id="secondsLabel" hidden>Seconds <input id="seconds" type="number" min="1" max="120" step="1" value="8" aria-label="Section length in seconds"></label>
+        <label class="field">Repeats <input id="repeats" type="number" min="1" max="32" step="1" value="1" aria-label="How many times the section plays"></label>
+        <label class="field">Ramp <span class="unit"><input id="ramp" type="number" min="0" max="60000" step="10" value="0" aria-label="Tempo ramp from the previous section, milliseconds"><span>ms</span></span></label>
       </div>
-      <p class="hint">Circle, square, diamond: melody, beat, texture. Capture, Record, Import and Sound act on the selected layer.</p>
+      <div class="btn-grid">
+        <button type="button" id="secEarlier" aria-label="Move this section earlier">↑ Earlier</button>
+        <button type="button" id="secLater" aria-label="Move this section later">↓ Later</button>
+        <button type="button" id="dupSection" title="Copy this section after itself">Copy</button>
+        <button type="button" id="removeSection" title="Remove this section">Remove</button>
+        <button type="button" id="addSection" class="span2" title="Add an empty section after this one">+ Section</button>
+      </div>
     </aside>
-    <main class="panel on" id="panel-pattern" role="tabpanel" aria-labelledby="tab-pattern" tabindex="-1">
+    <main class="panel" id="panel-pattern" role="tabpanel" aria-labelledby="tab-pattern" tabindex="-1">
       <h2>Track</h2>
       <div class="gridwrap" data-tour="pattern">
         <table class="pattern" id="pattern" role="grid" aria-label="Pattern. Arrows move, Enter adds, Delete removes."></table>
       </div>
       <div class="tl-wrap" data-tour="timeline">
-        <div class="tl-head">
+        <div class="toolbar tl-head">
           <label>Zoom
             <select id="zoom" aria-label="Timeline zoom">
               <option value="0.5">½</option>
@@ -136,159 +138,184 @@
           <label data-tour="quantize">Snap <select id="snap" aria-label="Timeline snap"></select></label>
           <button type="button" id="quantize" title="Turn Feel on for this lane at the Snap grid">Quantize</button>
           <label data-tour="takes">Take <select id="takeStack" aria-label="Which take the ribbon follows"></select></label>
+          <button type="button" class="help push" popovertarget="h-timeline" aria-label="About the timeline">?</button>
+          <div id="h-timeline" class="bubble" popover>Each lane is a layer in time: bars are written notes, ribbons are a take's pitch and loudness, blocks are hits on their kit slot's row. Drag to move, drag a note's right edge to change its length, double-click (or double-tap) empty space to add. Drag a hit up or down to another slot. Snap is the grid a drag lands on; Quantize turns on Feel for the lane. With the timeline focused, the arrows pick and Shift with an arrow moves.</div>
         </div>
         <details class="tl-flex" id="flexBox" open>
           <summary><span class="sum-name">Feel</span> <span id="flexSummary" class="dim"></span></summary>
-          <div class="flex-row" role="group" aria-label="Feel: quantize when the track plays">
-            <label class="check"><input type="checkbox" id="flexOn"> On</label>
-            <label>Grid <select id="flexGrid" aria-label="Feel grid"></select></label>
-            <label class="check"><input type="checkbox" id="flexTriplets"> Triplets</label>
-            <label>Groove <select id="flexFeel" aria-label="Groove, straight or swing"><option value="straight">Straight</option><option value="swing">Swing</option></select></label>
-            <label id="flexSwingWrap">Swing <span class="unit"><input type="number" id="flexSwing" min="50" max="75" step="1" aria-label="Swing, percent"> %</span></label>
-            <label>Strength <input type="range" id="flexStrength" min="0" max="100" step="1" aria-label="Feel strength"> <output id="flexStrengthOut"></output></label>
-            <label>Catch ± <span class="unit"><input type="number" id="flexCatch" min="0" max="500" step="1" aria-label="Catch, ms"> ms</span></label>
-            <label>Audio <select id="flexAudio" aria-label="How the take's audio is stretched"><option value="hits">Hits</option><option value="smooth">Smooth</option></select></label>
-            <span id="flexKit" class="flex-kit">Kit slots <input type="number" min="0" max="100" step="5" aria-label="Kit slot 1 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 2 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 3 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 4 strength, percent"> %</span>
+          <div class="fields flex-fields" role="group" aria-label="Feel: quantize when the track plays">
+            <label class="field check"><span>On</span><input type="checkbox" id="flexOn"></label>
+            <label class="field">Grid <select id="flexGrid" aria-label="Feel grid"></select></label>
+            <label class="field check"><span>Triplets</span><input type="checkbox" id="flexTriplets"></label>
+            <label class="field">Groove <select id="flexFeel" aria-label="Groove, straight or swing"><option value="straight">Straight</option><option value="swing">Swing</option></select></label>
+            <label class="field" id="flexSwingWrap">Swing <span class="unit"><input type="number" id="flexSwing" min="50" max="75" step="1" aria-label="Swing, percent"><span>%</span></span></label>
+            <label class="field">Strength <span class="range"><input type="range" id="flexStrength" min="0" max="100" step="1" aria-label="Feel strength"><output id="flexStrengthOut"></output></span></label>
+            <label class="field">Catch ± <span class="unit"><input type="number" id="flexCatch" min="0" max="500" step="1" aria-label="Catch, ms"><span>ms</span></span></label>
+            <label class="field">Audio <select id="flexAudio" aria-label="How the take's audio is stretched"><option value="hits">Hits</option><option value="smooth">Smooth</option></select></label>
+            <div class="field wide" id="flexKit"><span>Kit slots %</span><span class="kit4"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 1 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 2 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 3 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 4 strength, percent"></span></div>
           </div>
-          <p id="flexNote" class="hint"></p>
+          <div class="status-row"><p id="flexNote" class="status"></p><button type="button" class="help" popovertarget="h-feel" aria-label="About Feel">?</button></div>
+          <div id="h-feel" class="bubble" popover>Feel plays the lane's notes or hits on a grid while the track plays, and keeps what you played underneath. Strength brings some of the played timing back; Catch is how far from a grid line a note is still pulled to it. Groove swings every other grid step. Audio says how a take's own sound is stretched to follow: Hits cuts it at each attack, Smooth stretches it evenly.</div>
         </details>
         <div class="tl-body" id="tlBody">
           <div id="tlNames" class="tl-names"></div>
           <div class="tl-scroll" id="tlScroll">
-            <canvas id="timeline" tabindex="0" aria-label="Section timeline. Left and right pick a note or hit, up and down pick a lane, Shift with an arrow moves it, Delete removes." aria-describedby="tlNote"></canvas>
+            <canvas id="timeline" tabindex="0" aria-label="Section timeline. Left and right pick a note or hit, up and down pick a lane, Shift with an arrow moves it, Delete removes."></canvas>
           </div>
         </div>
         <span id="tlLive" class="sr" aria-live="polite"></span>
-        <p id="tlNote" class="hint">Drag a note, a hit or a marker. Drag a hit up or down to another kit slot. Double-click (or double-tap) empty space to add one.</p>
+        <p id="tlNote" class="status"></p>
       </div>
       <div class="lanes">
-        <div class="morph" data-tour="morph">
+        <div class="toolbar morph" data-tour="morph">
           <span class="lbl">Morph</span>
-          <button type="button" id="addMarker">Add marker at row</button>
+          <button type="button" id="addMarker" title="Add a marker at the pattern cursor's row, to the state being edited">Add marker at row</button>
           <label>Shape
             <select id="morphShape" aria-label="Morph shape">
               <option>line</option><option>ease</option><option>late</option><option>step</option><option>wobble</option>
             </select>
           </label>
-          <label>Length <span class="unit"><input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds"> ms</span></label>
-          <span id="morphList" class="marklist"></span>
+          <label>Length <span class="unit"><input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds"><span>ms</span></span></label>
+          <button type="button" class="help push" popovertarget="h-morph" aria-label="About morph markers">?</button>
+          <div id="h-morph" class="bubble" popover>A marker moves the layer's sound to one of its states over Length, along Shape. Markers sit in the strip under each lane; drag one to move it. The list below names each marker's state; press one to remove it. A marker's notches count its state's number, so you can tell them apart without the colors.</div>
         </div>
-        <div class="morph" data-tour="lane">
+        <div id="morphList" class="marklist"></div>
+        <div class="toolbar" data-tour="lane">
           <span class="lbl">Lane</span>
           <label>Shows
             <select id="laneTarget" aria-label="What the automation strip under the selected layer shows"></select>
           </label>
           <button type="button" id="laneClear" title="Remove every point of this lane from the clip">Remove lane</button>
-          <span id="laneNote" class="hint">Double-click the strip under the morph strip to add or remove a point; drag one to move it. Record fills lanes from what you play.</span>
+          <button type="button" class="help push" popovertarget="h-lane" aria-label="About automation lanes">?</button>
+          <div id="h-lane" class="bubble" popover>The bottom strip of each lane is automation: one value of the layer over time. Pick what it shows here. Double-click the strip to add a point or remove one, and drag a point to move it. Record fills lanes from the knobs and controllers you move while it runs.</div>
+          <span id="laneNote" hidden></span>
         </div>
       </div>
     </main>
     <aside class="panel" id="panel-sound" role="tabpanel" aria-labelledby="tab-sound" tabindex="-1">
       <h2>Sound <span id="soundLayer" class="dim"></span></h2>
-      <div class="row views" data-tour="sound-views">
+      <div class="views" data-tour="sound-views">
         <span role="tablist" aria-label="Sound views" class="seg">
           <button type="button" role="tab" data-view="simple" aria-selected="true">Simple</button>
           <button type="button" role="tab" data-view="patch" aria-selected="false" data-tour="patch-view">Patch</button>
           <button type="button" role="tab" data-view="mod" aria-selected="false" data-tour="mod-view">Mod</button>
         </span>
-        <label id="modPickBox" data-tour="mod-pick" hidden>Modulate with <select id="modPick" aria-label="Source to route: pick one, then press + beside a slider"></select></label>
+        <button type="button" class="help push" popovertarget="h-views" aria-label="About the sound views">?</button>
+        <div id="h-views" class="bubble" popover>Simple is the preset, Tune, the states, the macros and how your voice and other sounds shape this layer. Patch shows every value of the layer's sound, module by module, and lets you add, remove and rewire them. Mod lists the routes that move those values. In Patch, the blue bar under a slider shows how far its routes can move it, and the mark where the sound has it now; pick a source under Modulate with, then press + beside a slider to route it there.</div>
+        <label id="modPickBox" class="field" data-tour="mod-pick" hidden>Modulate with <select id="modPick" aria-label="Source to route: pick one, then press + beside a slider"></select></label>
       </div>
       <div class="sound patchview" id="soundPatch" hidden></div>
       <div class="sound modview" id="soundMod" hidden></div>
       <div class="sound" id="soundSimple">
         <fieldset>
           <legend>Layer</legend>
-          <div class="row">
-            <label>Preset <select id="preset" aria-label="Sound preset"></select></label>
-            <button type="button" id="savePreset" title="Keep this layer's sound (its patch and this state's values) as one of your presets">Save preset</button>
-            <button type="button" id="exportPreset" title="Download this layer's sound as a preset file">Export</button>
-            <label class="file-button">Import <input id="importPreset" type="file" accept=".json,application/json" aria-label="Preset file to import"></label>
+          <div class="fields one">
+            <label class="field">Preset <select id="preset" aria-label="Sound preset"></select></label>
+            <div class="field"><span></span><span class="actions">
+              <button type="button" id="savePreset" title="Keep this layer's sound (its patch and this state's values) as one of your presets">Save</button>
+              <button type="button" id="exportPreset" title="Download this layer's sound as a preset file">Export</button>
+              <label class="file-button" title="Load a preset file">Import <input id="importPreset" type="file" accept=".json,application/json" aria-label="Preset file to import"></label>
+            </span></div>
           </div>
-          <div class="row">
-            <label>Level <input id="level" type="range" min="-60" max="12" step="1" value="0" aria-label="Layer level"></label>
-            <label data-tour="pan">Pan <input id="pan" type="range" min="-100" max="100" step="1" value="0" aria-label="Layer pan, left to right"> <output id="panRead">C</output></label>
-            <button type="button" id="mute" class="toggle" aria-pressed="false">Mute</button>
+          <div class="sliders">
+            <label>
+              <span>Level</span>
+              <input id="level" type="range" min="-60" max="12" step="1" value="0" aria-label="Layer level">
+              <output id="levelRead">0 dB</output>
+            </label>
+            <label data-tour="pan">
+              <span>Pan</span>
+              <input id="pan" type="range" min="-100" max="100" step="1" value="0" aria-label="Layer pan, left to right">
+              <output id="panRead">C</output>
+            </label>
           </div>
+          <div class="fields one"><div class="field"><span></span><span class="actions"><button type="button" id="mute" class="toggle" aria-pressed="false">Mute</button></span></div></div>
         </fieldset>
         <fieldset data-tour="tune" id="tuneBox">
-          <legend>Tune</legend>
+          <legend>Tune <button type="button" class="help" popovertarget="h-tune" aria-label="About Tune">?</button></legend>
+          <div id="h-tune" class="bubble" popover>How a take's recorded pitch is shaped. Pitch snap pulls it to the scale; Speed is how fast it gets there; Vibrato keeps or flattens the wobble; Level is how loud the tuned voice plays. Slides says how a sung slide moves: Glide follows it, Gliss steps by semitones, Jump goes straight to the next note. A new take fills Root, Scale and the reference; Fill from take does it again.</div>
           <div class="sliders" id="tuneRanges"></div>
-          <div class="row">
-            <label>Slides
+          <div class="fields">
+            <label class="field">Slides
               <select id="tuneSlides" aria-label="How a sung slide moves">
                 <option value="0">Glide</option>
                 <option value="1">Gliss</option>
                 <option value="2">Jump</option>
               </select>
             </label>
-            <label>Root <select id="tuneRoot" aria-label="Scale root"></select></label>
-            <label>Scale <select id="tuneScale" aria-label="Scale"></select></label>
-            <label>Octave <input id="tuneOctave" type="number" min="-4" max="4" step="1" value="0" aria-label="Octave shift"></label>
-            <button type="button" id="fillTune">Fill from take</button>
+            <label class="field">Octave <input id="tuneOctave" type="number" min="-4" max="4" step="1" value="0" aria-label="Octave shift"></label>
+            <label class="field">Root <select id="tuneRoot" aria-label="Scale root"></select></label>
+            <label class="field">Scale <select id="tuneScale" aria-label="Scale"></select></label>
           </div>
-          <p class="hint">Pitch snap, slides, scale and octave shape the recorded pitch. A new take fills the root, the scale and the reference.</p>
+          <div class="actions"><button type="button" id="fillTune" title="Set root, scale and the reference from this layer's take">Fill from take</button></div>
         </fieldset>
         <fieldset data-tour="states">
-          <legend>States</legend>
-          <div class="row">
-            <label>Editing <select id="state" aria-label="Sound state"></select></label>
-            <label>Name <input id="stateName" type="text" aria-label="State name" data-tour="state-name"></label>
+          <legend>States <button type="button" class="help" popovertarget="h-states" aria-label="About states">?</button></legend>
+          <div id="h-states" class="bubble" popover>A state is a full setting of the layer's sound. The preset, the macros and Influence edit the state picked here. Morph markers and Perform's scenes move the layer from one state to another. Up to eight.</div>
+          <div class="fields one">
+            <label class="field">Editing <select id="state" aria-label="Sound state"></select></label>
+            <label class="field">Name <input id="stateName" type="text" aria-label="State name" data-tour="state-name"></label>
           </div>
-          <div class="row">
-            <button type="button" id="addState">Add state</button>
-            <button type="button" id="copyState">Copy state</button>
-            <button type="button" id="removeState">Remove state</button>
+          <div class="actions">
+            <button type="button" id="addState">Add</button>
+            <button type="button" id="copyState">Copy</button>
+            <button type="button" id="removeState">Remove</button>
           </div>
-          <p class="hint">The preset edits this state. Morph markers and Perform's scenes move between states.</p>
         </fieldset>
         <fieldset data-tour="macros">
-          <legend>Macros</legend>
+          <legend>Macros <button type="button" class="help" popovertarget="h-macros" aria-label="About macros">?</button></legend>
+          <div id="h-macros" class="bubble" popover>Eight named moves on the state you are editing, on top of the preset. The sound follows while you drag; letting go is one undo step.</div>
           <div id="macros" class="sliders"></div>
-          <p class="hint">Eight moves for the state you are editing, on top of the preset.</p>
         </fieldset>
         <fieldset data-tour="gestures">
-          <legend>Gestures</legend>
+          <legend>Gestures <button type="button" class="help" popovertarget="h-gestures" aria-label="About gestures">?</button></legend>
+          <div id="h-gestures" class="bubble" popover>How far your voice pushes this layer while it plays live: how loud, how open, how hard, how breathy, and the mouth's shape. On a beat layer, Follow is how far a hit follows the sung shape.</div>
           <div id="gestures" class="sliders"></div>
-          <p class="hint">How far a sung gesture pushes this layer: loud, open, hard, breath and mouth.</p>
         </fieldset>
         <fieldset data-tour="kit" id="kitBox">
-          <legend>Kit slot</legend>
-          <div class="row">
-            <label>Slot <select id="kitSlot" aria-label="Kit slot"></select></label>
+          <legend>Kit slot <button type="button" class="help" popovertarget="h-kit" aria-label="About kit slots">?</button></legend>
+          <div id="h-kit" class="bubble" popover>One hit, from the mic or a file, becomes the picked slot: the match treats it as a decaying sound. Hear slot plays it. Hold Teach and repeat one sound: the next beat take groups its hits with what you taught.</div>
+          <div class="fields one">
+            <label class="field">Slot <select id="kitSlot" aria-label="Kit slot"></select></label>
+          </div>
+          <div class="actions">
             <label class="file-button">From a file <input id="kitFile" type="file" accept="audio/*" aria-label="One hit to match into the slot"></label>
             <button type="button" id="kitRecord">Record one hit</button>
             <button type="button" id="kitHear">Hear slot</button>
             <button type="button" id="teachSlot" data-tour="teach" title="Hold and repeat one sound. The next beat take uses what you taught.">Teach (hold)</button>
           </div>
-          <p id="kitStatus" class="hint" role="status">One hit, from the mic or a file, becomes that slot.</p>
+          <p id="kitStatus" class="status" role="status"></p>
         </fieldset>
         <fieldset data-tour="influence">
-          <legend>Influence</legend>
-          <div class="row">
+          <legend>Influence <button type="button" class="help" popovertarget="h-influence" aria-label="About Influence">?</button></legend>
+          <div id="h-influence" class="bubble" popover>Move this state toward a sound: choose a file, or hold Listen and make the sound. The meters show how far each aspect would move. Amount and the aspect boxes decide how much of Tone, Shape, Motion, Grit and Space is used; Commit writes the blend into the state. Saved lists sounds kept on the Influence page. Play source plays the file; Hold note plays this layer at the source's pitch.</div>
+          <div class="actions">
             <label class="file-button">From a file <input id="infFile" type="file" accept="audio/*" aria-label="Audio file to match"></label>
             <button type="button" id="listen" title="Hold and make the sound you want this layer to move toward">Listen (hold)</button>
-            <label>Saved <select id="savedSource" aria-label="Sources saved on the Influence page"></select></label>
-            <button type="button" id="useSaved" disabled>Use saved</button>
+          </div>
+          <div class="fields one">
+            <div class="field"><label for="savedSource">Saved</label><span class="with-action"><select id="savedSource" aria-label="Sources saved on the Influence page"></select><button type="button" id="useSaved" disabled>Use</button></span></div>
           </div>
           <div id="infMeters" class="meters" aria-label="How far each aspect moved"></div>
-          <p id="provisional" class="hint" hidden>Motion is provisional. A longer sound settles it.</p>
-          <div class="row" id="aspects"></div>
-          <div class="row">
-            <label>Amount <input id="amount" type="range" min="0" max="100" value="0" aria-label="Influence amount"></label>
-            <label class="check"><input id="useSound" type="checkbox"> Use the sound itself</label>
+          <p id="provisional" class="status" hidden>Motion is provisional. A longer sound settles it.</p>
+          <div class="chips" id="aspects" role="group" aria-label="Aspects to use"></div>
+          <div class="sliders">
+            <label><span>Amount</span><input id="amount" type="range" min="0" max="100" value="0" aria-label="Influence amount"><output id="amountRead">0%</output></label>
           </div>
-          <div class="row">
+          <div class="fields one"><label class="field check"><span></span><span class="cbx"><input id="useSound" type="checkbox"> Use the sound itself</span></label></div>
+          <div class="actions">
             <button type="button" id="commit">Commit</button>
             <button type="button" id="clearInf">Clear</button>
             <button type="button" id="playSource" data-tour="source">Play source</button>
             <button type="button" id="holdNote" data-tour="hold-note" title="Hold to play this layer at the source pitch.">Hold note</button>
           </div>
-          <p id="infStatus" class="hint" role="status">No Influence yet. A file or Listen sets a target the state blends toward.</p>
+          <p id="infStatus" class="status" role="status"></p>
         </fieldset>
       </div>
     </aside>
     <section class="panel" id="panel-perform" role="tabpanel" aria-labelledby="tab-perform" tabindex="-1" data-tour="perform-view">
-      <h2>Perform <span class="dim keyhint">Keys A to K play, Z and X change the octave</span></h2>
+      <h2>Perform <button type="button" class="help" popovertarget="h-perform" aria-label="About Perform">?</button></h2>
+      <div id="h-perform" class="bubble" popover>Play the selected layer. The computer keys A W S E D F T G Y H U J K play an octave from C, and Z and X move the octave; on a beat layer A S D F play the four kit slots. Listen lets the mic drive the layer's sung features while the notes come from the keys or MIDI; Arm makes your voice play it. Record in the transport records what you play here.</div>
       <div class="sound performview" id="soundPerform"></div>
     </section>
   </div>
@@ -311,52 +338,50 @@
 
   <dialog id="fileDialog" aria-labelledby="fileTitle">
     <h2 id="fileTitle">Project</h2>
-    <div class="row">
-      <label>Name <input id="projNameInput" type="text" aria-label="Project name"></label>
-      <button type="button" id="renameBtn">Rename</button>
+    <div class="fields one">
+      <div class="field"><label for="projNameInput">Name</label><span class="with-action"><input id="projNameInput" type="text" aria-label="Project name"><button type="button" id="renameBtn">Rename</button></span></div>
     </div>
     <h3>Share</h3>
-    <div class="row">
+    <div class="actions">
       <button type="button" id="exportWav" class="primary" data-tour="wav" title="Render the song to a stereo file. The click is not in it.">Export mix (WAV)</button>
-      <button type="button" id="exportBtn" title="One zip of the project and its audio, to import later">Export zip</button>
-      <label class="file-button">Import zip <input id="importFile" type="file" accept=".zip,application/zip" aria-label="Import a project zip"></label>
+      <button type="button" id="exportBtn" title="One zip of the project and its audio, to open later">Export zip</button>
+      <label class="file-button" title="Open a project zip, from this or an older Earworm">Import zip <input id="importFile" type="file" accept=".zip,application/zip" aria-label="Import a project zip"></label>
     </div>
-    <h3>Projects</h3>
-    <div class="row">
+    <h3>Projects <button type="button" class="help" popovertarget="h-projects" aria-label="About saving">?</button></h3>
+    <div id="h-projects" class="bubble" popover>The song is saved in this browser as you edit; Save writes it at once. Save as keeps a copy under the name above. A zip holds the project and its audio and opens in a later Earworm.</div>
+    <div class="fields one">
+      <div class="field"><label for="openList">Open</label><span class="with-action"><select id="openList" aria-label="Saved projects"></select><button type="button" id="openBtn">Open</button></span></div>
+    </div>
+    <div class="actions">
       <button type="button" id="newBtn">New</button>
       <button type="button" id="saveBtn">Save</button>
       <button type="button" id="saveAsBtn">Save as</button>
     </div>
-    <div class="row">
-      <label>Open <select id="openList" aria-label="Saved projects"></select></label>
-      <button type="button" id="openBtn">Open</button>
-    </div>
-    <p class="hint">The song is saved as you edit; Save writes it now. A zip includes the audio and opens in a later Earworm.</p>
     <h3>Tidy</h3>
-    <div class="row">
+    <div class="actions">
       <button type="button" id="cleanBtn" title="Removes takes and sources nothing in the song or in Undo still uses">Clean up</button>
-      <button type="button" id="deleteBtn" class="danger">Delete project…</button>
+      <button type="button" id="deleteBtn" class="danger push">Delete project…</button>
     </div>
     <form method="dialog"><button type="submit">Close</button></form>
   </dialog>
 
   <dialog id="setupDialog" aria-labelledby="setupTitle">
     <h2 id="setupTitle">Setup</h2>
-    <h3>Mic timing</h3>
-    <div class="row">
-      <label data-tour="align">Align <span class="unit"><input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"> ms</span></label>
-      <button type="button" id="measure" data-tour="measure" title="Play five chirps and time how long they take to come back.">Measure</button>
+    <h3>Mic timing <button type="button" class="help" popovertarget="h-align" aria-label="About mic timing">?</button></h3>
+    <div id="h-align" class="bubble" popover>Align is the round trip from the speakers back to the mic, in milliseconds. A take is placed that much earlier, so a note sung on the beat lands on it. 30 ms is a guess; Measure plays five chirps and times them. Use headphones. If the audio device changes, Capture pauses until you measure again.</div>
+    <div class="fields one">
+      <div class="field" data-tour="align"><label for="roundTrip">Align</label><span class="with-action"><span class="unit"><input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"><span>ms</span></span><button type="button" id="measure" data-tour="measure" title="Play five chirps and time how long they take to come back.">Measure</button></span></div>
     </div>
-    <p class="hint">The round trip from the speakers back to the mic. A take is placed that much earlier. Measure with headphones on.</p>
     <h3>Metronome</h3>
-    <div class="row">
-      <label>Level <input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></label>
-      <label>Bar <input id="metroBar" type="number" min="1" max="32" step="1" value="4" aria-label="Beats in a bar"></label>
-      <button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button>
+    <div class="fields one">
+      <label class="field">Level <span class="range"><input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></span></label>
+      <label class="field">Beats in a bar <input id="metroBar" type="number" min="1" max="32" step="1" value="4" aria-label="Beats in a bar"></label>
+      <div class="field"><span>Sound</span><span class="actions"><button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button></span></div>
     </div>
-    <h3>Vowel bands</h3>
-    <div class="row">
-      <label data-tour="bands">Bands
+    <h3>Vowel bands <button type="button" class="help" popovertarget="h-bands" aria-label="About vowel bands">?</button></h3>
+    <div id="h-bands" class="bubble" popover>16 is the song engine's vowel bank and the width a take is stored at. 24 is the Live page's front end; choosing it here does not widen the song engine.</div>
+    <div class="fields one">
+      <label class="field" data-tour="bands">Bands
         <select id="bands" aria-label="Vowel bands. The song engine uses 16.">
           <option value="16" selected>16</option>
           <option value="24">24</option>
@@ -364,13 +389,13 @@
       </label>
     </div>
     <h3>Theme</h3>
-    <div class="row" role="radiogroup" aria-label="Theme">
-      <label class="check"><input type="radio" name="theme" value="system" checked> System</label>
-      <label class="check"><input type="radio" name="theme" value="light"> Light</label>
-      <label class="check"><input type="radio" name="theme" value="dark"> Dark</label>
+    <div class="seg radios" role="radiogroup" aria-label="Theme">
+      <label><input type="radio" name="theme" value="system" checked> System</label>
+      <label><input type="radio" name="theme" value="light"> Light</label>
+      <label><input type="radio" name="theme" value="dark"> Dark</label>
     </div>
     <h3>Test pages</h3>
-    <div class="row"><button type="button" id="testsBtn">Milestone and gate pages</button></div>
+    <div class="actions"><button type="button" id="testsBtn">Milestone and gate pages</button></div>
     <form method="dialog"><button type="submit">Close</button></form>
   </dialog>
 
@@ -378,7 +403,9 @@
     <h2 id="keysTitle">Keys</h2>
     <table class="keys">
       <tbody>
-        <tr><th scope="row"><kbd>Space</kbd></th><td>Play or stop. With the mic on: hold to capture</td></tr>
+        <tr><th scope="row"><kbd>Space</kbd></th><td>Play or stop</td></tr>
+        <tr><th scope="row"><kbd>C</kbd> (hold)</th><td>Capture into the selected layer (the mic must be on)</td></tr>
+        <tr><th scope="row"><kbd>R</kbd></th><td>Record a pass; again to stop</td></tr>
         <tr><th scope="row"><kbd>Esc</kbd></th><td>Stop</td></tr>
         <tr><th scope="row"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>Z</kbd></th><td>Undo (add <kbd>Shift</kbd> to redo)</td></tr>
         <tr><th scope="row"><kbd>Alt</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></th><td>Track, Sound, Perform</td></tr>

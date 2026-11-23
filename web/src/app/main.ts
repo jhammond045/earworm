@@ -53,6 +53,7 @@ import { factoryPresets, parsePreset, presetFileName, presetFromLayer, presetMat
 import { Ribbon } from '../live/ribbon';
 import { keyLabel, SynthPanel } from './synth-ui';
 import { PerformPanel } from './perform';
+import { placeBubbles } from './help';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SHAPE: HitShape = { attack: 0.004, burst: 0.4, cents: null, bend: 0, hold: 0.05, vowel: 0.4, tone: 0.6, endStop: 0, endClick: 0 };
@@ -113,6 +114,17 @@ async function main(): Promise<void> {
   startLogo($('logo'), () => capture.holding);
   let cursor = { row: 0, col: 0 };
   let listening: { layerId: string; clip: MicClip; live: LiveMatch } | null = null;
+
+  /** Slider readouts: each paints its slider's value beside it, on input and after every render. */
+  const readouts: (() => void)[] = [];
+  function readout(input: HTMLInputElement, fmt: (v: number) => string, out: HTMLOutputElement = document.createElement('output')): HTMLOutputElement {
+    const paint = () => { out.textContent = fmt(Number(input.value)); };
+    input.addEventListener('input', paint);
+    readouts.push(paint);
+    paint();
+    return out;
+  }
+  const pct = (v: number) => `${Math.round(v)}%`;
 
   const section = () => app.doc.sections.find((s) => s.id === app.ui.sectionId) ?? app.doc.sections[0];
   const layer = () => app.doc.layers.find((l) => l.id === app.ui.layerId) ?? app.doc.layers[0];
@@ -428,7 +440,7 @@ async function main(): Promise<void> {
     const infl = l.influence;
     $('infStatus').textContent = infl
       ? `${infl.sourceName}. ${Math.round(st.influenceAmount * 100)}% toward it.`
-      : 'No Influence yet. A file or Listen sets a target the state blends toward.';
+      : 'No Influence yet.';
     for (const a of ASPECTS) {
       const box = document.getElementById(`aspect-${a.bit}`) as HTMLInputElement | null;
       if (box) box.checked = !infl || (infl.mask & a.bit) !== 0;
@@ -472,6 +484,7 @@ async function main(): Promise<void> {
       follow.parentElement!.hidden = l.kind !== 'beat';
       if (document.activeElement !== follow) follow.value = String(Math.round(l.follow * 100));
     }
+    for (const paint of readouts) paint();
     synth.render();
   }
 
@@ -1098,7 +1111,7 @@ async function main(): Promise<void> {
     };
     input.addEventListener('input', () => commit(true));
     input.addEventListener('change', () => commit(false));
-    label.append(title, input);
+    label.append(title, input, readout(input, spec.key === 'speedMs' ? (v) => `${v} ms` : pct));
     $('tuneRanges').append(label);
   }
   function commitTune(tune: Partial<TuneFields>): void {
@@ -1236,7 +1249,7 @@ async function main(): Promise<void> {
       const macros = macroValues(l, k, Number(input.value) / 100);
       if (app.run(() => app.store.dispatch('setState', { layer: l.id, id: app.ui.editState(l).id, macros }))) acted('macro');
     });
-    label.append(title, input);
+    label.append(title, input, readout(input, (v) => String(v)));
     macroBox.append(label);
   });
 
@@ -1269,7 +1282,7 @@ async function main(): Promise<void> {
       if (!l) return;
       if (app.run(() => app.store.dispatch('setLayer', { id: l.id, depth: { [g.key]: Number(input.value) / 100 } }))) acted('gesture');
     });
-    label.append(title, input);
+    label.append(title, input, readout(input, pct));
     gestureBox.append(label);
   }
   {
@@ -1292,7 +1305,7 @@ async function main(): Promise<void> {
       const l = layer();
       if (l && app.run(() => app.store.dispatch('setLayer', { id: l.id, follow: Number(input.value) / 100 }))) acted('gesture');
     });
-    label.append(title, input);
+    label.append(title, input, readout(input, pct));
     gestureBox.append(label);
   }
 
@@ -1415,9 +1428,11 @@ async function main(): Promise<void> {
       for (const x of ASPECTS) if ((document.getElementById(`aspect-${x.bit}`) as HTMLInputElement).checked) mask |= x.bit;
       app.run(() => app.store.dispatch('setInfluenceMask', { layer: l.id, mask }));
     });
-    label.append(input, document.createTextNode(` ${a.label}`));
+    label.append(input, document.createTextNode(a.label));
     aspectBox.append(label);
   }
+  readout(num('level'), (v) => `${v > 0 ? '+' : ''}${v} dB`, $<HTMLOutputElement>('levelRead'));
+  readout(num('amount'), pct, $<HTMLOutputElement>('amountRead'));
   num('amount').addEventListener('input', () => {
     const l = layer();
     const i = app.doc.layers.findIndex((x) => x.id === l?.id);
@@ -1724,10 +1739,28 @@ async function main(): Promise<void> {
       return;
     }
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); app.run(() => app.store.redo()); return; }
-    if (e.key !== ' ' || e.repeat || typingIn(e.target) || e.target === btn('capture') || e.target === btn('listen')) return;
+    if (mod || e.altKey || typingIn(e.target) || document.querySelector('dialog:modal')) return;
+    // One meaning per key (docs/UI1.md, question 1): Space plays and stops, hold C captures, R records a pass.
+    if (e.code === 'KeyC') {
+      e.preventDefault();
+      if (e.repeat || capture.holding) return;
+      if (!app.host || !app.stream) { $('capStatus').textContent = app.host ? 'Capture needs the mic: press Enable mic.' : 'Press Start first.'; return; }
+      capture.start();
+      acted('capture');
+      return;
+    }
+    if (e.code === 'KeyR') {
+      e.preventDefault();
+      if (e.repeat || !app.host) return;
+      capture.toggleRecord();
+      acted('capture');
+      return;
+    }
+    // On a button, a box or a tab, Space keeps its own meaning (press it); the pattern's cells are the exception.
+    const onControl = e.target instanceof Element && !!e.target.closest('button:not(.cell), summary, a, input[type="checkbox"], input[type="radio"]');
+    if (e.key !== ' ' || e.repeat || onControl) return;
     e.preventDefault();
-    if (app.stream) capture.start();
-    else if (app.host) {
+    if (app.host) {
       const playing = app.readMeters()?.[M_PLAYING] === 1;
       if (playing) app.host.stop();
       else {
@@ -1740,7 +1773,7 @@ async function main(): Promise<void> {
     }
   });
   window.addEventListener('keyup', (e) => {
-    if (e.key === ' ' && capture.holding) void capture.end();
+    if (e.code === 'KeyC' && capture.holding) void capture.end();
   });
 
   // ---- file
@@ -2048,6 +2081,7 @@ async function main(): Promise<void> {
     }
   };
 
+  placeBubbles();
   await session.init();
   if (session.historyReset) $('capStatus').textContent = UPGRADED;
   app.refreshAll();

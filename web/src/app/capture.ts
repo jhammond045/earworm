@@ -154,7 +154,7 @@ export class AppCapture implements RecordHooks {
     if (!app.host || app.stream) return;
     app.stream = await navigator.mediaDevices.getUserMedia(micConstraints());
     app.host.connectMic(app.stream);
-    this.status('Mic on. Hold Capture, or hold Space.');
+    this.status('Mic on. Hold Capture, or hold C.');
   }
 
   /** Called from the animation frame: finishes a count-in, and grabs the clock once the transport is playing. */
