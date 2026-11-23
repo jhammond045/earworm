@@ -20,7 +20,7 @@ import { instantiateEngine } from '../m1/protocol';
 import { exportProject, importProject } from '../project/archive';
 import { Compiler } from '../project/compile';
 import { historyResets, migrate } from '../project/migrate';
-import type { Layer, Project, Take } from '../project/types';
+import { SCHEMA, type Layer, type Project, type Take } from '../project/types';
 
 const SR = 48000;
 const CHUNK = 4096;
@@ -185,7 +185,7 @@ describe('golden renders', () => {
     const got = await importProject(zip.bytes);
     expect(got.savedSchema).toBe(3);
     expect(historyResets(got.savedSchema)).toBe(true);
-    expect(got.doc.schema).toBe(5);
+    expect(got.doc.schema).toBe(SCHEMA);
     const { ex } = instantiateEngine(curWasm, SR, CHUNK);
     const res = await renderSong(ex, uploadsToSong(compileCurrent(got.doc, curves, got.blobs)), { maxSeconds: 6 });
     expect(res.peak).toBeGreaterThan(0.1);

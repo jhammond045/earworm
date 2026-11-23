@@ -4,7 +4,7 @@
 // chunks, which is where a worker sees cancel messages.
 
 import { P, toNorm } from '../gen/params';
-import { BUDGET_MAX, CONTROL_CAP, LAYER_LEVEL, LOAD_CURVE, LOAD_LAYER, LOAD_OK, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TOO_BIG, LOAD_TRACK, MAX_LAYERS, MSG_BYTES,
+import { BUDGET_MAX, CONTROL_CAP, LAYER_LEVEL, LOAD_CURVE, LOAD_LAYER, LOAD_NOTE_CURVES, LOAD_OK, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TOO_BIG, LOAD_TRACK, MAX_LAYERS, MSG_BYTES,
   MSG_NOTE_ON, MSG_PLAY, MSG_SET_BUDGET, MSG_SET_LAYER, MSG_SET_PARAM, M_ACTIVE_PARTIALS, M_PEAK_L, M_PEAK_R, M_PLAYING,
   METER_LEN, SET_BASE, VOICES_PER_LAYER, encodeMessage, readBufferTable, type BufferTable, type EngineExports, type Msg } from './protocol';
 
@@ -26,6 +26,8 @@ export interface SongBlobs {
   samples?: { slot: number; buf: ArrayBuffer }[];
   /** LOAD_STATES blobs, so a morph lane is in the file and not only state 0. */
   states?: { slot: number; buf: ArrayBuffer }[];
+  /** LOAD_NOTE_CURVES blobs (poly takes, docs/poly.md P3). */
+  noteCurves?: { slot: number; buf: ArrayBuffer }[];
 }
 
 export interface RenderOptions {
@@ -137,6 +139,7 @@ export async function renderSong(ex: EngineExports, song: SongBlobs, opts: Rende
     song.layers.forEach((b, i) => { if (b) check(`layer ${i}`, core.load(LOAD_LAYER, i, b)); });
     for (const s of song.states ?? []) check(`states ${s.slot}`, core.load(LOAD_STATES, s.slot, s.buf));
     for (const c of song.curves ?? []) check(`curve ${c.slot}`, core.load(LOAD_CURVE, c.slot, c.buf));
+    for (const c of song.noteCurves ?? []) check(`note curves ${c.slot}`, core.load(LOAD_NOTE_CURVES, c.slot, c.buf));
     for (const g of song.samples ?? []) check(`sample ${g.slot}`, core.load(LOAD_SAMPLE, g.slot, g.buf));
     let track = song.track;
     if (opts.once ?? true) {

@@ -15,8 +15,8 @@ import { amountKey, amountNorm, checkRoute, defaultAmount, findRoute, makeRoute,
 import * as S from '../synth/structure';
 import type { ChannelFxType, Port, VoiceModuleType } from '../synth/patch';
 import { parsePreset, type PresetFile } from '../presets/presets';
-import { KIT_SLOTS, LANE_FIXED, LANE_SHAPES, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
-import type { AutoLane, Flex, LanePoint } from './types';
+import { INSTRUMENTS, KIT_SLOTS, LANE_FIXED, LANE_SHAPES, MAX_CHANNELS, MAX_LAYERS, MAX_STATES, MIDI_CHANNELS, MORPH_SHAPES, PPQ, SCHEMA, defaultMetro, defaultPerform } from './types';
+import type { AutoLane, CaptureMode, Flex, LanePoint } from './types';
 import { checkFlex } from './flex';
 import type { BeatClip, Clip, Feel, GestureDepth, Hit, Influence, KitSlot, Layer, LayerKind, MelodyClip, Metro, MorphMarker,
   MidiMapping, MorphShape, Note, Perform, PerfTarget, Project, Section, State, Take, Tune } from './types';
@@ -265,6 +265,16 @@ export interface SectionFields { name: string; feel: Feel; beats: number; second
 export interface LayerFields {
   name: string; level: number; pan: number; mute: boolean; color: number; follow: number;
   depth: Partial<GestureDepth>; tune: Partial<Tune>; sceneMs: number;
+  /** Mono or Poly capture (docs/poly.md P3). */
+  capture: CaptureMode;
+}
+
+function checkCapture(c: CaptureMode, l: Layer): CaptureMode {
+  if (c.mode !== 'mono' && c.mode !== 'poly') fail('capture mode must be mono or poly');
+  if (!(INSTRUMENTS as readonly string[]).includes(c.instrument)) fail(`instrument must be one of ${INSTRUMENTS.join(', ')}`);
+  if (!Number.isInteger(c.channels) || c.channels < 1 || c.channels > MAX_CHANNELS) fail(`channels must be a whole number from 1 to ${MAX_CHANNELS}`);
+  if (c.mode === 'poly' && l.kind === 'beat') fail('a beat layer keeps its hits; Poly is for melody and texture layers');
+  return { mode: c.mode, instrument: c.instrument, channels: c.channels };
 }
 type WithId<T> = { id?: string } & Omit<T, 'id'>;
 
@@ -543,6 +553,11 @@ export const commands = {
     if (a.color !== undefined) put(['color'], Number.isInteger(a.color) && a.color >= 0 && a.color <= 0xffffff ? a.color : fail('color must be 0xRRGGBB'), l.color);
     if (a.follow !== undefined) put(['follow'], inRange(a.follow, 'follow', 0, 1), l.follow);
     if (a.sceneMs !== undefined) put(['sceneMs'], inRange(a.sceneMs, 'scene time', 0, 60000), l.sceneMs);
+    if (a.capture !== undefined) {
+      const c = checkCapture(a.capture, l);
+      const o = l.capture;
+      if (!o || o.mode !== c.mode || o.instrument !== c.instrument || o.channels !== c.channels) ops.push({ op: 'set', path: ['layers', i, 'capture'], value: c });
+    }
     for (const [k, v] of Object.entries(a.depth ?? {})) {
       if (!(k in l.depth)) fail(`unknown depth field "${k}"`);
       put(['depth', k], inRange(v, `depth ${k}`, 0, 1), l.depth[k as keyof GestureDepth]);

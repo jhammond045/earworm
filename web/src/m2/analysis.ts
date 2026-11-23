@@ -4,8 +4,9 @@
 
 export type ClipKind = 'melody' | 'beat' | 'texture';
 
-/** Take seconds; `cents` above C0 (median pitch). */
-export interface Note { t: number; dur: number; cents: number; hard: number }
+/** Take seconds; `cents` above C0 (median pitch). A poly take's notes also carry their velocity
+ *  and their index in the take's note curves. */
+export interface Note { t: number; dur: number; cents: number; hard: number; vel?: number; curve?: number }
 
 /** Seconds for `attack` and `hold`, semitones per second for `bend`, 0 or 1 for `endStop`/`endClick`. */
 export interface HitShape {
@@ -150,6 +151,63 @@ export function teach(hits: Hit[][]): (TaughtSlot | null)[] {
   return out;
 }
 
+// ---- Poly takes (crates/analysis/src/poly/mod.rs, docs/poly.md P3) ----
+
+export type PolyInstrument = 'guitar' | 'piano' | 'other';
+
+export interface PolyOptions {
+  instrument: PolyInstrument;
+  /** Notes at once, 1..8; 0 or missing: the instrument's default (guitar 6, others 8). */
+  channels?: number;
+  /** Lowest and highest MIDI note kept; missing: the instrument's range. */
+  lo?: number;
+  hi?: number;
+}
+
+/** A poly take's note. Take seconds; `cents` above C0 (the semitone); `curve`: its index in the
+ *  pass's note curves. */
+export interface PolyNote { t: number; dur: number; cents: number; vel: number; hard: number; midi: number; curve: number }
+
+export interface PolyPass {
+  notes: PolyNote[];
+  /** Every note's curve, in the stored layout (`encodeNoteCurves` in m1/track.ts). */
+  curves: Float32Array;
+  seconds: number;
+  ms: number;
+}
+
+export const POLY_HEADER = 8;
+export const POLY_NOTE_LEN = 8;
+export const POLY_REC_LEN = 5;
+/** Samples per piece the take is fed to the analysis module in: memory stays small however long the take. */
+export const POLY_CHUNK = 48000;
+
+export function encodePolyOptions(o: PolyOptions): Float32Array {
+  const inst = o.instrument === 'piano' ? 1 : o.instrument === 'other' ? 2 : 0;
+  return Float32Array.from([inst, o.channels ?? 0, o.lo ?? 0, o.hi ?? 0]);
+}
+
+export function decodePolyPass(f: ArrayLike<number>, ms = 0): PolyPass {
+  if (f.length < POLY_HEADER || f[0] !== 1) throw new Error(`poly pass result: version ${f[0]}, ${f.length} floats`);
+  const nNotes = f[1], nRecs = f[2];
+  if (f[3] !== POLY_NOTE_LEN || f[4] !== POLY_REC_LEN) throw new Error(`poly pass result: records of ${f[3]} and ${f[4]} floats`);
+  const recAt = POLY_HEADER + nNotes * POLY_NOTE_LEN;
+  if (f.length !== recAt + nRecs * POLY_REC_LEN) throw new Error(`poly pass result has ${f.length} floats, header says ${recAt + nRecs * POLY_REC_LEN}`);
+  const notes: PolyNote[] = [];
+  const curves = new Float32Array(2 + 3 * nNotes + nRecs * POLY_REC_LEN);
+  curves[0] = nNotes;
+  curves[1] = nRecs;
+  for (let i = 0; i < nNotes; i++) {
+    const o = POLY_HEADER + i * POLY_NOTE_LEN;
+    notes.push({ t: f[o], dur: f[o + 1], cents: f[o + 2], vel: f[o + 3], hard: f[o + 4], midi: f[o + 7], curve: i });
+    curves[2 + 3 * i] = f[o];
+    curves[3 + 3 * i] = f[o + 5];
+    curves[4 + 3 * i] = f[o + 6];
+  }
+  for (let k = 0; k < nRecs * POLY_REC_LEN; k++) curves[2 + 3 * nNotes + k] = f[recAt + k];
+  return { notes, curves, seconds: f[6], ms };
+}
+
 // ---- wasm ----
 
 interface Exports {
@@ -159,6 +217,9 @@ interface Exports {
   an_result_len(): number;
   an_second(audio: number, audioLen: number, sr: number, frames: number, framesLen: number, opts: number, optsLen: number): number;
   an_tune(frames: number, framesLen: number, pitch: number, settings: number): number;
+  an_poly_begin(sr: number, opts: number, optsLen: number): void;
+  an_poly_feed(ptr: number, len: number): void;
+  an_poly_end(): number;
 }
 
 /** The analysis wasm module. Synchronous; the worker and the tests use it directly. */
@@ -207,6 +268,49 @@ export class AnalysisCore {
       this.release(o, flat);
     }
     return decodeSecondPass(floats, performance.now() - t0);
+  }
+
+  private polyT0 = 0;
+
+  /** Start a poly pass over a take at `sampleRate`; feed it with `polyFeed`, end with `polyEnd`. */
+  polyBegin(sampleRate: number, opts: PolyOptions): void {
+    const flat = encodePolyOptions(opts);
+    const o = this.put(flat);
+    try {
+      this.polyT0 = performance.now();
+      this.x.an_poly_begin(sampleRate, o, flat.length);
+    } finally {
+      this.release(o, flat);
+    }
+  }
+
+  polyFeed(audio: Float32Array): void {
+    for (let i = 0; i < audio.length; i += POLY_CHUNK) {
+      const c = audio.subarray(i, Math.min(audio.length, i + POLY_CHUNK));
+      const p = this.put(c);
+      try {
+        this.x.an_poly_feed(p, c.length);
+      } finally {
+        this.release(p, c);
+      }
+    }
+  }
+
+  polyEnd(): PolyPass {
+    const floats = this.result(this.x.an_poly_end());
+    return decodePolyPass(floats, performance.now() - this.polyT0);
+  }
+
+  /** The whole poly pass over a take in memory. */
+  polyPass(audio: Float32Array, sampleRate: number, opts: PolyOptions): PolyPass {
+    this.polyBegin(sampleRate, opts);
+    this.polyFeed(audio);
+    return this.polyEnd();
+  }
+
+  /** Bytes of wasm memory the module holds (it only grows). */
+  memoryBytes(): number {
+    return this.x.memory.buffer.byteLength;
   }
 
   /** Tuned pitch and loudness (after Level out) per frame of a stored take; `pitch` is the repaired curve. */
@@ -275,6 +379,23 @@ export class Analysis {
   tune(frames: Float32Array, pitch: Float32Array, s: TuneSettings): Promise<{ tuned: Float32Array; loudness: Float32Array }> {
     const f = frames.slice(), p = pitch.slice();
     return this.call({ op: 'tune', frames: f, pitch: p, settings: s }, [f.buffer, p.buffer]);
+  }
+
+  /** The poly pass (docs/poly.md P3). The take goes to the worker a second at a time, each piece
+   *  answered before the next is sent, so the worker never holds the whole take. */
+  async polyPass(audio: Float32Array, sampleRate: number, opts: PolyOptions): Promise<PolyPass> {
+    await this.call({ op: 'poly-begin', sampleRate, opts });
+    const step = Math.max(1, Math.round(sampleRate));
+    for (let i = 0; i < audio.length; i += step) {
+      const c = audio.slice(i, Math.min(audio.length, i + step));
+      await this.call({ op: 'poly-feed', audio: c }, [c.buffer]);
+    }
+    return this.call({ op: 'poly-end' });
+  }
+
+  /** Bytes of wasm memory the worker's module holds. */
+  memoryBytes(): Promise<number> {
+    return this.call({ op: 'memory' });
   }
 
   teach(hits: Hit[][]): (TaughtSlot | null)[] {

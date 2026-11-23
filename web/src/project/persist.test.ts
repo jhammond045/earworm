@@ -272,7 +272,7 @@ describe('schema migration on open', () => {
     const opened = await new ProjectDb(kv).open(start.id);
     expect(opened!.historyReset).toBe(true);
     expect(opened!.history).toEqual({ undo: [], redo: [] });
-    expect(opened!.doc.schema).toBe(5);
+    expect(opened!.doc.schema).toBe(SCHEMA);
     expect(opened!.doc.layers[0].level).toBe(-4);
     const clip = opened!.doc.sections[0].clips[mel] as { notes: { id: string; vel?: number }[] };
     expect(clip.notes.map((n) => [n.id, n.vel])).toEqual([['n1', 1]]);

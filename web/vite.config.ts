@@ -72,6 +72,7 @@ export default defineConfig(({ mode }) => ({
         delay: page('delay.html'),
         m1: page('m1.html'),
         bench: page('bench.html'),
+        polyBench: page('poly-bench.html'),
         m2: page('m2.html'),
         m3: page('m3.html'),
         m4Test: page('m4-test.html'),

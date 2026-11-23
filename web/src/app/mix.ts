@@ -1,7 +1,7 @@
 // The offline renderer wants blobs grouped by kind. The compiler already produced that list
 // for the live engine; this only sorts it.
 
-import { LOAD_CURVE, LOAD_LAYER, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TRACK } from '../m1/protocol';
+import { LOAD_CURVE, LOAD_LAYER, LOAD_NOTE_CURVES, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TRACK } from '../m1/protocol';
 import type { SongBlobs } from '../m1/render-core';
 import type { Upload } from '../project/compile';
 import type { Project } from '../project/types';
@@ -15,6 +15,7 @@ export function uploadsToSong(uploads: Upload[]): SongBlobs {
     else if (u.kind === LOAD_CURVE) (song.curves ??= []).push({ slot: u.slot, buf: u.blob });
     else if (u.kind === LOAD_SAMPLE) (song.samples ??= []).push({ slot: u.slot, buf: u.blob });
     else if (u.kind === LOAD_STATES) (song.states ??= []).push({ slot: u.slot, buf: u.blob });
+    else if (u.kind === LOAD_NOTE_CURVES) (song.noteCurves ??= []).push({ slot: u.slot, buf: u.blob });
   }
   if (!song.track.byteLength) throw new Error('the song has no track to render');
   return song;

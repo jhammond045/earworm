@@ -707,6 +707,7 @@ async function main(): Promise<void> {
   app.sync.grainFor = (l) => session.grainFor(l);
   app.sync.audioFor = (t) => session.audioFor(t);
   app.sync.anchorsFor = (t) => session.anchorsFor(t);
+  app.sync.noteCurvesFor = (t) => session.noteCurvesFor(t);
   app.sync.onPass = (r) => {
     if (r.errors.length) app.fail(`Engine: ${r.errors.join('; ')}`);
     else if (!r.skipped) $('engineStatus').textContent = `Engine in sync. ${r.uploads.length} blobs, ${r.loadMs.toFixed(0)} ms.`;
@@ -1714,6 +1715,7 @@ async function main(): Promise<void> {
         grainFor: (lay) => session.grainFor(lay),
         audioFor: (t) => session.audioFor(t),
         anchorsFor: (t) => session.anchorsFor(t),
+        noteCurvesFor: (t) => session.noteCurvesFor(t),
       });
       const song = uploadsToSong(uploads);
       const seconds = songSeconds(app.doc);

@@ -9,6 +9,8 @@ export const N_MACROS = 8;
 export const MAX_VALUES = 1024;
 export const MAX_CURVES = 64;
 export const CURVE_POOL_FLOATS = 1 << 21;
+/** Floats in the note-curve pool (poly takes). */
+export const NOTE_CURVE_POOL_FLOATS = 1 << 20;
 export const STAGING_BYTES = 16 << 20;
 
 // ---- control ring
@@ -103,6 +105,8 @@ export const LOAD_CURVE = 3;
 export const LOAD_SAMPLE = 4;
 export const LOAD_STATES = 5;
 export const LOAD_PATCH = 6;
+/** A poly take's note curves; slot = note-curve id (crates/klont/src/notecurve.rs). */
+export const LOAD_NOTE_CURVES = 7;
 
 export const LOAD_OK = 0;
 export const LOAD_BAD_KIND = -1;

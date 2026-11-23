@@ -14,7 +14,7 @@
 /** 4: layers carry a patch and states carry values by key (docs/synth.md, stage S1); notes carry a
  *  velocity. 5: clips may carry a flex setting, beat clips a warp map, takes their flex anchors
  *  (docs/quant.md, Q1); all optional. Older documents are upgraded by migrate.ts. */
-export const SCHEMA = 5;
+export const SCHEMA = 6;
 
 /** Click track. The engine plays it live only; exports and the mic never contain it. */
 export interface Metro {
@@ -176,6 +176,25 @@ export interface Layer {
   influence?: Influence;
   /** How long a scene takes to morph to this layer's state, ms. Missing: SCENE_MS. */
   sceneMs?: number;
+  /** How a take is captured into the layer (docs/poly.md, P3). Missing: mono. */
+  capture?: CaptureMode;
+}
+
+/** Instruments a poly take can be read as (docs/poly.md "Instruments"): each sets the notes kept
+ *  (guitar E2 to E6, piano A0 to C8, other A1 to C7) and the default channel count. */
+export const INSTRUMENTS = ['guitar', 'piano', 'other'] as const;
+export type Instrument = (typeof INSTRUMENTS)[number];
+/** Most capture channels (notes at once) a poly take keeps. */
+export const MAX_CHANNELS = 8;
+export const DEFAULT_CHANNELS: Record<Instrument, number> = { guitar: 6, piano: 8, other: 8 };
+
+/** Mono: one line of notes, as sung. Poly: several notes at once (a guitar's chords, a piano),
+ *  each with its own curve, at most `channels` sounding together (1..MAX_CHANNELS, and never more
+ *  than the patch's voices). */
+export interface CaptureMode {
+  mode: 'mono' | 'poly';
+  instrument: Instrument;
+  channels: number;
 }
 
 export interface Note {
@@ -188,6 +207,9 @@ export interface Note {
   hard: number;
   /** Velocity 0..1; missing means 1 (documents from before schema 4 get 1). */
   vel?: number;
+  /** A poly take's note (schema 6): its index in the note curves of the clip's take, which the
+   *  voice playing it reads. Missing: a note with no curve of its own. */
+  curve?: number;
 }
 
 export interface HitShape {
@@ -322,4 +344,7 @@ export interface Take {
   anchors?: BlobRef;
   /** The detector version that found them (crates/analysis/src/anchors.rs VERSION). */
   anchorsVersion?: number;
+  /** A poly take (schema 6, docs/poly.md P3): Float32 blob of each note's curve (layout at
+   *  `encodeNoteCurves` in m1/track.ts). Its notes are in the clip, each naming its curve. */
+  noteCurves?: BlobRef;
 }

@@ -137,13 +137,14 @@ function bytesToFloats(data: Uint8Array, name: string): Float32Array {
   return new Float32Array(copy.buffer, copy.byteOffset, copy.byteLength / 4);
 }
 
-/** Blob refs named by the document: every take's audio, frames and anchors, and every Influence source. */
+/** Blob refs named by the document: every take's audio, frames, anchors and note curves, and every Influence source. */
 export function documentRefs(doc: Project): string[] {
   const refs = new Set<string>();
   for (const t of Object.values(doc.takes)) {
     if (t.audio) refs.add(t.audio);
     if (t.frames) refs.add(t.frames);
     if (t.anchors) refs.add(t.anchors);
+    if (t.noteCurves) refs.add(t.noteCurves);
   }
   for (const l of doc.layers) {
     const src = l.influence?.source;

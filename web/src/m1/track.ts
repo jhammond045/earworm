@@ -5,7 +5,11 @@
 export const TRACK_MAGIC = 0x31545745; // "EWT1"
 export const TRACK_MAGIC2 = 0x32545745; // "EWT2": v1 plus morph markers
 export const TRACK_MAGIC3 = 0x33545745; // "EWT3": v2 plus take audio and automation lanes (S5)
+export const TRACK_MAGIC4 = 0x34545745; // "EWT4": v3 plus a note curve per note (docs/poly.md P3)
 export const CURVE_MAGIC = 0x31435745; // "EWC1"
+export const NOTE_CURVE_MAGIC = 0x314e5745; // "EWN1"
+/** Floats per note-curve record: pitch offset (cents), volume, intensity, hardness, onset. */
+export const NOTE_REC = 5;
 export const FEEL_GRID = 0;
 export const FEEL_FREE = 1;
 export const PPQ = 960;
@@ -84,6 +88,10 @@ export interface TrackEvent {
   tone?: number;
   endStop?: number;
   endClick?: number;
+  /** A poly take's note: the note-curve slot (LOAD_NOTE_CURVES) and the note's index in it.
+   *  Any note with one makes the blob v4. */
+  noteCurve?: number;
+  noteIndex?: number;
 }
 
 export interface TrackWarpAnchor {
@@ -261,7 +269,9 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
   if (nLanes > MAX_LANES) fail(`more than ${MAX_LANES} automation lanes`);
   if (nPoints > MAX_LANE_POINTS) fail(`more than ${MAX_LANE_POINTS} automation points`);
   // The oldest version that holds everything, so existing tracks and fixtures stay byte-identical.
-  const v3 = nLanes > 0 || clips.some((c) => c.audio >= 0 || c.audioWarp.length > 0);
+  const v4 = clips.some((c) => c.events.some((e) => (e.noteCurve ?? -1) >= 0));
+  if (clips.some((c) => c.events.some((e) => (e.noteCurve ?? -1) >= MAX_CURVES))) fail(`note-curve slot past ${MAX_CURVES - 1}`);
+  const v3 = v4 || nLanes > 0 || clips.some((c) => c.audio >= 0 || c.audioWarp.length > 0);
   const v2 = v3 || nMorph > 0;
 
   const w = new Words(
@@ -273,7 +283,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       nMorph * MORPH_WORDS +
       (v3 ? 1 + nLanes * LANE_WORDS + nPoints * POINT_WORDS : 0),
   );
-  w.u(v3 ? TRACK_MAGIC3 : v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
+  w.u(v4 ? TRACK_MAGIC4 : v3 ? TRACK_MAGIC3 : v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
   w.u(sections.length);
   w.u(clips.length);
   w.u(nEvents);
@@ -339,7 +349,12 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       w.f(e.tone ?? 0);
       w.f(e.endStop ?? 0);
       w.f(e.endClick ?? 0);
-      w.zeros(2);
+      if (v4) {
+        w.i(e.noteCurve ?? -1);
+        w.u(e.noteIndex ?? 0);
+      } else {
+        w.zeros(2);
+      }
     }
   }
   for (const c of clips) {
@@ -390,5 +405,26 @@ export function encodeCurve(frames: Float32Array): ArrayBuffer {
   w.u(CURVE_MAGIC);
   w.u(n);
   for (let i = 0; i < frames.length; i++) w.f(frames[i]);
+  return w.buf;
+}
+
+/**
+ * The note curves of a poly take as stored with it (docs/poly.md P3, `decodePolyPass` in
+ * m2/analysis.ts): n notes, n records, then per note its start (take seconds), first record and
+ * record count, then the records, NOTE_REC floats each.
+ */
+export function encodeNoteCurves(c: Float32Array): ArrayBuffer {
+  const nNotes = c[0], nRecs = c[1];
+  if (c.length !== 2 + nNotes * 3 + nRecs * NOTE_REC) fail(`note curves: ${c.length} floats for ${nNotes} notes and ${nRecs} records`);
+  const w = new Words(3 + nNotes * 3 + nRecs * NOTE_REC);
+  w.u(NOTE_CURVE_MAGIC);
+  w.u(nNotes);
+  w.u(nRecs);
+  for (let i = 0; i < nNotes; i++) {
+    w.f(c[2 + 3 * i]);
+    w.u(c[3 + 3 * i]);
+    w.u(c[4 + 3 * i]);
+  }
+  for (let i = 2 + 3 * nNotes; i < c.length; i++) w.f(c[i]);
   return w.buf;
 }

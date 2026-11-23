@@ -135,7 +135,19 @@ const v4to5: Step = {
   },
 };
 
-const STEPS: Step[] = [v1to2, v2to3, v3to4, v4to5];
+/** 5 -> 6 (docs/poly.md, P3): a layer's capture mode, a note's curve and a take's note curves
+ *  are optional fields; a document without them plays as before. Only the number changes. */
+const v5to6: Step = {
+  from: 5,
+  doc(doc) {
+    return { ...doc, schema: 6 };
+  },
+  value(v) {
+    return v;
+  },
+};
+
+const STEPS: Step[] = [v1to2, v2to3, v3to4, v4to5, v5to6];
 
 function stepsFrom(schema: unknown): Step[] {
   if (typeof schema !== 'number' || !Number.isInteger(schema) || schema < 1) {

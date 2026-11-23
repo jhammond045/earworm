@@ -7,13 +7,13 @@
 
 import { encodeLayerBlob, encodeSample, encodeStates } from '../m1/blobs';
 import {
-  encodeCurve, encodeTrack, LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE, MAX_CURVES, MAX_SAMPLES,
+  encodeCurve, encodeNoteCurves, encodeTrack, LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE, MAX_CURVES, MAX_SAMPLES,
   type TrackClip, type TrackEvent, type TrackInput, type TrackLane,
 } from '../m1/track';
 import {
   KIND_BEAT, KIND_MELODY, KIND_TEXTURE, LAYER_DEPTH_LOUD, LAYER_FIELDS, LAYER_FOLLOW, LAYER_INFLUENCE_AMOUNT,
   LAYER_INFLUENCE_MASK, LAYER_KIND, LAYER_KIT_CENTS, LAYER_LEVEL, LAYER_MUTE, LAYER_PAN,
-  LOAD_CURVE, LOAD_LAYER, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TRACK, MAX_LAYERS, N_MACROS, SAMPLE_POOL_FLOATS,
+  LOAD_CURVE, LOAD_LAYER, LOAD_NOTE_CURVES, LOAD_PATCH, LOAD_SAMPLE, LOAD_STATES, LOAD_TRACK, MAX_LAYERS, N_MACROS, SAMPLE_POOL_FLOATS,
 } from '../m1/protocol';
 import { classicPatch, classicVectors, isClassic } from '../synth/classic';
 import { inputAt, layoutOf, patchBlob, type Patch } from '../synth/patch';
@@ -117,7 +117,11 @@ export type AudioFor = (take: Take) => Float32Array | null;
  *  then quantizes its note or hit starts. Same array until the take's anchors change. */
 export type AnchorsFor = (take: Take) => Float32Array | null;
 
-export interface CompileOptions { grainFor?: GrainFor; audioFor?: AudioFor; anchorsFor?: AnchorsFor }
+/** A poly take's note curves (Take.noteCurves, docs/poly.md P3), or null: not loaded yet, or the
+ *  take has none. Same array until the take's curves change. */
+export type NoteCurvesFor = (take: Take) => Float32Array | null;
+
+export interface CompileOptions { grainFor?: GrainFor; audioFor?: AudioFor; anchorsFor?: AnchorsFor; noteCurvesFor?: NoteCurvesFor }
 
 /** Take audio goes in the sample pool from this id up (ids below are the layers' grain samples). */
 export const FIRST_AUDIO_SAMPLE = 8;
@@ -164,6 +168,9 @@ export class Compiler {
   /** Take id -> sample id of its audio, and the array last sent there. */
   private audioOf = new Map<string, number>();
   private audioSent = new Map<number, Float32Array>();
+  /** Take id -> note-curve slot, and the array last sent there (with its note count). */
+  private noteSlotOf = new Map<string, number>();
+  private noteSent: ({ arr: Float32Array; notes: number } | undefined)[] = [];
 
   /** Blobs that changed since the last compile, layers and curves before the track. */
   compile(doc: Project, curveFor: CurveFor, opts: CompileOptions = {}): Upload[] {
@@ -244,6 +251,7 @@ export class Compiler {
     }
 
     this.compileAudio(out, doc, opts.audioFor);
+    this.compileNoteCurves(out, doc, opts.noteCurvesFor);
 
     // Track. It depends on the sections, loop flag, layer order and octave, the curve slots, the take
     // audio's samples, which state index each morph marker points at (state edits that keep the order
@@ -251,10 +259,11 @@ export class Compiler {
     const layerSig = doc.layers.map((l) => `${l.id}:${l.tune.octave}`).join(',');
     const slotSig = [...this.slotOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
     const audioSig = [...this.audioOf].map(([id, s]) => `${id}=${s}`).sort().join(',');
+    const noteSig = [...this.noteSlotOf].map(([id, s]) => `${id}=${s}:${this.noteSent[s]?.notes ?? 0}`).sort().join(',');
     // A flexed clip's take anchors arrive after the document does.
     const anchors = (t: Take) => opts.anchorsFor?.(t) ?? null;
     const flexSig = doc.sections.flatMap((s) => Object.values(s.clips).filter((c) => c.flex?.on && c.take).map((c) => `${c.take}:${anchors(doc.takes[c.take]) ? 1 : 0}`)).join(',');
-    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${morphSig(doc)}|${laneSig(doc)}|${flexSig}`;
+    const key = `${doc.loop}|${layerSig}|${slotSig}|${audioSig}|${noteSig}|${morphSig(doc)}|${laneSig(doc)}|${flexSig}`;
     if (doc.sections !== this.lastSections || key !== this.lastTrackKey) {
       out.push({ kind: LOAD_TRACK, slot: 0, blob: encodeTrack(this.trackInput(doc, anchors)), what: 'track' });
       this.lastSections = doc.sections;
@@ -329,8 +338,44 @@ export class Compiler {
     }
   }
 
+  /** Note curves for every poly take a melody or texture clip plays, one slot each
+   *  (LOAD_NOTE_CURVES). A slot whose take is no longer played is simply reused later. */
+  private compileNoteCurves(out: Upload[], doc: Project, noteCurvesFor: NoteCurvesFor | undefined): void {
+    const wanted = new Map<string, Float32Array>();
+    doc.sections.forEach((s) => doc.layers.forEach((l) => {
+      const c = s.clips[l.id];
+      if (!c || c.kind === 'beat' || !c.take || wanted.has(c.take)) return;
+      const take = doc.takes[c.take];
+      const arr = take?.noteCurves ? noteCurvesFor?.(take) : null;
+      if (arr) wanted.set(c.take, arr);
+    }));
+    for (const [id, slot] of [...this.noteSlotOf]) {
+      if (!wanted.has(id)) {
+        this.noteSlotOf.delete(id);
+        this.noteSent[slot] = undefined;
+      }
+    }
+    const used = new Set(this.noteSlotOf.values());
+    for (const [id, arr] of wanted) {
+      let slot = this.noteSlotOf.get(id);
+      if (slot === undefined) {
+        slot = 0;
+        while (used.has(slot)) slot++;
+        if (slot >= MAX_CURVES) throw new RangeError(`more than ${MAX_CURVES} poly takes are in use at once`);
+        used.add(slot);
+        this.noteSlotOf.set(id, slot);
+      }
+      if (this.noteSent[slot]?.arr !== arr) {
+        out.push({ kind: LOAD_NOTE_CURVES, slot, blob: encodeNoteCurves(arr), what: `note curves ${slot} (take ${id}, ${arr[0]} notes)` });
+        this.noteSent[slot] = { arr, notes: arr[0] };
+      }
+    }
+  }
+
   /** The engine restarted: everything is sent again on the next compile. */
   reset(): void {
+    this.noteSlotOf.clear();
+    this.noteSent = [];
     this.audioOf.clear();
     this.audioSent.clear();
     this.patches = [];
@@ -370,6 +415,11 @@ export class Compiler {
         const oct = 1200 * l.tune.octave;
         const morph = morphFor(c.morph, l);
         const curve = c.take ? (this.slotOf.get(c.take) ?? -1) : -1;
+        // A poly take's notes each read their own curve (docs/poly.md P3).
+        const noteSlot = c.take ? (this.noteSlotOf.get(c.take) ?? -1) : -1;
+        const nNotes = noteSlot >= 0 ? (this.noteSent[noteSlot]?.notes ?? 0) : 0;
+        const noteCurve = (n: { curve?: number }) =>
+          n.curve !== undefined && n.curve >= 0 && n.curve < nNotes ? { noteCurve: noteSlot, noteIndex: n.curve } : {};
         const warp = flexed?.warp ?? c.warp;
         // The audio keeps the clip's own map; an empty one reads the take at clip time, as the engine does.
         const audioWarp = audio >= 0 && warp !== c.warp
@@ -377,8 +427,8 @@ export class Compiler {
           : undefined;
         clips.push({
           section: si, layer: li, loopLen: c.loopLen, curve,
-          events: (flexed?.notes ?? c.notes).map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1 })),
-          warp: curve >= 0 || audio >= 0 ? warp : [],
+          events: (flexed?.notes ?? c.notes).map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1, ...noteCurve(n) })),
+          warp: curve >= 0 || audio >= 0 || nNotes > 0 ? warp : [],
           morph,
           audio,
           lanes,

@@ -14,6 +14,8 @@ export interface TakeData {
   frames: Float32Array;
   /** Flex anchors (Take.anchors). Missing on takes from before they were found. */
   anchors?: Float32Array | null;
+  /** A poly take's note curves (Take.noteCurves). */
+  noteCurves?: Float32Array | null;
 }
 
 export type ChangeKind = 'change' | 'swap';
@@ -22,6 +24,7 @@ type Listener = (doc: Project, kind: ChangeKind, entry: JournalEntry | null) => 
 export const audioRef = (takeId: string) => `audio-${takeId}`;
 export const framesRef = (takeId: string) => `frames-${takeId}`;
 export const anchorsRef = (takeId: string) => `anchors-${takeId}`;
+export const noteCurvesRef = (takeId: string) => `notecurves-${takeId}`;
 
 /** What the compiler's grainFor returns (project/compile.ts GrainFor). */
 export interface GrainSource { data: Float32Array; rate: number; refCents: number | null }
@@ -125,8 +128,8 @@ export class Session {
       const blobs = this.blobs;
       p = (async () => {
         try {
-          const [frames, audio, anchors] = await Promise.all([blobs.get(framesRef(id)), blobs.get(audioRef(id)), blobs.get(anchorsRef(id))]);
-          if (blobs === this.blobs && frames) this.takes.set(id, { frames, audio, anchors });
+          const [frames, audio, anchors, noteCurves] = await Promise.all([blobs.get(framesRef(id)), blobs.get(audioRef(id)), blobs.get(anchorsRef(id)), blobs.get(noteCurvesRef(id))]);
+          if (blobs === this.blobs && frames) this.takes.set(id, { frames, audio, anchors, noteCurves });
         } catch (e) {
           this.blobError = e instanceof Error ? e.message : String(e);
         } finally {
@@ -170,6 +173,17 @@ export class Session {
     return null;
   }
 
+  /** A poly take's note curves, or null while they load or when it has none. */
+  noteCurvesFor(take: Take): Float32Array | null {
+    if (!take.noteCurves) return null;
+    const d = this.takes.get(take.id);
+    if (d) return d.noteCurves ?? null;
+    void this.loadTake(take.id).then(() => {
+      if (this.takes.has(take.id)) this.emit(this.store.doc, 'change', null);
+    });
+    return null;
+  }
+
   /** Keep a new take: in memory at once, in the blob store in the background (errors are remembered, not thrown). */
   async putTake(id: string, data: TakeData): Promise<void> {
     this.takes.set(id, data);
@@ -177,6 +191,7 @@ export class Session {
       await this.blobs.put(framesRef(id), data.frames);
       if (data.audio) await this.blobs.put(audioRef(id), data.audio);
       if (data.anchors) await this.blobs.put(anchorsRef(id), data.anchors);
+      if (data.noteCurves) await this.blobs.put(noteCurvesRef(id), data.noteCurves);
     } catch (e) {
       this.blobError = e instanceof Error ? e.message : String(e);
       throw e;

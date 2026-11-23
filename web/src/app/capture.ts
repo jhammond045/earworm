@@ -15,7 +15,8 @@ import { layoutOf } from '../synth/patch';
 import type { Clip, Project } from '../project/types';
 import type { App } from '../m3/app';
 import { ANCHORS_VERSION, type TaughtSlot } from '../m2/analysis';
-import { anchorsRef } from '../m3/session';
+import { anchorsRef, noteCurvesRef } from '../m3/session';
+import { isPoly, polyOptions } from '../record/poly';
 import { tuneFromTake } from './tune';
 import { newId } from '../project/commands';
 import { clockMark, placeTake, type ClockMark } from '../project/overdub';
@@ -37,6 +38,9 @@ interface Active {
   mic: boolean;
   /** The layer listens: its take keeps no notes, and Live follow is not armed. */
   listening: boolean;
+  /** The layer is armed in Poly (docs/poly.md P3): the take comes back as notes with their own
+   *  curves. There is no live poly sound yet, so Live follow is not armed either. */
+  poly: boolean;
   pass: Pass | null;
   marks: ClockMark[];
   sectionId: string;
@@ -134,7 +138,7 @@ export class AppCapture implements RecordHooks {
     this.cap = null;
     window.clearTimeout(a.timer);
     if (a.pass) host.send(MSG_RECORD, 0, 0, 0, 0);
-    if (a.mic && !a.listening) host.arm(a.layerIdx, false);
+    if (a.mic && !a.listening && !a.poly) host.arm(a.layerIdx, false);
     if (a.counting) host.stop();
     this.status('Capture paused.');
   }
@@ -164,7 +168,7 @@ export class AppCapture implements RecordHooks {
       a.counting = false;
       a.mark = clockMark(m);
       a.f0 = host.framesTotal();
-      if (a.mic && !a.listening) host.arm(a.layerIdx, true);
+      if (a.mic && !a.listening && !a.poly) host.arm(a.layerIdx, true);
       this.beginPass(a);
       this.status('Recording…');
       return;
@@ -194,7 +198,7 @@ export class AppCapture implements RecordHooks {
     const a: Active = {
       layerId, layerIdx, f0: host.framesTotal(), mark: playing ? clockMark(meters!) : null,
       sectionId: section.id, timer: 0, counting: false, seq: meters ? meters[M_COUNT_SEQ] : 0,
-      latched, mic, listening: this.listeningTo(layerId), pass: null, marks: [],
+      latched, mic, listening: this.listeningTo(layerId), pass: null, marks: [], poly: isPoly(doc.layers[layerIdx]),
     };
     if (meters) { this.lastMark = clockMark(meters); this.lastMarkAt = performance.now(); }
     if (!playing && section.feel === 'grid') {
@@ -204,7 +208,7 @@ export class AppCapture implements RecordHooks {
       a.mark = null;
       this.status('Count-in…');
     } else {
-      if (mic && !a.listening) host.arm(layerIdx, true);
+      if (mic && !a.listening && !a.poly) host.arm(layerIdx, true);
       if (!playing) { host.seek(sectionIdx, 0); host.play(); }
       this.beginPass(a);
       this.status(latched ? `Recording a pass${mic ? ` (the mic into ${doc.layers[layerIdx].name})` : ''}… press Record again to stop.` : `Recording into ${doc.layers[layerIdx].name}…`);
@@ -230,7 +234,7 @@ export class AppCapture implements RecordHooks {
       a.pass.finish(this.nowSample());
       if (!a.marks.length && this.lastMark) a.marks.push(this.lastMark);
     }
-    if (a.mic && !a.listening) host.arm(a.layerIdx, false);
+    if (a.mic && !a.listening && !a.poly) host.arm(a.layerIdx, false);
     const n = a.mic ? Math.min(host.framesTotal(), a.f0 + MAX_TAKE_SEC * FRAME_RATE) - a.f0 : 0;
     const takeOk = a.mic && n >= MIN_TAKE_SEC * FRAME_RATE;
     if (!takeOk && (!a.pass || a.pass.empty)) { this.status(a.mic ? `Ignored: ${(n / FRAME_RATE).toFixed(2)} s is under ${MIN_TAKE_SEC} s.` : 'Nothing was played.'); return; }
@@ -253,6 +257,7 @@ export class AppCapture implements RecordHooks {
     const layer = app.doc.layers.find((l) => l.id === a.layerId);
     if (!layer) throw new Error('The layer was removed while recording.');
     if (n === 0 || a.listening) { await this.placePass(a, n); return; }
+    if (a.poly && isPoly(layer)) { await this.placePoly(a, n); return; }
     this.status(`Second pass on ${(n / FRAME_RATE).toFixed(1)} s…`);
     const mic = host.readMic(a.f0 * host.frameLen(), n * host.frameLen());
     const frames = host.readFrames(a.f0, n);
@@ -289,6 +294,43 @@ export class AppCapture implements RecordHooks {
     app.clearError();
     const what = layer.kind === 'beat' ? `${sp.hits.length} hits` : `${sp.notes.length} notes`;
     this.status(`Placed ${what}${a.pass ? `, and ${this.passWhat(a.pass)}` : ''}. Round trip ${rt.toFixed(0)} ms.`);
+  }
+
+  /** A poly take (docs/poly.md P3): the note model reads the take in the analysis worker; its
+   *  notes go into the clip, each naming its curve, which is stored with the take. */
+  private async placePoly(a: Active, n: number): Promise<void> {
+    const { app } = this;
+    const host = app.host!;
+    const layer = app.doc.layers.find((l) => l.id === a.layerId)!;
+    this.status(`Reading the notes of ${(n / FRAME_RATE).toFixed(1)} s…`);
+    const mic = host.readMic(a.f0 * host.frameLen(), n * host.frameLen());
+    const frames = host.readFrames(a.f0, n);
+    const opts = polyOptions(layer);
+    const pp = await app.analysis!.polyPass(mic, host.sampleRate, opts);
+    if (!a.mark) throw new Error('The transport did not report a position, so the take cannot be placed.');
+    const rt = this.roundTripMs;
+    const take: Take = {
+      id: newId('take'), audio: '', frames: '', rate: host.sampleRate, latencyMs: rt, frameCount: n, kind: layer.kind,
+      refCents: layer.tune.refCents, root: layer.tune.root, scale: layer.tune.scale, bpm: null,
+    };
+    take.audio = `audio-${take.id}`;
+    take.frames = `frames-${take.id}`;
+    take.noteCurves = noteCurvesRef(take.id);
+    await app.session.putTake(take.id, { audio: mic, frames, noteCurves: pp.curves });
+    if (!app.doc.sections.some((s) => s.id === a.sectionId)) throw new Error('The section was removed while recording.');
+    const clip = placeTake({
+      doc: app.doc, sectionId: a.sectionId, layerId: a.layerId, take, startSample: a.f0 * host.frameLen(), mark: a.mark,
+      roundTripSamples: Math.round((rt * host.sampleRate) / 1000), notes: pp.notes, hits: [],
+    });
+    const cmds = this.passCmds(a, clip);
+    app.store.batch(a.pass ? 'Record pass' : 'Capture take', (run) => {
+      run('addTake', { take });
+      run('setClip', { section: a.sectionId, layer: a.layerId, clip });
+      for (const c of cmds) run(c.name as 'setClip', c.args as never);
+    });
+    app.ui.select(a.layerId, []);
+    app.clearError();
+    this.status(`Placed ${pp.notes.length} notes (Poly, ${opts.instrument}, up to ${opts.channels} at once; read in ${(pp.ms / 1000).toFixed(1)} s)${a.pass ? `, and ${this.passWhat(a.pass)}` : ''}. Round trip ${rt.toFixed(0)} ms.`);
   }
 
   /** The pass's clip edits, building on the take's clip when there is one. */

@@ -1,6 +1,6 @@
 # Polyphonic capture: chords into synth voices
 
-Nov 22, 2026. Design for the owner's review; nothing on this page is built in the app. The figures come from a throwaway prototype in `experiments/poly`, first run on a synthetic guitar and then, as stage P0, on public labelled recordings of real guitar, piano and chamber trios ([Stage P0: real recordings](#stage-p0-real-recordings)). P0 changed the detector, widened it to piano and other sources, and changed the build plan.
+Nov 22, 2026. Design for the owner's review. Stage P3, poly takes, is built: see [P3.md](P3.md); the other stages (P1, P2 and P4) are not. The figures come from a throwaway prototype in `experiments/poly`, first run on a synthetic guitar and then, as stage P0, on public labelled recordings of real guitar, piano and chamber trios ([Stage P0: real recordings](#stage-p0-real-recordings)). P0 changed the detector, widened it to piano and other sources, and changed the build plan.
 
 The owner asked for this: play a chord, or several strings at once, on a guitar; capture it; and have the synth play the same notes, up to some number of capture channels. Capture today is monophonic. The live tier (`dsp::capture`) runs YIN on the mic and the armed layer gets one live voice (`crates/klont/src/live.rs`); the second pass (`crates/analysis`) turns a take into one line of notes. A chord gives YIN one pitch at best. This page asks whether one mic or line input can be turned into several notes at once, live and on takes, each driving its own synth voice, and how that fits the patch, listen and record model of [synth.md](synth.md) and stages S2 to S5.
 
@@ -507,7 +507,7 @@ The prototype reads WAV files with note lists and ran on GuitarSet, MAESTRO and 
 
 If the owner records ten minutes of their own playing with a list of what was played (question 2), run it through `real` before P3; it is the only check on their guitar and input.
 
-### P3: poly takes (first)
+### P3: poly takes (first; built, see [P3.md](P3.md))
 
 The note model in the analysis worker, per-note features from the take, notes into the clip, the note-curve blob, `LOAD_NOTE_CURVES`, track blob v4, playback reading note curves. Record with a layer armed in Poly, with no live poly sound yet (the armed layer can stay silent or play mono Live follow while recording).
 

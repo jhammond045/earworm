@@ -46,6 +46,8 @@ export class Sync {
   audioFor: (take: Take) => Float32Array | null = () => null;
   /** A take's flex anchors, or null while they load or when it has none. */
   anchorsFor: (take: Take) => Float32Array | null = () => null;
+  /** A poly take's note curves, or null while they load or when it has none. */
+  noteCurvesFor: (take: Take) => Float32Array | null = () => null;
   /** Called when a pass ends (status line, errors). */
   onPass: (r: SyncResult) => void = () => {};
 
@@ -99,7 +101,7 @@ export class Sync {
     const t0 = performance.now();
     let uploads;
     try {
-      uploads = this.compiler.compile(doc, (take, layer) => this.curveFor(take, layer), { grainFor: (l) => this.grainFor(l), audioFor: (t) => this.audioFor(t), anchorsFor: (t) => this.anchorsFor(t) });
+      uploads = this.compiler.compile(doc, (take, layer) => this.curveFor(take, layer), { grainFor: (l) => this.grainFor(l), audioFor: (t) => this.audioFor(t), anchorsFor: (t) => this.anchorsFor(t), noteCurvesFor: (t) => this.noteCurvesFor(t) });
     } catch (e) {
       base.errors.push(e instanceof Error ? e.message : String(e));
       base.compileMs = performance.now() - t0;

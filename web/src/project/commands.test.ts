@@ -583,7 +583,7 @@ describe('newProject (M4)', () => {
   it('has one state per layer, empty morph lanes and the current schema', () => {
     const p = newProject('x');
     expect(p.schema).toBe(SCHEMA);
-    expect(SCHEMA).toBe(5);
+    expect(SCHEMA).toBe(6);
     expect(p.metro?.bar).toBe(4);
     expect(p.metro?.layerId).toBe(p.layers[1].id);
     for (const l of p.layers) expect(l.states).toHaveLength(1);

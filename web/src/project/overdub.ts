@@ -113,7 +113,7 @@ export function placeTake(o: PlaceTakeArgs): Clip {
   for (const n of o.notes) {
     const t = place(n.t);
     const dur = n.dur * ups;
-    notes.push({ id: newId('note'), t, dur, cents: n.cents, hard: n.hard });
+    notes.push({ id: newId('note'), t, dur, cents: n.cents, hard: n.hard, ...(n.vel !== undefined ? { vel: n.vel } : {}), ...(n.curve !== undefined ? { curve: n.curve } : {}) });
     warp.push({ takeSec: n.t, clipT: t }, { takeSec: n.t + n.dur, clipT: t + dur });
   }
   notes.sort((a, b) => a.t - b.t);

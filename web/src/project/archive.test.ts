@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { exportProject, importProject, zipStore, unzip } from './archive';
 import { newProject } from './commands';
+import { SCHEMA } from './types';
 
 describe('project zip', () => {
   it('round-trips a document and its blobs, and migrates an older document on the way in', async () => {
@@ -35,7 +36,7 @@ describe('project zip', () => {
     const packed = zipStore([{ name: 'project.json', data: new TextEncoder().encode(JSON.stringify(old)) }]);
     const migrated = await importProject(packed);
     expect(migrated.savedSchema).toBe(1);
-    expect(migrated.doc.schema).toBe(5);
+    expect(migrated.doc.schema).toBe(SCHEMA);
     expect(migrated.doc.metro?.bar).toBe(4);
     expect(migrated.doc.layers[0].patch.voices.length).toBe(1);
     expect(migrated.doc.layers[0].states[0].values['partials1.tilt']).toBe(0.5);

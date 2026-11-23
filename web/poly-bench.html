@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earworm P3: Poly pass benchmark</title>
+<link rel="stylesheet" href="/src/common/style.css">
+</head>
+<body>
+<main>
+  <h1>Earworm P3: Poly pass benchmark</h1>
+  <p>Times the poly pass (docs/poly.md "P3: poly takes") in the analysis worker, as the app runs it when a take into a Poly layer is committed: a synthetic strummed guitar at 48 kHz is fed to a fresh worker a second at a time. Target: 10 times real time or better, and under 64 MB of worker memory for a five-minute take.</p>
+  <div class="bar">
+    <button id="run" class="primary">Run (1 min, then 5 min)</button>
+  </div>
+  <p id="status" class="mono small muted">Ready.</p>
+  <div id="out"></div>
+</main>
+<script type="module" src="/src/poly/bench.ts"></script>
+</body>
+</html>

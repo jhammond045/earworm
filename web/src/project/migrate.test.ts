@@ -37,10 +37,18 @@ function v1(): Record<string, unknown> {
 describe('migrate', () => {
   it('4 -> 5 changes only the schema number: flex fields are optional', () => {
     const doc = { ...newProject('x'), schema: 4 };
-    const out = migrate(doc);
+    const out = migrate(doc, 5);
     expect(out.schema).toBe(5);
     expect({ ...out, schema: 4 }).toEqual(doc);
     expect(out.sections).toBe(doc.sections);
+  });
+
+  it('5 -> 6 changes only the schema number: poly capture fields are optional', () => {
+    const doc = { ...newProject('x'), schema: 5 };
+    const out = migrate(doc);
+    expect(out.schema).toBe(6);
+    expect({ ...out, schema: 5 }).toEqual(doc);
+    expect(out.layers).toBe(doc.layers);
   });
 
   it('1 -> 2 adds an empty morph lane to every clip and sets the schema', () => {

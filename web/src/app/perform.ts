@@ -22,7 +22,8 @@ import { holdButton } from '../m3/hold';
 import { applyOps } from '../project/patch';
 import { commands } from '../project/commands';
 import type { Kv } from '../project/persist';
-import { MIDI_CHANNELS, SCENE_MS, type Layer, type PerfTarget, type Project } from '../project/types';
+import { INSTRUMENTS, MAX_CHANNELS, MIDI_CHANNELS, SCENE_MS, type CaptureMode, type Instrument, type Layer, type PerfTarget, type Project } from '../project/types';
+import { captureOf, patchVoices, polyChannels, withInstrument } from '../record/poly';
 import { layoutOf } from '../synth/patch';
 import { channelLayer, mappedTarget, MOD_WHEEL_CC, notePlays, noteCents, parseMidi, percentile, toDefault, type DefaultMapping } from '../perform/midi';
 import { keyLabel, layerFeature, noteName } from './synth-ui';
@@ -314,12 +315,60 @@ export class PerformPanel {
     const l = this.deps.layer();
     if (!l) return;
     const sig = [l.id, l.kind, l.states.map((s) => `${s.id}:${s.name}`).join(','), JSON.stringify(this.app.doc.perform ?? null),
-      this.inputs().map((x) => x.name).join(','), this.access ? 1 : 0, this.midiError, this.octave, l.patch.voices.length, this.app.doc.layers.map((x) => x.id + x.name).join(',')].join('|');
+      this.inputs().map((x) => x.name).join(','), this.access ? 1 : 0, this.midiError, this.octave, l.patch.voices.length, this.app.doc.layers.map((x) => x.id + x.name).join(','),
+      JSON.stringify(l.capture ?? null), l.kind === 'beat' ? 0 : patchVoices(l)].join('|');
     if (force || sig !== this.built || !this.box.firstChild) {
       this.built = sig;
       this.build(l);
     }
     this.paintValues(l);
+  }
+
+  /** How a take into the layer is read (docs/poly.md P3): Mono, one line of notes as sung, or Poly,
+   *  several notes at once (a guitar's chords, a piano), with the instrument and how many notes may
+   *  sound together. */
+  private captureRow(l: Layer): HTMLElement {
+    const app = this.app;
+    const c = captureOf(l);
+    const set = (next: CaptureMode) => { app.run(() => app.store.dispatch('setLayer', { id: l.id, capture: next })); };
+    const mode = document.createElement('select');
+    mode.setAttribute('aria-label', 'Takes into this layer');
+    mode.append(new Option('Mono (one line)', 'mono', false, c.mode === 'mono'), new Option('Poly (chords)', 'poly', false, c.mode === 'poly'));
+    mode.addEventListener('change', () => set({ ...c, mode: mode.value === 'poly' ? 'poly' : 'mono' }));
+    const modeLab = document.createElement('label');
+    modeLab.append('Takes ', mode);
+    const kids: (HTMLElement | string)[] = [modeLab];
+    const hint = document.createElement('span');
+    hint.className = 'dim';
+    if (c.mode === 'poly') {
+      const inst = document.createElement('select');
+      inst.setAttribute('aria-label', 'Instrument');
+      const names: Record<Instrument, string> = { guitar: 'guitar (E2–E6)', piano: 'piano (A0–C8)', other: 'other (A1–C7)' };
+      for (const k of INSTRUMENTS) inst.append(new Option(names[k], k, false, k === c.instrument));
+      inst.addEventListener('change', () => set(withInstrument(c, inst.value as Instrument)));
+      const instLab = document.createElement('label');
+      instLab.append('Instrument ', inst);
+      const voices = patchVoices(l);
+      const ch = document.createElement('select');
+      ch.setAttribute('aria-label', 'Notes at once');
+      for (let k = 1; k <= MAX_CHANNELS; k++) {
+        const o = new Option(String(k), String(k), false, k === c.channels);
+        o.disabled = k > voices && k !== c.channels;
+        ch.append(o);
+      }
+      ch.addEventListener('change', () => set({ ...c, channels: Number(ch.value) }));
+      const chLab = document.createElement('label');
+      chLab.append('Notes at once ', ch);
+      kids.push(instLab, chLab);
+      const used = polyChannels(l);
+      hint.textContent = `A take comes back as notes a few seconds after you stop, each with its own curve${used < c.channels ? `; this patch plays ${voices} voices, so ${used} at once` : ''}. No live poly sound yet: the layer is silent while you play.`;
+    } else {
+      hint.textContent = 'Poly reads chords and other notes played together (guitar, piano) from a take.';
+    }
+    kids.push(hint);
+    const row = this.row(...kids);
+    row.dataset.tour = 'capture-mode';
+    return row;
   }
 
   private fieldset(legend: string, ...kids: HTMLElement[]): HTMLFieldSetElement {
@@ -424,6 +473,7 @@ export class PerformPanel {
     status.textContent = this.statusText;
     this.els.status = status;
     box.append(this.row(...kids), status);
+    if (l.kind !== 'beat') box.append(this.captureRow(l));
 
     // Sung features.
     const meters = document.createElement('div');
