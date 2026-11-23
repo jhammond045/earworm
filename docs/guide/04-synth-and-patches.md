@@ -25,7 +25,7 @@ Melody and texture layers only. Tune shapes the pitch you sang before the synth 
 | **Pitch snap** | How hard the sung pitch is pulled to the scale. 0% plays it as sung; 100% lands on scale notes. |
 | **Speed** | How fast it gets there, in ms. |
 | **Vibrato** | 100% keeps your vibrato as sung; lower flattens it. The slider goes to 200%. |
-| **Level** | Evens out the loudness of the sung line. 0% keeps it as sung; toward 100% quiet notes come up and loud ones come down. (The app's help bubble calls this how loud the tuned voice plays.) |
+| **Level** | Evens out the loudness of the sung line. 0% keeps it as sung; toward 100% quiet notes come up and loud ones come down. |
 | **Slides** | How a sung slide between notes moves: **Glide** follows it, **Gliss** steps by semitones, **Jump** goes straight to the next note. |
 | **Octave** | Shifts the whole line by octaves. |
 | **Root**, **Scale** | The key the snap uses: chromatic, major, minor, major or minor pentatonic, blues. |
