@@ -72,7 +72,7 @@ Measured on the build machine in headless Chrome, Nov 22, 2026. The before and a
 | Keys | Space played ("■ Playing") and stopped; R started a pass ("● Recording") and stopped it; C without the mic said "Capture needs the mic: press Enable mic." |
 | After the second pass, both themes, 1440 × 900 and 390 × 844 | No control under 24 px, no text under 4.5:1, no horizontal scroll. Grid 342 px at 1440; on the phone the work runs from 198 px to the dock at 702 px |
 | Console errors during the walks | None |
-| `pnpm test` | All pass: 449 Vitest tests in 57 files (on top of the poly-take commits that landed during the pass), and 365 Rust tests (4 ignored, as before) |
+| `pnpm test` | All pass, after the second pass and rebased onto main at e9de134 (the poly-take limit and the meter design landed during the pass): 449 Vitest tests in 57 files, and 365 Rust tests (4 ignored, as before) |
 
 ## Where the build differs from ui.md
 
