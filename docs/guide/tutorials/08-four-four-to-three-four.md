@@ -56,7 +56,7 @@ To get the original back: **Presets → As written**, or clear **Typed**.
 ## Good to know
 
 - Meter 1's **Bar** (4 here) is the same number as **Setup → Beats in a bar**: changing one changes the other.
-- The transport stepper still says **A 4 beats** (the written length); the Meter row's line says what plays.
+- The transport stepper says what plays and keeps the written length beside it, for example **A 3 beats (4 written)**.
 - A note held across a dropped beat can ring on without its attack. If that sounds odd, drop a different beat.
 
 You have reached the end of the tutorials. The [guide](../README.md) has a chapter for every part of the app.

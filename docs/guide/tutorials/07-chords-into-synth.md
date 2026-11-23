@@ -27,8 +27,6 @@ The timeline's Melody lane now shows stacks of overlapping bars: each chord's no
 
 ![A Poly take of four strummed chords on the Melody layer, on Glass](../images/tut-poly-laptop.webp)
 
-A red line at the top, **Engine: note curves 0 (take …): bad kind**, is a known bug in the current build: the notes play, but without their per-note bends and fades. Carry on.
-
 ## 3. Play them on a synth
 
 1. In the Sound panel, set **Preset** to **Glass** (or **Choir pad** for a softer pad).
@@ -51,6 +49,6 @@ Add a texture layer underneath: **+ Texture**, set its **Takes** to Poly too, pi
 
 - **Too many notes, or wrong octaves**: get the mic closer to the strings or soundhole, or go direct from a pickup into an audio interface. Room echo reads as extra notes.
 - **Notes missing**: raise **At once**, and let each chord ring longer.
-- **Import take gave one note**: Import reads a file as a single line, even on a Poly layer. Play the recording into the mic instead.
+- **Import take gave one line of notes**: set the layer's **Takes** to **Poly (chords)** before you import. On a Mono layer a file is read as one line.
 
 Next: [Turn a 4/4 groove into 3/4 and shuffle its beats](08-four-four-to-three-four.md).

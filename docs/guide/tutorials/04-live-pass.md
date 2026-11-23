@@ -7,9 +7,9 @@ You will play a part on the computer keys (or a MIDI keyboard) over the Melody d
 ## 1. Set up without the mic
 
 1. **Learn → Demos → Melody**. The song is **Demo: Melody**.
-2. Reload the page if the mic is on, then press **Start**, not Start with mic.
+2. Press **Start**. You do not need the mic for this.
 
-Why no mic: with the mic on, Record also records a take from the mic into the layer, and a take replaces the notes already written there. With the mic off, what you play is added to the existing notes. (If you do record with the mic by mistake, one **Undo** puts everything back.)
+Why no mic: with the mic on, Record also records a take from the mic into the layer, and a take replaces the notes already written there. If the mic hears nothing, no take is kept and what you play is added to the existing notes, but a mic that hears your speakers records them as a take. With the mic off, what you play is always added. (If notes vanish, one **Undo** puts everything back.)
 
 ## 2. Go to Perform
 

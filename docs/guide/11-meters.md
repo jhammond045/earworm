@@ -37,6 +37,8 @@ Under the Feel row in the Track place, for the selected layer. Folded, its summa
 
 The line under it says what happens, for example **A plays 1 bar of 3 (written 1 bar of 4). Beat follows Meter 1.**
 
+The section stepper in the transport shows the played length too, with the written one beside it: **A 3 beats (4 written)**.
+
 The pattern belongs to the section, so a verse can play in 3 and a chorus in 4. The lock belongs to the layer, so you can keep a melody as written while its beat is re-metered, or the other way round.
 
 A locked layer shows **M1** beside its name in the layer list and in the timeline, so the lock is never shown by color alone.

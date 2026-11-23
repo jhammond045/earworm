@@ -30,7 +30,7 @@ To add it: Sound, **Patch**, **+ channel effect**, then **input (the raw mic or 
 
 Where the input sits in the channel chain matters. Effects **after** it (marked **on the blend**) process the synth and the voice together, so a reverb after the input puts both in the same room. Effects **before** it run on the synth alone, or, with **raw input only** ticked, on the raw voice alone. Use **← →** on a card to move it.
 
-**Import take** adds an input at mix 1 by itself, so an imported file plays as audio straight away.
+**Import take** adds an input at mix 1 by itself, so an imported file plays as audio straight away. A layer set to Poly is the exception: there the file becomes notes for the synth.
 
 ![The input card at the top of the channel chain, followed by crush and tape working on the blend](images/tut-dry-mix-phone.webp)
 

@@ -63,15 +63,9 @@ Other browsers:
 
 ## Things that look wrong
 
-**Notes vanished after recording a pass.** With the mic on, a pass records a take into the selected layer, and a take replaces that layer's notes in the section, even if it is silent. Undo once to get them back. To add played notes on top, record with the mic off. See [Recording passes](07-recording-and-automation.md#record-a-pass).
+**Notes vanished after recording a pass.** With the mic on, a pass records a take into the selected layer, and a take replaces that layer's notes in the section. If the mic heard nothing, no take is kept and the notes stay, but a mic that hears your speakers records them. Undo once to get the notes back. To add played notes on top while the speakers play, record with the mic off. See [Recording passes](07-recording-and-automation.md#record-a-pass).
 
-**A red line: "Engine: note curves … bad kind".** Appears after a Poly take. The notes still play, without their per-note bends. A known bug; see [Polyphonic takes](10-polyphonic-takes.md#known-issue).
-
-**The status line still talks about the last song.** It keeps its last message until something new happens; it is not about the song on screen.
-
-**The pitch ribbon still shows an old take.** The ribbon in the monitor strip shows the last capture of this session until the next one. The timeline shows the take on each clip.
-
-**The transport says "A 4 beats" but the section plays 3.** The stepper shows the written length; with Meter 1 dropping a beat the section plays shorter. The Meter row's line says what it plays.
+**The pitch ribbon still shows an old take.** The ribbon in the monitor strip shows the last capture until the next one, or until you open another song. The timeline shows the take on each clip.
 
 ## Storage
 

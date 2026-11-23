@@ -33,11 +33,7 @@ When more notes ring than **At once** allows, a new note takes the free voice ne
 - A clean, close signal works best: a guitar into an audio interface, or the mic close to the soundhole or the piano's strings.
 - Play in time with the click; [Feel](09-quantizing-with-feel.md) can tighten it afterwards.
 - Pick a sound with a slow release, such as **Glass** or **Choir pad**, so the chords ring.
-- **Import take** reads a file as one line even on a Poly layer. For chords from a recording, play the recording into the mic, or capture the instrument live.
-
-## Known issue
-
-In the current build, after a Poly take a red line may appear at the top of the page: **Engine: note curves 0 (take …, 21 notes): bad kind**. The notes still play, at their own pitches, but without their per-note bends and volume curves. This is a known bug in the app.
+- **Import take** reads a file's chords too on a Poly layer. The status line says, for example, **Imported chords.wav: 10.6 s, 31 notes (Poly, guitar, up to 6 at once).** On a Poly layer Import adds no input, so you hear the synth play the notes rather than the file.
 
 ![Poly on a phone: Takes, Instrument and At once in the Layers tab](images/tut-poly-phone.webp)
 

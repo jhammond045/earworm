@@ -20,9 +20,9 @@ What a pass keeps:
 - **Notes** you played, with their velocity, placed where you heard them (the output delay is taken off) and with the layer's Tune octave taken off.
 - **Moves** of any value, macro, level, pan, mod wheel, bend or pressure, as **automation lanes** on the clip.
 - **Scene taps**, as **morph markers**, with one at the start of the pass for the state the layer was in.
-- **The mic**, if it is on, as a take into the selected layer.
+- **The mic**, if it is on and hears something, as a take into the selected layer.
 
-**Mind the mic.** With the mic on, the pass also records a take into the selected layer, and a take replaces the notes that layer had in this section, even if you only played keys and the take is silence. To add played notes to what is already there, record with the mic off (press **Start**, not Start with mic). If notes vanish, **Undo** brings the whole pass back out.
+**Mind the mic.** With the mic on, the pass also records a take into the selected layer, and a take replaces the notes that layer had in this section. If you only play keys and the mic hears nothing, no take is kept: the status line ends **The mic heard nothing, so no take was kept.** and what you played goes on top of the notes already there. A mic that hears your speakers does record a take, so with speakers rather than headphones, record keys with the mic off (press **Start**, not Start with mic). If notes vanish, **Undo** brings the whole pass back out.
 
 While you record, a hand move overrides any automation lane for that value, so you hear what you play. A lane you move records over its old points from your first move to the end of the pass.
 

@@ -46,7 +46,7 @@ To measure: open **Setup**, press **Measure**, and keep the headphones near the 
 ## Other ways to get a take
 
 - **● Record** records a pass: the mic into the selected layer, and everything you play and move at the same time. See [Recording passes and automation](07-recording-and-automation.md).
-- **Import take** puts an audio file on the selected layer, from the start of the section. Earworm reads it exactly as it would a capture of the same sound, so it gets notes or hits and can be quantized and stretched. If the layer has no raw input yet, Earworm adds one at full mix, so the file plays as audio.
+- **Import take** puts an audio file on the selected layer, from the start of the section. Earworm reads it exactly as it would a capture of the same sound, so it gets notes or hits and can be quantized and stretched. If the layer has no raw input yet, Earworm adds one at full mix, so the file plays as audio. On a layer set to **Poly**, the file's chords come back as notes and no input is added ([Polyphonic takes](10-polyphonic-takes.md)).
 - **Listen** in the Perform place lets the mic shape a layer live while you play notes from the keys, without recording. See [Playing live](06-playing-live.md).
 
 ## Several takes
