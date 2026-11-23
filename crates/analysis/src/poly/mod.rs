@@ -327,6 +327,18 @@ impl PolyStream {
         }
     }
 
+    /// The take will be `samples` long (at the rate given to `new`): room for every output is
+    /// made now, so the arrays never grow by doubling and a long take costs only what it holds.
+    pub fn expect(&mut self, samples: u64) {
+        let total = (samples as f64 * SR as f64 / self.sr as f64).ceil() as usize;
+        let frames = (OVERLAP / 2 + total).div_ceil(WIN_HOP) * KEEP;
+        let more = |len: usize, per: usize| (frames * per).saturating_sub(len);
+        self.acts.note.reserve_exact(more(self.acts.note.len(), N_NOTES));
+        self.acts.onset.reserve_exact(more(self.acts.onset.len(), N_NOTES));
+        self.acts.contour.reserve_exact(more(self.acts.contour.len(), N_CONTOUR));
+        self.acts.cqt.reserve_exact(more(self.acts.cqt.len(), N_CQT));
+    }
+
     /// The take's next samples (mono, at the rate given to `new`).
     pub fn feed(&mut self, x: &[f32]) {
         self.read += x.len() as u64;
@@ -403,6 +415,7 @@ impl PolyStream {
 /// The whole pass over a take held in memory.
 pub fn poly_pass(audio: &[f32], sr: f32, opts: Options) -> PolyResult {
     let mut s = PolyStream::new(sr, opts);
+    s.expect(audio.len() as u64);
     for c in audio.chunks(1 << 16) {
         s.feed(c);
     }

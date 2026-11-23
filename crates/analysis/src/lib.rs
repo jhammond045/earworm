@@ -88,16 +88,22 @@ thread_local! {
     static POLY: std::cell::RefCell<Option<poly::PolyStream>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Start a poly pass over a take at `sr` Hz: `opts_len` floats of options (layout in
+/// Start a poly pass over a take at `sr` Hz, `samples` long (0: not known; the outputs then grow
+/// as it comes, which costs more memory on a long take): `opts_len` floats of options (layout in
 /// `poly::Options::from_floats`). Feed the take with `an_poly_feed`, then `an_poly_end`. A pass
 /// already started is dropped.
 ///
 /// # Safety
 /// `opts`/`opts_len` must describe readable f32s in wasm memory (or be 0).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn an_poly_begin(sr: f32, opts: *const f32, opts_len: u32) {
+pub unsafe extern "C" fn an_poly_begin(sr: f32, samples: f64, opts: *const f32, opts_len: u32) {
     let opts = if opts_len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(opts, opts_len as usize) } };
-    let s = poly::PolyStream::new(sr, poly::Options::from_floats(opts));
+    // Drop the last pass before making room for this one.
+    POLY.with(|p| *p.borrow_mut() = None);
+    let mut s = poly::PolyStream::new(sr, poly::Options::from_floats(opts));
+    if samples > 0.0 {
+        s.expect(samples as u64);
+    }
     POLY.with(|p| *p.borrow_mut() = Some(s));
 }
 

@@ -217,7 +217,7 @@ interface Exports {
   an_result_len(): number;
   an_second(audio: number, audioLen: number, sr: number, frames: number, framesLen: number, opts: number, optsLen: number): number;
   an_tune(frames: number, framesLen: number, pitch: number, settings: number): number;
-  an_poly_begin(sr: number, opts: number, optsLen: number): void;
+  an_poly_begin(sr: number, samples: number, opts: number, optsLen: number): void;
   an_poly_feed(ptr: number, len: number): void;
   an_poly_end(): number;
 }
@@ -272,13 +272,14 @@ export class AnalysisCore {
 
   private polyT0 = 0;
 
-  /** Start a poly pass over a take at `sampleRate`; feed it with `polyFeed`, end with `polyEnd`. */
-  polyBegin(sampleRate: number, opts: PolyOptions): void {
+  /** Start a poly pass over a take of `samples` samples at `sampleRate` (0: length not known);
+   *  feed it with `polyFeed`, end with `polyEnd`. */
+  polyBegin(sampleRate: number, samples: number, opts: PolyOptions): void {
     const flat = encodePolyOptions(opts);
     const o = this.put(flat);
     try {
       this.polyT0 = performance.now();
-      this.x.an_poly_begin(sampleRate, o, flat.length);
+      this.x.an_poly_begin(sampleRate, samples, o, flat.length);
     } finally {
       this.release(o, flat);
     }
@@ -303,7 +304,7 @@ export class AnalysisCore {
 
   /** The whole poly pass over a take in memory. */
   polyPass(audio: Float32Array, sampleRate: number, opts: PolyOptions): PolyPass {
-    this.polyBegin(sampleRate, opts);
+    this.polyBegin(sampleRate, audio.length, opts);
     this.polyFeed(audio);
     return this.polyEnd();
   }
@@ -384,7 +385,7 @@ export class Analysis {
   /** The poly pass (docs/poly.md P3). The take goes to the worker a second at a time, each piece
    *  answered before the next is sent, so the worker never holds the whole take. */
   async polyPass(audio: Float32Array, sampleRate: number, opts: PolyOptions): Promise<PolyPass> {
-    await this.call({ op: 'poly-begin', sampleRate, opts });
+    await this.call({ op: 'poly-begin', sampleRate, samples: audio.length, opts });
     const step = Math.max(1, Math.round(sampleRate));
     for (let i = 0; i < audio.length; i += step) {
       const c = audio.slice(i, Math.min(audio.length, i + step));

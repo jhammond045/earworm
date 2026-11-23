@@ -7,7 +7,7 @@ export type AnalysisRequest =
   | { id: number; op: 'init' }
   | { id: number; op: 'second'; audio: Float32Array; sampleRate: number; frames: Float32Array; opts: SecondPassOptions }
   | { id: number; op: 'tune'; frames: Float32Array; pitch: Float32Array; settings: TuneSettings }
-  | { id: number; op: 'poly-begin'; sampleRate: number; opts: PolyOptions }
+  | { id: number; op: 'poly-begin'; sampleRate: number; samples: number; opts: PolyOptions }
   | { id: number; op: 'poly-feed'; audio: Float32Array }
   | { id: number; op: 'poly-end' }
   | { id: number; op: 'memory' };
@@ -34,7 +34,7 @@ scope.onmessage = async (e) => {
       const r = c.secondPass(req.audio, req.sampleRate, req.frames, req.opts);
       scope.postMessage({ id: req.id, result: r } satisfies AnalysisReply, [r.pitch.buffer]);
     } else if (req.op === 'poly-begin') {
-      c.polyBegin(req.sampleRate, req.opts);
+      c.polyBegin(req.sampleRate, req.samples, req.opts);
       scope.postMessage({ id: req.id, result: null } satisfies AnalysisReply);
     } else if (req.op === 'poly-feed') {
       c.polyFeed(req.audio);
