@@ -3,22 +3,24 @@
 // live tier as a capture would be (the same high-pass and the same frames, from a klont.wasm
 // instance of its own), and given to the second pass for its notes or hits and its anchors. The
 // take is placed at the start of the section, on a layer with an input element at mix 1, so it
-// plays as audio and Feel can stretch it.
+// plays as audio and Feel can stretch it. On a layer set to Poly the file goes to the poly pass
+// instead, as a Poly capture would (docs/poly.md P3): notes with their own curves.
 
 import type { EngineExports } from '../m1/protocol';
 import { readBufferTable } from '../m1/protocol';
 import { placeTake } from './overdub';
-import type { Hit as TakeHit, Note as TakeNote } from '../m2/analysis';
-import type { Clip, Project, Take } from './types';
+import type { Hit as TakeHit, Note as TakeNote, PolyOptions, PolyPass, SecondPass, SecondPassOptions } from '../m2/analysis';
+import { isPoly, polyOptions } from '../record/poly';
+import type { Clip, Layer, Project, Take } from './types';
 
 const BLOCK = 128;
 const FRAME_STRIDE = 25;
 /** The longest take a capture keeps, and so an import. */
 export const MAX_IMPORT_SEC = 59;
 
-/** Mono, averaged over the channels, capped at MAX_IMPORT_SEC. */
-export function toMono(channels: Float32Array[], rate: number): Float32Array {
-  const n = Math.min(channels[0]?.length ?? 0, Math.floor(MAX_IMPORT_SEC * rate));
+/** Mono, averaged over the channels, capped at `maxSec`. */
+export function toMono(channels: Float32Array[], rate: number, maxSec = MAX_IMPORT_SEC): Float32Array {
+  const n = Math.min(channels[0]?.length ?? 0, Math.floor(maxSec * rate));
   const out = new Float32Array(n);
   for (const ch of channels) for (let i = 0; i < n; i++) out[i] += ch[i] / channels.length;
   return out;
@@ -64,4 +66,28 @@ export function importedClip(doc: Project, sectionId: string, layerId: string, t
     doc, sectionId, layerId, take, startSample: 0, roundTripSamples: 0, notes, hits,
     mark: { sample: 0, section: si, pos: 0, unitsPerSample: 0, playing: false },
   });
+}
+
+/** The analysis an import needs: the worker client or AnalysisCore. */
+export interface ImportAnalysis {
+  secondPass(audio: Float32Array, sampleRate: number, frames: Float32Array, opts?: SecondPassOptions): SecondPass | Promise<SecondPass>;
+  polyPass(audio: Float32Array, sampleRate: number, opts: PolyOptions): PolyPass | Promise<PolyPass>;
+}
+
+export type ImportPass = { poly: PolyPass; opts: PolyOptions } | { second: SecondPass };
+
+/** Read an imported take for `layer`: the poly pass on a layer set to Poly, else the second pass,
+ *  whose repaired pitch is written into `frames` as a capture's is. */
+export async function importPass(an: ImportAnalysis, layer: Layer, audio: Float32Array, frames: Float32Array, rate: number,
+                                 taught?: SecondPassOptions['taught']): Promise<ImportPass> {
+  if (isPoly(layer)) {
+    const opts = polyOptions(layer);
+    return { poly: await an.polyPass(audio.slice(), rate, opts), opts };
+  }
+  const sp = await an.secondPass(audio.slice(), rate, frames.slice(), {
+    kind: layer.kind, taught: layer.kind === 'beat' ? taught : undefined,
+  });
+  const n = frames.length / FRAME_STRIDE;
+  for (let i = 0; i < Math.min(n, sp.pitch.length); i++) frames[i * FRAME_STRIDE] = sp.pitch[i];
+  return { second: sp };
 }

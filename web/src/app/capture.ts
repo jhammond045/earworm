@@ -9,7 +9,7 @@
 // the layer's notes come from MIDI or the keys.
 
 import { loadKlontBytes, micConstraints } from '../m1/klont-host';
-import { importedClip, liveTierOver, toMono } from '../project/import-take';
+import { importedClip, importPass, liveTierOver, toMono } from '../project/import-take';
 import { inputAt } from '../synth/patch';
 import { LAYER_LEVEL, LAYER_PAN, M_COUNT_SEQ, M_PLAYING, M_SECTION, MSG_RECORD, MSG_SET_LAYER, MSG_SET_MACRO, MSG_SET_PARAM, SET_BASE } from '../m1/protocol';
 import { listeningClip, Pass, passCommands, stateValue, withHand, type RecordHooks } from '../record/record';
@@ -256,7 +256,8 @@ export class AppCapture implements RecordHooks {
 
   /** Import an audio file as a take on the selected layer, from the start of the section
    *  (docs/quant.md Q2). The layer gets an input element at mix 1 if it has none, so the take
-   *  plays as audio; Feel then stretches it. One undo step. */
+   *  plays as audio; Feel then stretches it. On a layer set to Poly the file comes back as notes
+   *  with their own curves, as a Poly capture does, and no input element is added. One undo step. */
   async importFile(file: File, layerId: string, sectionId: string): Promise<void> {
     const { app } = this;
     const host = app.host;
@@ -264,32 +265,39 @@ export class AppCapture implements RecordHooks {
     if (this.cap || this.busy) throw new Error('Finish recording first.');
     const layer = app.doc.layers.find((l) => l.id === layerId);
     if (!layer) throw new Error('Pick a layer to import into.');
+    const poly = isPoly(layer);
     this.busy = true;
     try {
       this.status(`Reading ${file.name}…`);
       const buf = await host.ctx.decodeAudioData(await file.arrayBuffer());
-      const x = toMono(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c)), host.sampleRate);
+      const x = toMono(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c)), host.sampleRate,
+        poly ? POLY_MAX_TAKE_SEC : undefined);
       const { audio, frames } = await liveTierOver(await loadKlontBytes(), x, host.sampleRate);
       const n = frames.length / FRAME_STRIDE;
       if (n < MIN_TAKE_SEC * FRAME_RATE) throw new Error(`${file.name} is under ${MIN_TAKE_SEC} s.`);
-      this.status(`Second pass on ${(n / FRAME_RATE).toFixed(1)} s…`);
-      const sp = await app.analysis.secondPass(audio.slice(), host.sampleRate, frames.slice(), {
-        kind: layer.kind, taught: layer.kind === 'beat' ? this.taught ?? undefined : undefined,
-      });
-      for (let i = 0; i < Math.min(n, sp.pitch.length); i++) frames[i * FRAME_STRIDE] = sp.pitch[i];
+      this.status(poly ? `Reading the notes of ${(n / FRAME_RATE).toFixed(1)} s…` : `Second pass on ${(n / FRAME_RATE).toFixed(1)} s…`);
+      const pass = await importPass(app.analysis, layer, audio, frames, host.sampleRate, this.taught ?? undefined);
+      const sp = 'second' in pass ? pass.second : null;
+      const pp = 'poly' in pass ? pass.poly : null;
       const take: Take = {
         id: newId('take'), audio: '', frames: '', rate: host.sampleRate, latencyMs: 0, frameCount: n, kind: layer.kind,
-        refCents: sp.refCents, root: sp.root, scale: sp.scale, bpm: sp.bpm,
+        refCents: sp ? sp.refCents : layer.tune.refCents, root: sp ? sp.root : layer.tune.root,
+        scale: sp ? sp.scale : layer.tune.scale, bpm: sp ? sp.bpm : null,
       };
       take.audio = `audio-${take.id}`;
       take.frames = `frames-${take.id}`;
-      take.anchors = anchorsRef(take.id);
-      take.anchorsVersion = ANCHORS_VERSION;
-      await app.session.putTake(take.id, { audio, frames, anchors: sp.anchors });
+      if (pp) {
+        take.noteCurves = noteCurvesRef(take.id);
+        await app.session.putTake(take.id, { audio, frames, noteCurves: pp.curves });
+      } else {
+        take.anchors = anchorsRef(take.id);
+        take.anchorsVersion = ANCHORS_VERSION;
+        await app.session.putTake(take.id, { audio, frames, anchors: sp!.anchors });
+      }
       if (!app.doc.sections.some((s) => s.id === sectionId)) throw new Error('The section was removed while importing.');
-      const clip = importedClip(app.doc, sectionId, layerId, take, sp.notes, sp.hits);
-      const needsInput = inputAt(layer.patch) < 0;
-      const tune = layer.kind === 'beat' ? null : tuneFromTake(sp);
+      const clip = importedClip(app.doc, sectionId, layerId, take, pp ? pp.notes : sp!.notes, pp ? [] : sp!.hits);
+      const needsInput = !poly && inputAt(layer.patch) < 0;
+      const tune = sp && layer.kind !== 'beat' ? tuneFromTake(sp) : null;
       const state = app.ui.editState(layer).id;
       app.store.batch('Import take', (run) => {
         run('addTake', { take });
@@ -300,8 +308,10 @@ export class AppCapture implements RecordHooks {
       });
       app.ui.select(layerId, []);
       app.clearError();
-      const what = layer.kind === 'beat' ? `${sp.hits.length} hits` : `${sp.notes.length} notes`;
-      this.status(`Imported ${file.name}: ${(n / FRAME_RATE).toFixed(1)} s, ${what}, ${sp.anchors.length / 3} anchors.${needsInput ? ' The layer plays it as audio (an input element at mix 1).' : ''}`);
+      const what = 'poly' in pass
+        ? `${pass.poly.notes.length} notes (Poly, ${pass.opts.instrument}, up to ${pass.opts.channels} at once)`
+        : `${layer.kind === 'beat' ? `${sp!.hits.length} hits` : `${sp!.notes.length} notes`}, ${sp!.anchors.length / 3} anchors`;
+      this.status(`Imported ${file.name}: ${(n / FRAME_RATE).toFixed(1)} s, ${what}.${needsInput ? ' The layer plays it as audio (an input element at mix 1).' : ''}`);
     } finally {
       this.busy = false;
     }
