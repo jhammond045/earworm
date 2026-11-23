@@ -714,15 +714,20 @@ export class SynthPanel {
       bar.append(fill);
       cell(bar);
       this.routeRows.push({ scope, index, bar: fill });
+      // An open-ended input range reads as ∞ rather than ±1000000; the range never breaks across lines.
+      const lim = (v: number) => (Math.abs(v) >= 1e5 ? (v < 0 ? '−∞' : '∞') : fmt(v));
+      const range = document.createElement('span');
+      range.className = 'nowrap';
+      range.textContent = `${lim(route.inLo)} to ${lim(route.inHi)}`;
       const shape = [
-        `${fmt(route.inLo)}–${fmt(route.inHi)}`,
         route.points ? `${route.points.length} points` : route.bend ? `bend ${route.bend > 0 ? '+' : ''}${route.bend.toFixed(2)}` : '',
         route.riseMs || route.fallMs ? `${route.riseMs}/${route.fallMs} ms` : '',
         route.latch ? 'latched' : '',
         route.mode !== 'add' ? route.mode : '',
         route.group ? `group ${route.group}` : '',
       ].filter(Boolean).join(', ');
-      cell(shape);
+      const shapeCell = cell(range);
+      if (shape) shapeCell.append(`, ${shape}`);
       const ak = amountKey(p, scope, route.id);
       const ai = lay.index.get(ak)!;
       const amount = toReal(lay.descs[ai], st.values[ak] ?? lay.init[ai]);

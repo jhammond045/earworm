@@ -203,7 +203,7 @@ async function main(): Promise<void> {
       }
     }
     if (/^Recorded/.test(s)) {
-      setNext('Show the lanes', () => { showPanel('pattern'); document.querySelector('.lanes')?.scrollIntoView({ block: 'nearest' }); });
+      setNext('See it on the track', () => { showPanel('pattern'); $('timeline').scrollIntoView({ block: 'nearest' }); });
       return;
     }
     setNext('', null);

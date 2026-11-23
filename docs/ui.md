@@ -197,7 +197,7 @@ In priority order. P0 is broken or inaccessible; P1 is the model above; P2 is po
 | 8 | Perform as its own place beside Track, full width, with the computer keyboard playing notes | P1 |
 | 9 | Phone and tablet: sticky transport, bottom place bar, the page scrolls as a whole, Klont and meters hidden | P1 |
 | 10 | Large monitor: wider columns, larger base text, the timeline takes the free height | P1 |
-| 11 | Names: Section time (not Feel), Groove (Straight or Swing), MIDI learn, Hold to listen, Pitch snap | P1 |
+| 11 | Names: section Time (not Feel), Groove (Straight or Swing), MIDI learn, Listen (hold) and Teach (hold), Pitch snap | P1 |
 | 12 | The next step after a take, and after Quantize | P1 |
 | 13 | File grouped (project, share, remove), with Export mix first and Delete apart | P1 |
 | 14 | The Feel row folds behind a summary; hints shortened and kept to one line where they repeat the lessons | P2 |

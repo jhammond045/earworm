@@ -258,7 +258,7 @@
             <label class="file-button">From a file <input id="kitFile" type="file" accept="audio/*" aria-label="One hit to match into the slot"></label>
             <button type="button" id="kitRecord">Record one hit</button>
             <button type="button" id="kitHear">Hear slot</button>
-            <button type="button" id="teachSlot" data-tour="teach" title="Hold and repeat one sound. The next beat take uses what you taught.">Hold to teach</button>
+            <button type="button" id="teachSlot" data-tour="teach" title="Hold and repeat one sound. The next beat take uses what you taught.">Teach (hold)</button>
           </div>
           <p id="kitStatus" class="hint" role="status">One hit, from the mic or a file, becomes that slot.</p>
         </fieldset>
@@ -266,7 +266,7 @@
           <legend>Influence</legend>
           <div class="row">
             <label class="file-button">From a file <input id="infFile" type="file" accept="audio/*" aria-label="Audio file to match"></label>
-            <button type="button" id="listen" title="Hold and make the sound you want this layer to move toward">Hold to listen</button>
+            <button type="button" id="listen" title="Hold and make the sound you want this layer to move toward">Listen (hold)</button>
             <label>Saved <select id="savedSource" aria-label="Sources saved on the Influence page"></select></label>
             <button type="button" id="useSaved" disabled>Use saved</button>
           </div>
@@ -283,7 +283,7 @@
             <button type="button" id="playSource" data-tour="source">Play source</button>
             <button type="button" id="holdNote" data-tour="hold-note" title="Hold to play this layer at the source pitch.">Hold note</button>
           </div>
-          <p id="infStatus" class="hint" role="status">No Influence yet. A file or Hold to listen sets a target the state blends toward.</p>
+          <p id="infStatus" class="hint" role="status">No Influence yet. A file or Listen sets a target the state blends toward.</p>
         </fieldset>
       </div>
     </aside>
