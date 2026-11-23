@@ -26,7 +26,7 @@ import { allRoutes, amountKey, amountNorm, findRoute, kitPrefix, routesInto, typ
 import { toNorm, toReal } from '../synth/values';
 import type { Advance } from './tutorials';
 
-export type SoundView = 'simple' | 'patch' | 'mod' | 'perform';
+export type SoundView = 'simple' | 'patch' | 'mod';
 
 const FEATURE_NAMES: Record<string, string> = {
   pitch: 'pitch', volume: 'volume', openness: 'openness', breath: 'breath', hardness: 'hardness', onset: 'onset',
@@ -121,7 +121,7 @@ export class SynthPanel {
     private app: App,
     private layer: () => Layer | undefined,
     private acted: (k: Advance) => void,
-    private els: { patch: HTMLElement; mod: HTMLElement; pick: HTMLSelectElement; pickBox: HTMLElement; views: HTMLButtonElement[]; simple: HTMLElement; perform: HTMLElement },
+    private els: { patch: HTMLElement; mod: HTMLElement; pick: HTMLSelectElement; pickBox: HTMLElement; views: HTMLButtonElement[]; simple: HTMLElement },
   ) {
     els.views.forEach((b) => b.addEventListener('click', () => this.setView(b.dataset.view as SoundView)));
     els.pick.addEventListener('change', () => {
@@ -138,8 +138,7 @@ export class SynthPanel {
     this.els.simple.hidden = v !== 'simple';
     this.els.patch.hidden = v !== 'patch';
     this.els.mod.hidden = v !== 'mod';
-    this.els.perform.hidden = v !== 'perform';
-    this.els.pickBox.hidden = v === 'simple' || v === 'perform';
+    this.els.pickBox.hidden = v === 'simple';
     this.render();
     if (v !== 'simple') this.acted('view');
   }
@@ -153,11 +152,12 @@ export class SynthPanel {
     if (this.slot >= l.patch.voices.length) this.slot = 0;
     if (this.view === 'patch') this.renderPatch(l);
     if (this.view === 'mod') this.renderMod(l);
-    if (this.view === 'perform') this.perform?.render();
+    if (this.performShown) this.perform?.render();
   }
 
-  /** The Perform view (perform.ts), set by the page. */
+  /** The Perform place (perform.ts), set by the page, and whether it is on screen. */
   perform: { render(): void; frame(m: Float32Array | null): void } | null = null;
+  performShown = false;
 
   /** Listen is a session setting, like Arm: not saved with the project. */
   listening(id: string): boolean { return this.listen.get(id) ?? false; }
@@ -986,7 +986,7 @@ export class SynthPanel {
   /** Live parts, every animation frame or so: thumbs, route outputs, feature meters. */
   frame(m: Float32Array | null): void {
     this.sendListen(m);
-    if (this.view === 'perform') { this.perform?.frame(m); return; }
+    if (this.performShown) this.perform?.frame(m);
     if (!m || this.view === 'simple') return;
     const l = this.layer();
     if (!l) return;

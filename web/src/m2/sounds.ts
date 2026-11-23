@@ -29,6 +29,8 @@ export const BEAT_KITS: BeatKit[] = [
   { name: 'Percussion: toms, clap, rim', kit: layerDefs[1].kit as Sound[], kitCents: layerDefs[1].kitCents!, base: layerDefs[1].base ?? {} },
 ];
 
-/** Slot colours for hit markers and the live slot readout. */
-export const SLOT_COLORS = ['#d9402b', '#2b8ad9', '#2bb35a', '#c98a12'];
+/** Slot colours for hit markers and the live slot readout, from the Okabe-Ito set so no two are a
+ *  red-green pair (the owner is red-green colorblind). The timeline also names each slot's row and
+ *  gives each slot its own shape, so the color is never the only cue. */
+export const SLOT_COLORS = ['#e69f00', '#56b4e9', '#cc79a7', '#f0e442'];
 export const SLOT_NAMES = ['kick', 'snare', 'hat', 'open'];

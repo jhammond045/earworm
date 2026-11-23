@@ -2,7 +2,7 @@
 // hits, and the morph strip. The pattern grid stays beside it. Dragging commits one undo on release.
 
 import { M_PLAYING, M_SECTION, M_SECTION_POS } from '../m1/protocol';
-import { SLOT_COLORS } from '../m2/sounds';
+import { SLOT_COLORS, SLOT_NAMES } from '../m2/sounds';
 import type { App } from '../m3/app';
 import {
   MORPH_H, centsToY, dragCents, dragDt, dragMarkerT, draggedHitSlot, fitPpu, gridLines, hitTestHits, hitTestMarkers, hitTestNotes,
@@ -10,6 +10,7 @@ import {
   type Range,
 } from '../m3/geometry';
 import { sectionLength, sectionUnitsPerSec } from '../project/compile';
+import { positionLabel } from './pattern';
 import { LANE_FIXED, PPQ, type AutoLane, type Clip, type LanePoint, type Layer, type MorphShape, type Note, type Section } from '../project/types';
 
 const RULER = 18;
@@ -40,6 +41,21 @@ out vec4 o;
 void main() { o = v_color; }`;
 
 type Rgba = [number, number, number, number];
+
+/** The timeline's colors, read from the theme's tokens (style.css, --tl-*) so it follows Light and Dark. */
+interface TlColors { bg: Rgba; lane: Rgba; laneOn: Rgba; morph: Rgba; auto: Rgba; line: Rgba; dim: Rgba; accent: Rgba; ink: Rgba }
+function readColors(): TlColors {
+  const css = getComputedStyle(document.documentElement);
+  const c = (k: string, d: string, a = 1) => parseHex(css.getPropertyValue(k).trim() || d, a);
+  return {
+    bg: c('--tl-bg', '#0a0d12'), lane: c('--tl-lane', '#121721'), laneOn: c('--tl-lane-on', '#1f2938'),
+    morph: c('--tl-morph', '#171c26'), auto: c('--tl-auto', '#0f141c'), line: c('--tl-line', '#3d5166'),
+    dim: c('--tl-dim', '#8aa1b5', 0.7), accent: c('--accent', '#f0b429'), ink: c('--text', '#e7eef6'),
+  };
+}
+
+const NOTE_LETTERS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const centsName = (cents: number) => { const m = Math.round(cents / 100); return `${NOTE_LETTERS[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`; };
 
 interface Drag {
   kind: 'move' | 'resize' | 'marker' | 'point';
@@ -112,6 +128,11 @@ export class GlTimeline {
   private readonly note: HTMLElement;
   /** The lane target the strip shows, per layer ('' or missing: the clip's first lane). */
   readonly laneShown = new Map<string, string>();
+  private colors: TlColors = readColors();
+  /** A finger on empty space pans the timeline instead of editing it. */
+  private pan: { x: number; y: number; lastY: number; left: number; top: number; moved: boolean } | null = null;
+  private lastTap = { t: 0, x: 0, y: 0 };
+  private readonly live: HTMLElement | null = document.getElementById('tlLive');
 
   constructor(private readonly app: App, private readonly onUse: () => void) {
     const canvas = document.getElementById('timeline');
@@ -134,16 +155,124 @@ export class GlTimeline {
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) || 'link');
     this.program = prog;
     this.buf = gl.createBuffer();
-    canvas.addEventListener('pointerdown', (e) => this.onDown(e));
-    canvas.addEventListener('pointermove', (e) => this.onMove(e));
-    canvas.addEventListener('pointerup', (e) => this.onUp(e));
-    canvas.addEventListener('pointercancel', () => { this.drag = null; });
+    canvas.addEventListener('pointerdown', (e) => {
+      this.onDown(e);
+      if (!this.drag && e.pointerType !== 'mouse') this.startPan(e);
+    });
+    canvas.addEventListener('pointermove', (e) => { if (this.pan) this.movePan(e); else this.onMove(e); });
+    canvas.addEventListener('pointerup', (e) => { if (this.pan) this.endPan(e); else this.onUp(e); });
+    canvas.addEventListener('pointercancel', () => { this.drag = null; this.pan = null; });
+    canvas.addEventListener('keydown', (e) => this.onKey(e));
     canvas.addEventListener('dblclick', (e) => this.onDouble(e));
     new ResizeObserver(() => { this.dirty = true; }).observe(scroll);
     app.ui.subscribe(() => { this.dirty = true; });
   }
 
   invalidate(): void { this.dirty = true; }
+
+  /** Read the theme's colors again (after a Light or Dark switch). */
+  retheme(): void { this.colors = readColors(); this.nameKey = ''; this.dirty = true; }
+
+  private startPan(e: PointerEvent): void {
+    const body = this.scroll.parentElement;
+    if (!body) return;
+    this.pan = { x: e.clientX, y: e.clientY, lastY: e.clientY, left: body.scrollLeft, top: body.scrollTop, moved: false };
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+  }
+
+  private movePan(e: PointerEvent): void {
+    const p = this.pan;
+    const body = this.scroll.parentElement;
+    if (!p || !body) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    if (Math.abs(dx) + Math.abs(dy) > 6) p.moved = true;
+    body.scrollLeft = p.left - dx;
+    // The timeline box scrolls when it has more lanes than fit; otherwise the page does.
+    if (body.scrollHeight > body.clientHeight + 1) body.scrollTop = p.top - dy;
+    else window.scrollBy(0, p.lastY - e.clientY);
+    p.lastY = e.clientY;
+  }
+
+  /** A tap that did not pan; two taps close together add, as a double-click does. */
+  private endPan(e: PointerEvent): void {
+    const p = this.pan;
+    this.pan = null;
+    if (!p || p.moved) return;
+    const now = performance.now();
+    const near = Math.abs(e.clientX - this.lastTap.x) < 24 && Math.abs(e.clientY - this.lastTap.y) < 24;
+    if (now - this.lastTap.t < 400 && near) {
+      this.lastTap.t = 0;
+      this.onDouble(e);
+      return;
+    }
+    this.lastTap = { t: now, x: e.clientX, y: e.clientY };
+  }
+
+  private say(text: string): void { if (this.live) this.live.textContent = text; }
+
+  /** Keys on the focused timeline (docs/ui.md "Keys"): arrows pick, Shift with arrows edits. */
+  private onKey(e: KeyboardEvent): void {
+    const sec = this.section();
+    const layers = this.app.doc.layers;
+    if (!sec || !layers.length) return;
+    const li = Math.max(0, layers.findIndex((l) => l.id === this.app.ui.layerId));
+    const layer = layers[li];
+    const clip = sec.clips[layer.id];
+    const items: { id: string; t: number; cents?: number; slot?: number }[] = clip
+      ? (clip.kind === 'beat' ? clip.hits : clip.notes).slice().sort((a, b) => a.t - b.t) : [];
+    const sel = this.app.ui.selection.layerId === layer.id ? this.app.ui.selection.ids : [];
+    const cur = items.findIndex((x) => sel.includes(x.id));
+    const k = e.key;
+    const sayItem = (x: (typeof items)[number]) => this.say(`${layer.name}: ${x.cents !== undefined ? centsName(x.cents + 1200 * layer.tune.octave) : SLOT_NAMES[x.slot ?? 0]} at ${positionLabel(sec, x.t)}`);
+    if ((k === 'ArrowUp' || k === 'ArrowDown') && !e.shiftKey) {
+      e.preventDefault();
+      const next = layers[(li + (k === 'ArrowUp' ? layers.length - 1 : 1)) % layers.length];
+      this.app.ui.layerId = next.id;
+      this.app.ui.select(next.id, []);
+      this.say(`${next.name} lane`);
+      return;
+    }
+    if ((k === 'ArrowLeft' || k === 'ArrowRight') && !e.shiftKey) {
+      e.preventDefault();
+      if (!items.length) { this.say(`${layer.name}: nothing in this section yet`); return; }
+      const i = cur < 0 ? (k === 'ArrowRight' ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, cur + (k === 'ArrowRight' ? 1 : -1)));
+      this.app.ui.select(layer.id, [items[i].id]);
+      sayItem(items[i]);
+      return;
+    }
+    if (!clip || !sel.length) return;
+    if (e.shiftKey && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+      e.preventDefault();
+      const snap = this.snapOf(sec, clip);
+      const step = snap > 0 ? snap : sec.feel === 'grid' ? PPQ / 4 : 0.25;
+      const dt = k === 'ArrowRight' ? step : -step;
+      const ok = clip.kind === 'beat'
+        ? this.app.run(() => this.app.store.dispatch('moveHits', { section: sec.id, layer: layer.id, ids: sel, dt }))
+        : this.app.run(() => this.app.store.dispatch('moveNotes', { section: sec.id, layer: layer.id, ids: sel, dt, dcents: 0 }));
+      if (ok) this.onUse();
+      return;
+    }
+    if (e.shiftKey && (k === 'ArrowUp' || k === 'ArrowDown')) {
+      e.preventDefault();
+      if (clip.kind === 'beat') {
+        const h = clip.hits.find((x) => x.id === sel[0]);
+        if (!h) return;
+        const slot = Math.max(0, Math.min(3, h.slot + (k === 'ArrowUp' ? -1 : 1)));
+        this.app.run(() => this.app.store.dispatch('setHitSlot', { section: sec.id, layer: layer.id, ids: sel, slot }));
+        this.say(SLOT_NAMES[slot]);
+      } else {
+        this.app.run(() => this.app.store.dispatch('moveNotes', { section: sec.id, layer: layer.id, ids: sel, dt: 0, dcents: k === 'ArrowUp' ? 100 : -100 }));
+      }
+      return;
+    }
+    if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
+      if (clip.kind === 'beat') this.app.run(() => this.app.store.dispatch('deleteHits', { section: sec.id, layer: layer.id, ids: sel }));
+      else this.app.run(() => this.app.store.dispatch('deleteNotes', { section: sec.id, layer: layer.id, ids: sel }));
+      this.say('Removed');
+    }
+  }
 
   /** Redraw while the playhead moves, and whenever the document or the size changed. */
   frame(): void {
@@ -415,10 +544,7 @@ export class GlTimeline {
     if (!sec) { this.dirty = false; return; }
 
     const mesh = new Mesh();
-    const bg: Rgba = [0.039, 0.051, 0.071, 1];
-    const line: Rgba = [0.24, 0.32, 0.40, 1];
-    const accent: Rgba = [0.941, 0.706, 0.161, 1];
-    const dim: Rgba = [0.54, 0.63, 0.71, 0.7];
+    const { bg, line, accent, dim, ink } = this.colors;
     mesh.quad(0, 0, cssW, cssH, bg);
     const vp = { ppu, x0: X0 };
     for (const g of gridLines(sec.feel, len)) {
@@ -432,10 +558,10 @@ export class GlTimeline {
     doc.layers.forEach((layer, i) => {
       const top = RULER + i * STRIDE;
       const active = layer.id === this.app.ui.layerId;
-      mesh.quad(0, top, cssW, LANE, active ? [0.12, 0.16, 0.22, 1] : [0.07, 0.09, 0.13, 1]);
-      mesh.quad(0, top + LANE, cssW, MORPH_H, [0.09, 0.11, 0.15, 1]);
+      mesh.quad(0, top, cssW, LANE, active ? this.colors.laneOn : this.colors.lane);
+      mesh.quad(0, top + LANE, cssW, MORPH_H, this.colors.morph);
       mesh.quad(0, top + LANE, cssW, 1, line);
-      mesh.quad(0, top + LANE + MORPH_H, cssW, AUTO_H, [0.06, 0.08, 0.11, 1]);
+      mesh.quad(0, top + LANE + MORPH_H, cssW, AUTO_H, this.colors.auto);
       mesh.quad(0, top + LANE + MORPH_H, cssW, 1, line);
       if (active) mesh.quad(0, top, 3, STRIDE, accent);
       const clip = sec.clips[layer.id];
@@ -449,8 +575,13 @@ export class GlTimeline {
           const slot = moving ? drag.slot : h.slot;
           const x = timeToX(t, vp);
           const y = slotY(slot, top, LANE);
-          const c = parseHex(SLOT_COLORS[slot] ?? '#d5e2ee', sel.has(h.id) ? 1 : 0.85);
-          mesh.quad(x - 4, y - 5, 8, 10, c);
+          const c = parseHex(SLOT_COLORS[slot] ?? '#d5e2ee', 1);
+          // kick a wide block, snare a tall one, hat a small square, open a hollow square.
+          const [w, hh] = [[12, 12], [8, 14], [8, 8], [12, 12]][slot] ?? [8, 10];
+          if (sel.has(h.id)) mesh.quad(x - w / 2 - 3, y - hh / 2 - 3, w + 6, hh + 6, accent);
+          mesh.quad(x - w / 2 - 1, y - hh / 2 - 1, w + 2, hh + 2, ink);
+          mesh.quad(x - w / 2, y - hh / 2, w, hh, c);
+          if (slot === 3) mesh.quad(x - w / 2 + 3, y - hh / 2 + 3, w - 6, hh - 6, ink);
         }
       } else if (clip) {
         const notes = this.shown(layer, clip.notes).map((note) => {
@@ -494,7 +625,11 @@ export class GlTimeline {
         marks.forEach((m, mi) => {
           const t = drag?.kind === 'marker' && drag.index === mi ? drag.t : m.t;
           const x = timeToX(t, vp);
-          mesh.quad(x - 4, top + LANE + 4, 8, MORPH_H - 8, parseHex(colors[mi] ?? '#e6b15a', 1));
+          // As many notches as the state's number, beside its color (docs/ui.md "Color signals").
+          const k = Math.max(0, layer.states.findIndex((s) => s.id === m.state));
+          const w = 3 * (k + 1) + 1;
+          mesh.quad(x - w / 2 - 1, top + LANE + 3, w + 2, MORPH_H - 6, ink);
+          for (let j = 0; j <= k; j++) mesh.quad(x - w / 2 + 1 + 3 * j, top + LANE + 4, 2, MORPH_H - 8, parseHex(colors[mi] ?? '#e6b15a', 1));
         });
       }
       // The automation strip: the chosen lane as a line through its points.
@@ -556,6 +691,16 @@ export class GlTimeline {
       d.style.height = `${STRIDE}px`;
       d.textContent = l.name;
       d.title = l.kind;
+      if (l.kind === 'beat') {
+        SLOT_NAMES.forEach((name, k) => {
+          const s = document.createElement('span');
+          s.className = 'tl-slot';
+          s.textContent = name;
+          s.style.top = `${slotY(k, 0, LANE) - 5}px`;
+          s.setAttribute('aria-hidden', 'true');
+          d.append(s);
+        });
+      }
       d.addEventListener('click', () => { this.app.ui.layerId = l.id; this.app.ui.changed(); });
       this.names.append(d);
     }

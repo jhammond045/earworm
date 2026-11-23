@@ -38,7 +38,9 @@ void main() {
   float halo = (0.12 + u_space * 0.6) * (1.0 - smoothstep(edge, edge + 0.28 + u_space * 0.45, length(p)));
   float grain = (hash(gl_FragCoord.xy + u_time) - 0.5) * u_noise * 0.35;
   vec3 col = vec3(0.94, 0.70, 0.16) * body + vec3(0.55, 0.72, 0.95) * halo + grain;
-  o = vec4(col, 1.0);
+  // Premultiplied alpha: the canvas's own background (the theme's well color) shows around the glyph.
+  float a = clamp(max(body, halo * 1.6) + abs(grain), 0.0, 1.0);
+  o = vec4(min(max(col, 0.0), vec3(a)), a);
 }`;
 
 export interface KlontDrive {
@@ -65,7 +67,7 @@ export class KlontGlyph {
   readonly ok: boolean;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
-    const gl = canvas.getContext('webgl2', { alpha: false, antialias: true });
+    const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: true });
     this.gl = gl;
     if (!gl) { this.ok = false; return; }
     const prog = gl.createProgram();

@@ -18,7 +18,7 @@ import { MACRO_NAMES } from '../gen/params';
 import { M_LISTEN, MSG_MORPH_TO, MSG_SET_PERF } from '../m1/protocol';
 import { SLOT_NAMES } from '../m2/sounds';
 import type { App } from '../m3/app';
-import { holdButton } from '../m3/hold';
+import { holdButton, typingIn } from '../m3/hold';
 import { applyOps } from '../project/patch';
 import { commands } from '../project/commands';
 import type { Kv } from '../project/persist';
@@ -27,6 +27,12 @@ import { captureOf, patchVoices, polyChannels, withInstrument } from '../record/
 import { layoutOf } from '../synth/patch';
 import { channelLayer, mappedTarget, MOD_WHEEL_CC, notePlays, noteCents, parseMidi, percentile, toDefault, type DefaultMapping } from '../perform/midi';
 import { keyLabel, layerFeature, noteName } from './synth-ui';
+
+/** The computer keyboard in Perform: a chromatic octave from C on the home row and the row above
+ *  (as most DAWs lay it out), and the first four home keys for a beat layer's kit slots. */
+const QWERTY_KEYS = ['KeyA', 'KeyW', 'KeyS', 'KeyE', 'KeyD', 'KeyF', 'KeyT', 'KeyG', 'KeyY', 'KeyH', 'KeyU', 'KeyJ', 'KeyK'];
+const QWERTY_PADS = ['KeyA', 'KeyS', 'KeyD', 'KeyF'];
+const keyLetter = (code: string) => code.slice(3);
 
 /** How long a controller must rest before its value is committed (one undo step). */
 const REST_MS = 500;
@@ -107,6 +113,11 @@ export class PerformPanel {
   private els: Record<string, HTMLElement> = {};
   private lastPaint = 0;
   readonly midiAvailable: boolean;
+  /** True while the Perform place is on screen: the computer keyboard plays only then. */
+  active = false;
+  /** On-screen keys the computer keyboard presses, by key code. */
+  private qkeys = new Map<string, { b: HTMLButtonElement; down: () => void; up: () => void; held: boolean }>();
+  private captureSig = '';
 
   constructor(private app: App, private box: HTMLElement, private deps: PerformDeps) {
     const nomidi = new URLSearchParams(globalThis.location?.search ?? '').has('nomidi');
@@ -121,6 +132,36 @@ export class PerformPanel {
     };
     document.addEventListener('pointerdown', pick, true);
     document.addEventListener('focusin', pick, true);
+    // The computer keyboard presses the on-screen keys, so a note sounds, records and lights up
+    // exactly as a tap does. Z and X move the octave.
+    window.addEventListener('keydown', (e) => {
+      if (!this.active || e.metaKey || e.ctrlKey || e.altKey || typingIn(e.target) || document.querySelector('dialog[open]')) return;
+      if (e.code === 'KeyZ' || e.code === 'KeyX') {
+        e.preventDefault();
+        if (e.repeat) return;
+        const l = this.deps.layer();
+        if (!l || l.kind === 'beat') return;
+        this.octave = Math.min(8, Math.max(0, this.octave + (e.code === 'KeyX' ? 1 : -1)));
+        this.render(true);
+        return;
+      }
+      const k = this.qkeys.get(e.code);
+      if (!k) return;
+      e.preventDefault();
+      if (k.held || e.repeat) return;
+      k.held = true;
+      k.b.classList.add('down');
+      k.down();
+    });
+    const release = (code: string) => {
+      const k = this.qkeys.get(code);
+      if (!k || !k.held) return;
+      k.held = false;
+      k.b.classList.remove('down');
+      k.up();
+    };
+    window.addEventListener('keyup', (e) => release(e.code));
+    window.addEventListener('blur', () => { for (const code of this.qkeys.keys()) release(code); });
     if (this.midiAvailable) void this.connectIfAllowed();
   }
 
@@ -300,9 +341,9 @@ export class PerformPanel {
     if (!b) return;
     b.setAttribute('aria-pressed', String(this.learn !== 'off'));
     if (this.learn === 'off') return;
-    if (!this.inputs().length) this.status('No MIDI device is connected. Connect one, then Learn again.');
-    else if (this.learn === 'pick') this.status('Learn: touch a slider here, in Simple (macros) or in Patch.');
-    else this.status(`Learn: now move a controller for ${targetName(this.app.doc, this.learn)}.`);
+    if (!this.inputs().length) this.status('No MIDI device is connected. Connect one, then press MIDI learn again.');
+    else if (this.learn === 'pick') this.status('MIDI learn: touch a slider here, or in Sound (the macros, or Patch).');
+    else this.status(`MIDI learn: now move a controller for ${targetName(this.app.doc, this.learn)}.`);
   }
 
   private showPerf(k: number, v: number): void {
@@ -322,6 +363,15 @@ export class PerformPanel {
       this.build(l);
     }
     this.paintValues(l);
+  }
+
+  /** The capture-mode row, drawn in the Layers panel (it decides how every take into the layer is
+   *  read, so it sits with the layer, not with the play surface). Rebuilt only when it changes. */
+  renderCaptureMode(box: HTMLElement, l: Layer): void {
+    const sig = l.kind === 'beat' ? 'beat' : [l.id, JSON.stringify(l.capture ?? null), patchVoices(l)].join('|');
+    if (sig === this.captureSig && (l.kind === 'beat' || box.firstChild)) return;
+    this.captureSig = sig;
+    box.replaceChildren(...(l.kind === 'beat' ? [] : [this.captureRow(l)]));
   }
 
   /** How a take into the layer is read (docs/poly.md P3): Mono, one line of notes as sung, or Poly,
@@ -375,6 +425,7 @@ export class PerformPanel {
     const f = document.createElement('fieldset');
     const lg = document.createElement('legend');
     lg.textContent = legend;
+    f.dataset.part = legend.toLowerCase().replace(/\s+/g, '-');
     f.append(lg, ...kids);
     return f;
   }
@@ -453,7 +504,7 @@ export class PerformPanel {
       const names = this.inputs().map((x) => x.name ?? x.id);
       midiLine.textContent = names.length ? `MIDI: ${names.join(', ')}` : 'MIDI: no device connected.';
     }
-    const learn = this.button('Learn', () => {
+    const learn = this.button('MIDI learn', () => {
       this.learn = this.learn === 'off' ? 'pick' : 'off';
       if (this.learn === 'off') this.status('');
       this.paintLearn();
@@ -462,18 +513,12 @@ export class PerformPanel {
     learn.disabled = !this.midiAvailable;
     this.els.learn = learn;
     kids.push(learn);
-    const rec = this.button(this.deps.recording() ? 'Recording' : 'Record', () => { this.deps.toggleRecord(); this.render(true); },
-      'Press to record a pass, press again to stop: notes, knob moves, the wheel and scene taps go into the clips as one undo step.');
-    rec.setAttribute('aria-pressed', String(this.deps.recording()));
-    this.els.record = rec;
-    kids.push(rec);
     const status = document.createElement('p');
     status.className = 'hint';
     status.setAttribute('role', 'status');
     status.textContent = this.statusText;
     this.els.status = status;
     box.append(this.row(...kids), status);
-    if (l.kind !== 'beat') box.append(this.captureRow(l));
 
     // Sung features.
     const meters = document.createElement('div');
@@ -503,15 +548,28 @@ export class PerformPanel {
     keys.className = 'perfkeys';
     keys.setAttribute('role', 'group');
     keys.setAttribute('aria-label', l.kind === 'beat' ? 'Kit pads' : 'Keys');
-    const play = (b: HTMLButtonElement, slot: number, cents: number) => {
+    for (const k of this.qkeys.values()) if (k.held) { k.held = false; k.up(); }
+    this.qkeys.clear();
+    const play = (b: HTMLButtonElement, slot: number, cents: number, code?: string) => {
       let on: Held | null = null;
-      holdButton(b, () => {
+      const down = () => {
         const host = app.host;
         if (!host) { app.fail('Press Start first.'); return; }
         void host.ctx.resume();
         host.noteOn(i, cents, slot, 0.8);
         on = { layerIdx: i, cents, rec: app.rec.noteOn(l.id, cents, slot, 0.8) };
-      }, () => { if (on) { app.host?.noteOff(on.layerIdx, on.cents); app.rec.noteOff(on.rec); } on = null; });
+      };
+      const up = () => { if (on) { app.host?.noteOff(on.layerIdx, on.cents); app.rec.noteOff(on.rec); } on = null; };
+      holdButton(b, down, up);
+      if (code) {
+        this.qkeys.set(code, { b, down, up, held: false });
+        const q = document.createElement('span');
+        q.className = 'qk';
+        q.textContent = keyLetter(code);
+        q.setAttribute('aria-hidden', 'true');
+        b.append(q);
+        b.setAttribute('aria-keyshortcuts', keyLetter(code));
+      }
     };
     if (l.kind === 'beat') {
       SLOT_NAMES.forEach((name, k) => {
@@ -519,7 +577,7 @@ export class PerformPanel {
         b.type = 'button';
         b.className = 'pad';
         b.textContent = `${k + 1} ${name}`;
-        play(b, k, l.kit[k]?.cents ?? 4800);
+        play(b, k, l.kit[k]?.cents ?? 4800, QWERTY_PADS[k]);
         keys.append(b);
       });
       box.append(this.fieldset('Pads', keys));
@@ -532,7 +590,7 @@ export class PerformPanel {
         b.className = name.length > 1 ? 'key black' : 'key';
         b.textContent = `${name}${Math.floor(note / 12) - 1}`;
         b.setAttribute('aria-label', `Play ${name}${Math.floor(note / 12) - 1}`);
-        play(b, 0, noteCents(note));
+        play(b, 0, noteCents(note), QWERTY_KEYS[n]);
         keys.append(b);
       }
       const down = this.button('Octave −', () => { this.octave = Math.max(0, this.octave - 1); this.render(true); });

@@ -3,120 +3,128 @@
 <head>
   <meta charset="utf-8">
   <link rel="icon" href="data:,">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
   <title>Earworm</title>
+  <script>
+    // The theme is set before the stylesheet paints, so a light page never flashes dark.
+    try { const t = localStorage.getItem('earworm.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch { /* storage off */ }
+  </script>
   <link rel="stylesheet" href="/src/app/style.css">
 </head>
-<body>
+<body data-place="pattern">
+  <a class="skip" href="#panel-pattern">Skip to the track</a>
+  <a class="skip" href="#panel-sound">Skip to the sound</a>
   <p id="error" class="err" role="alert" hidden></p>
-  <header class="strip" data-tour="transport" role="toolbar" aria-label="Transport">
-    <span class="cluster">
-      <span class="brand" aria-label="Earworm"><span id="logo" class="logo" aria-hidden="true">EARWORM</span></span>
-      <span id="projectName" class="readout" aria-live="polite">—</span>
-    </span>
-    <span class="cluster stepper" data-tour="section">
-      <button type="button" id="secPrev" aria-label="Previous section">−</button>
-      <span id="secName" class="readout" aria-live="polite">A</span>
-      <button type="button" id="secNext" aria-label="Next section">+</button>
-    </span>
-    <span class="cluster">
-      <label>BPM <input id="bpm" type="number" min="20" max="400" step="1" value="100" aria-label="Tempo in beats per minute"></label>
-      <span id="posRead" class="readout" aria-live="polite">1.1</span>
-    </span>
-    <span class="cluster">
-      <button type="button" id="play" disabled aria-pressed="false">▶ Play</button>
-      <button type="button" id="stop" disabled>■ Stop</button>
-      <button type="button" id="loop" data-tour="loop" aria-pressed="true" title="After the last section, start again at the first.">Loop</button>
-    </span>
-    <span class="cluster stepper" data-tour="metro">
-      <button type="button" id="metro" aria-pressed="false" title="Click on the beat. Heard live only.">Metro</button>
-      <label class="dim">Lvl <input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></label>
-      <label class="dim">Bar <input id="metroBar" type="number" min="1" max="32" step="1" value="4" aria-label="Beats in a bar"></label>
-      <button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button>
-    </span>
-    <span class="cluster" data-tour="undo">
-      <button type="button" id="undo">Undo</button>
-      <button type="button" id="redo">Redo</button>
-    </span>
+  <header class="top" data-tour="transport">
+    <div class="bar transport" role="toolbar" aria-label="Transport">
+      <span class="cluster project">
+        <span class="brand" aria-label="Earworm"><span id="logo" class="logo" aria-hidden="true">EARWORM</span></span>
+        <span data-tour="file"><button type="button" id="fileBtn" title="Open, save, export">File</button></span>
+        <span id="projectName" class="readout" aria-live="polite">—</span>
+      </span>
+      <span class="cluster stepper" data-tour="section" role="group" aria-label="Section">
+        <button type="button" id="secPrev" aria-label="Previous section">−</button>
+        <span id="secName" class="readout" aria-live="polite">A</span>
+        <button type="button" id="secNext" aria-label="Next section">+</button>
+      </span>
+      <span class="cluster tempo">
+        <label><span class="lbl">BPM</span> <input id="bpm" type="number" min="20" max="400" step="1" value="100" aria-label="Tempo in beats per minute"></label>
+        <span id="posRead" class="readout pos" aria-live="off" aria-label="Position, bar and beat">1.1</span>
+      </span>
+      <span class="cluster play">
+        <button type="button" id="play" class="primary" disabled aria-pressed="false" aria-keyshortcuts="Space" title="Play from the start of the section (Space)">▶ Play</button>
+        <button type="button" id="stop" disabled aria-keyshortcuts="Escape" title="Stop (Esc)">■ Stop</button>
+      </span>
+      <span class="cluster modes">
+        <button type="button" id="loop" class="toggle" data-tour="loop" aria-pressed="true" title="After the last section, start again at the first.">Loop</button>
+        <span data-tour="metro"><button type="button" id="metro" class="toggle" aria-pressed="false" title="Click on the beat. Heard live only. Its level, bar and sound are in Setup.">Metro</button></span>
+      </span>
+      <span class="cluster" data-tour="undo">
+        <button type="button" id="undo" aria-label="Undo" aria-keyshortcuts="Control+Z Meta+Z" title="Undo (Ctrl or ⌘ Z)"><span class="glyph" aria-hidden="true">↶</span><span class="wide-only"> Undo</span></button>
+        <button type="button" id="redo" aria-label="Redo" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z" title="Redo (Shift Ctrl or ⌘ Z)"><span class="glyph" aria-hidden="true">↷</span><span class="wide-only"> Redo</span></button>
+      </span>
+      <span class="cluster audio" data-tour="start">
+        <button type="button" id="start" class="primary" title="Open the audio. The mic stays off.">Start</button>
+        <button type="button" id="startMic" title="Open the audio and the microphone. Use headphones.">Start with mic</button>
+        <button type="button" id="enableMic" hidden title="Turn the microphone on. Use headphones.">Enable mic</button>
+        <span id="audioState" class="chip" role="status">Audio off</span>
+      </span>
+      <span class="cluster aux">
+        <button type="button" id="setupBtn" title="Round trip, metronome, bands, theme">Setup</button>
+        <span data-tour="help"><button type="button" id="helpBtn" title="Lessons and demos">Learn</button></span>
+        <button type="button" id="keysBtn" aria-label="Keyboard shortcuts" aria-keyshortcuts="Shift+?" title="Keyboard shortcuts (?)">?</button>
+      </span>
+    </div>
+    <div class="bar placebar">
+      <nav class="places" role="tablist" aria-label="Places">
+        <button type="button" role="tab" id="tab-layers" aria-selected="false" aria-controls="panel-layers">Layers</button>
+        <button type="button" role="tab" id="tab-pattern" aria-selected="true" aria-controls="panel-pattern" aria-keyshortcuts="Alt+1">Track</button>
+        <button type="button" role="tab" id="tab-sound" aria-selected="false" aria-controls="panel-sound" aria-keyshortcuts="Alt+2">Sound</button>
+        <button type="button" role="tab" id="tab-perform" aria-selected="false" aria-controls="panel-perform" aria-keyshortcuts="Alt+3">Perform</button>
+      </nav>
+      <span class="cluster takes" role="group" aria-label="Put a take on the selected layer">
+        <span class="into">Into <strong id="intoLayer">—</strong></span>
+        <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">◉ Capture</button>
+        <button type="button" id="record" class="toggle" disabled aria-pressed="false" title="Press to record a pass, press again to stop: the mic into the selected layer, and the notes, knob moves and scene taps you play, as one undo step.">● Record</button>
+        <label class="file-button" title="Put an audio file on the selected layer as a take, from the start of the section, so Feel can quantize and stretch it.">Import<span class="long">&nbsp;take</span> <input type="file" id="importTake" accept="audio/*" disabled aria-label="Import an audio file as a take"></label>
+      </span>
+    </div>
+    <p id="deviceNote" class="hint device-note" hidden role="status"></p>
   </header>
-  <nav class="bank" aria-label="Commands">
-    <span data-tour="file">
-      <button type="button" id="fileBtn">File</button>
-    </span>
-    <button type="button" id="start" data-tour="start">Start</button>
-    <button type="button" id="startMic">Start with mic</button>
-    <button type="button" id="enableMic" hidden>Enable mic</button>
-    <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">Capture</button>
-    <button type="button" id="record" disabled aria-pressed="false" title="Press to record a pass, press again to stop: the mic into the selected layer, and the notes, knob moves and scene taps you play, as one undo step.">Record</button>
-    <label class="file-button" title="Put an audio file on the selected layer as a take, from the start of the section, so Feel can quantize and stretch it.">Import take <input type="file" id="importTake" accept="audio/*" disabled aria-label="Import an audio file as a take"></label>
-    <label class="dim" data-tour="align">Align <input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"> ms</label>
-    <button type="button" id="measure" data-tour="measure" title="Play five chirps and time how long they take to come back.">Measure</button>
-    <label class="dim" data-tour="bands">Bands
-      <select id="bands" aria-label="Vowel bands. The song engine uses 16.">
-        <option value="16" selected>16</option>
-        <option value="24">24</option>
-      </select>
-    </label>
-    <span data-tour="help">
-      <button type="button" id="helpBtn">Learn</button>
-      <button type="button" id="testsBtn">Tests</button>
-    </span>
-    <span id="capStatus" class="dim" role="status"></span>
-  </nav>
-  <p id="deviceNote" class="hint device-note" hidden role="status"></p>
-  <div id="scopes" class="scopes" aria-hidden="true"></div>
-  <div class="stage" data-tour="klont">
+  <div class="monitor" data-tour="klont">
     <canvas id="klont" width="144" height="144" aria-label="Klont. Spikes follow bright and grit, wobble follows motion, the halo follows space."></canvas>
-    <canvas id="ribbon" data-tour="ribbon" aria-label="Live pitch ribbon. It grows while Capture is held."></canvas>
-  </div>
-  <div class="tabs" role="tablist" aria-label="Panels">
-    <button type="button" role="tab" id="tab-pattern" aria-selected="true">Pattern</button>
-    <button type="button" role="tab" id="tab-layers" aria-selected="false">Layers</button>
-    <button type="button" role="tab" id="tab-sound" aria-selected="false">Sound</button>
+    <div class="ribbonwrap">
+      <canvas id="ribbon" data-tour="ribbon" aria-label="Live pitch ribbon. It grows while Capture is held."></canvas>
+      <span class="ribbon-empty" aria-hidden="true">Your voice draws here while Capture is held.</span>
+    </div>
+    <div id="scopes" class="scopes" aria-label="Voices sounding per layer"></div>
   </div>
   <div class="workspace">
-    <aside class="panel" id="panel-layers" data-tour="layers">
+    <aside class="panel" id="panel-layers" data-tour="layers" role="tabpanel" aria-labelledby="tab-layers" tabindex="-1">
       <h2>Layers</h2>
       <div id="layerList" class="layers" role="listbox" aria-label="Layers"></div>
       <div class="row" data-tour="layer-edit">
         <label>Name <input id="layerName" type="text" aria-label="Layer name"></label>
-        <button type="button" id="removeLayer">Remove layer</button>
+        <button type="button" id="removeLayer">Remove</button>
       </div>
-      <div class="row">
-        <button type="button" id="addMelody">+ Melody</button>
-        <button type="button" id="addBeat">+ Beat</button>
-        <button type="button" id="addTexture">+ Texture</button>
-        <button type="button" id="addSection">+ Section</button>
+      <div class="row add">
+        <span class="dim">Add</span>
+        <button type="button" id="addMelody" title="Add a melody layer">● Melody</button>
+        <button type="button" id="addBeat" title="Add a beat layer">■ Beat</button>
+        <button type="button" id="addTexture" title="Add a texture layer">◆ Texture</button>
       </div>
+      <div id="captureMode" class="capture-mode"></div>
+      <h2 class="sub">Section</h2>
       <div class="section-edit" data-tour="section-edit">
         <label>Name <input id="secRename" type="text" aria-label="Section name"></label>
         <label id="beatsLabel">Beats <input id="beats" type="number" min="1" max="64" step="1" value="8" aria-label="Section length in beats"></label>
         <label id="secondsLabel" hidden>Seconds <input id="seconds" type="number" min="1" max="120" step="1" value="8" aria-label="Section length in seconds"></label>
-        <label data-tour="feel">Feel
-          <select id="feel" aria-label="Section feel, grid or free">
+        <label data-tour="feel">Time
+          <select id="feel" aria-label="Section time, on a grid or free">
             <option value="grid">Grid</option>
             <option value="free">Free</option>
           </select>
         </label>
         <label>Repeats <input id="repeats" type="number" min="1" max="32" step="1" value="1" aria-label="How many times the section plays"></label>
-        <label>Ramp <input id="ramp" type="number" min="0" max="60000" step="10" value="0" aria-label="Tempo ramp from the previous section, milliseconds"> ms</label>
+        <label>Ramp <span class="unit"><input id="ramp" type="number" min="0" max="60000" step="10" value="0" aria-label="Tempo ramp from the previous section, milliseconds"> ms</span></label>
         <div class="row">
-          <button type="button" id="secEarlier" aria-label="Move this section earlier">Earlier</button>
-          <button type="button" id="secLater" aria-label="Move this section later">Later</button>
+          <button type="button" id="secEarlier" aria-label="Move this section earlier">↑ Earlier</button>
+          <button type="button" id="secLater" aria-label="Move this section later">↓ Later</button>
           <button type="button" id="dupSection">Copy</button>
           <button type="button" id="removeSection">Remove</button>
+          <button type="button" id="addSection">+ Section</button>
         </div>
       </div>
-      <p class="hint">Circle, square, diamond: melody, beat, texture. Mute is written on the row. Capture and Sound edit the selected layer.</p>
+      <p class="hint">Circle, square, diamond: melody, beat, texture. Capture, Record, Import and Sound act on the selected layer.</p>
     </aside>
-    <main class="panel on" id="panel-pattern">
-      <h2>Pattern</h2>
+    <main class="panel on" id="panel-pattern" role="tabpanel" aria-labelledby="tab-pattern" tabindex="-1">
+      <h2>Track</h2>
       <div class="gridwrap" data-tour="pattern">
-        <table class="pattern" id="pattern" role="grid" aria-label="Pattern"></table>
+        <table class="pattern" id="pattern" role="grid" aria-label="Pattern. Arrows move, Enter adds, Delete removes."></table>
       </div>
       <div class="tl-wrap" data-tour="timeline">
         <div class="tl-head">
-          <span class="dim">Timeline</span>
           <label>Zoom
             <select id="zoom" aria-label="Timeline zoom">
               <option value="0.5">½</option>
@@ -126,63 +134,67 @@
             </select>
           </label>
           <label data-tour="quantize">Snap <select id="snap" aria-label="Timeline snap"></select></label>
-          <button type="button" id="quantize">Quantize</button>
+          <button type="button" id="quantize" title="Turn Feel on for this lane at the Snap grid">Quantize</button>
           <label data-tour="takes">Take <select id="takeStack" aria-label="Which take the ribbon follows"></select></label>
-          <span id="tlNote" class="hint">Drag a note, a hit or a morph marker. Drag a hit up or down to another kit slot. Double-click empty space to add one.</span>
         </div>
-        <div class="tl-flex" role="group" aria-label="Feel: quantize when the track plays">
-          <label><input type="checkbox" id="flexOn"> Feel</label>
-          <label>Grid <select id="flexGrid" aria-label="Feel grid"></select></label>
-          <label><input type="checkbox" id="flexTriplets"> Triplets</label>
-          <label>Feel <select id="flexFeel" aria-label="Feel"><option value="straight">Straight</option><option value="swing">Swing</option></select></label>
-          <label id="flexSwingWrap">Swing <input type="number" id="flexSwing" min="50" max="75" step="1" aria-label="Swing, percent"> %</label>
-          <label>Strength <input type="range" id="flexStrength" min="0" max="100" step="1" aria-label="Feel strength"> <output id="flexStrengthOut"></output></label>
-          <label>Catch ± <input type="number" id="flexCatch" min="0" max="500" step="1" aria-label="Catch, ms"> ms</label>
-          <label>Audio <select id="flexAudio" aria-label="How the take's audio is stretched"><option value="hits">Hits</option><option value="smooth">Smooth</option></select></label>
-          <span id="flexKit" class="flex-kit">Kit slots <input type="number" min="0" max="100" step="5" aria-label="Kit slot 1 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 2 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 3 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 4 strength, percent"> %</span>
-          <span id="flexNote" class="hint"></span>
-        </div>
-        <div class="tl-body">
+        <details class="tl-flex" id="flexBox" open>
+          <summary><span class="sum-name">Feel</span> <span id="flexSummary" class="dim"></span></summary>
+          <div class="flex-row" role="group" aria-label="Feel: quantize when the track plays">
+            <label class="check"><input type="checkbox" id="flexOn"> On</label>
+            <label>Grid <select id="flexGrid" aria-label="Feel grid"></select></label>
+            <label class="check"><input type="checkbox" id="flexTriplets"> Triplets</label>
+            <label>Groove <select id="flexFeel" aria-label="Groove, straight or swing"><option value="straight">Straight</option><option value="swing">Swing</option></select></label>
+            <label id="flexSwingWrap">Swing <span class="unit"><input type="number" id="flexSwing" min="50" max="75" step="1" aria-label="Swing, percent"> %</span></label>
+            <label>Strength <input type="range" id="flexStrength" min="0" max="100" step="1" aria-label="Feel strength"> <output id="flexStrengthOut"></output></label>
+            <label>Catch ± <span class="unit"><input type="number" id="flexCatch" min="0" max="500" step="1" aria-label="Catch, ms"> ms</span></label>
+            <label>Audio <select id="flexAudio" aria-label="How the take's audio is stretched"><option value="hits">Hits</option><option value="smooth">Smooth</option></select></label>
+            <span id="flexKit" class="flex-kit">Kit slots <input type="number" min="0" max="100" step="5" aria-label="Kit slot 1 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 2 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 3 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 4 strength, percent"> %</span>
+          </div>
+          <p id="flexNote" class="hint"></p>
+        </details>
+        <div class="tl-body" id="tlBody">
           <div id="tlNames" class="tl-names"></div>
           <div class="tl-scroll" id="tlScroll">
-            <canvas id="timeline" tabindex="0" aria-label="Section timeline"></canvas>
+            <canvas id="timeline" tabindex="0" aria-label="Section timeline. Left and right pick a note or hit, up and down pick a lane, Shift with an arrow moves it, Delete removes." aria-describedby="tlNote"></canvas>
           </div>
         </div>
+        <span id="tlLive" class="sr" aria-live="polite"></span>
+        <p id="tlNote" class="hint">Drag a note, a hit or a marker. Drag a hit up or down to another kit slot. Double-click (or double-tap) empty space to add one.</p>
       </div>
-      <div class="morph" data-tour="morph">
-        <span class="dim">Morph</span>
-        <button type="button" id="addMarker">Add marker at row</button>
-        <label>Shape
-          <select id="morphShape" aria-label="Morph shape">
-            <option>line</option><option>ease</option><option>late</option><option>step</option><option>wobble</option>
-          </select>
-        </label>
-        <label>Length <input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds"> ms</label>
-        <span id="morphList" class="dim"></span>
-      </div>
-      <div class="morph" data-tour="lane">
-        <span class="dim">Lane</span>
-        <label>Shows
-          <select id="laneTarget" aria-label="What the automation strip under the selected layer shows"></select>
-        </label>
-        <button type="button" id="laneClear" title="Remove every point of this lane from the clip">Remove lane</button>
-        <span id="laneNote" class="hint">The strip under the morph strip: double-click to add a point (or remove one), drag a point to move it. Record fills lanes from what you play.</span>
+      <div class="lanes">
+        <div class="morph" data-tour="morph">
+          <span class="lbl">Morph</span>
+          <button type="button" id="addMarker">Add marker at row</button>
+          <label>Shape
+            <select id="morphShape" aria-label="Morph shape">
+              <option>line</option><option>ease</option><option>late</option><option>step</option><option>wobble</option>
+            </select>
+          </label>
+          <label>Length <span class="unit"><input id="morphLen" type="number" min="0" max="8000" step="10" value="400" aria-label="Morph length in milliseconds"> ms</span></label>
+          <span id="morphList" class="marklist"></span>
+        </div>
+        <div class="morph" data-tour="lane">
+          <span class="lbl">Lane</span>
+          <label>Shows
+            <select id="laneTarget" aria-label="What the automation strip under the selected layer shows"></select>
+          </label>
+          <button type="button" id="laneClear" title="Remove every point of this lane from the clip">Remove lane</button>
+          <span id="laneNote" class="hint">Double-click the strip under the morph strip to add or remove a point; drag one to move it. Record fills lanes from what you play.</span>
+        </div>
       </div>
     </main>
-    <aside class="panel" id="panel-sound">
-      <h2>Sound</h2>
+    <aside class="panel" id="panel-sound" role="tabpanel" aria-labelledby="tab-sound" tabindex="-1">
+      <h2>Sound <span id="soundLayer" class="dim"></span></h2>
       <div class="row views" data-tour="sound-views">
-        <span role="tablist" aria-label="Sound views" class="row">
+        <span role="tablist" aria-label="Sound views" class="seg">
           <button type="button" role="tab" data-view="simple" aria-selected="true">Simple</button>
           <button type="button" role="tab" data-view="patch" aria-selected="false" data-tour="patch-view">Patch</button>
           <button type="button" role="tab" data-view="mod" aria-selected="false" data-tour="mod-view">Mod</button>
-          <button type="button" role="tab" data-view="perform" aria-selected="false" data-tour="perform-view">Perform</button>
         </span>
         <label id="modPickBox" data-tour="mod-pick" hidden>Modulate with <select id="modPick" aria-label="Source to route: pick one, then press + beside a slider"></select></label>
       </div>
       <div class="sound patchview" id="soundPatch" hidden></div>
       <div class="sound modview" id="soundMod" hidden></div>
-      <div class="sound performview" id="soundPerform" hidden></div>
       <div class="sound" id="soundSimple">
         <fieldset>
           <legend>Layer</legend>
@@ -190,10 +202,12 @@
             <label>Preset <select id="preset" aria-label="Sound preset"></select></label>
             <button type="button" id="savePreset" title="Keep this layer's sound (its patch and this state's values) as one of your presets">Save preset</button>
             <button type="button" id="exportPreset" title="Download this layer's sound as a preset file">Export</button>
-            <label class="filebtn">Import <input id="importPreset" type="file" accept=".json,application/json" aria-label="Preset file to import"></label>
+            <label class="file-button">Import <input id="importPreset" type="file" accept=".json,application/json" aria-label="Preset file to import"></label>
+          </div>
+          <div class="row">
             <label>Level <input id="level" type="range" min="-60" max="12" step="1" value="0" aria-label="Layer level"></label>
             <label data-tour="pan">Pan <input id="pan" type="range" min="-100" max="100" step="1" value="0" aria-label="Layer pan, left to right"> <output id="panRead">C</output></label>
-            <button type="button" id="mute" aria-pressed="false">Mute</button>
+            <button type="button" id="mute" class="toggle" aria-pressed="false">Mute</button>
           </div>
         </fieldset>
         <fieldset data-tour="tune" id="tuneBox">
@@ -212,23 +226,25 @@
             <label>Octave <input id="tuneOctave" type="number" min="-4" max="4" step="1" value="0" aria-label="Octave shift"></label>
             <button type="button" id="fillTune">Fill from take</button>
           </div>
-          <p class="hint">Snap, slides, scale and octave shape the recorded pitch. A new take fills the root, the scale and the reference from the second pass.</p>
+          <p class="hint">Pitch snap, slides, scale and octave shape the recorded pitch. A new take fills the root, the scale and the reference.</p>
         </fieldset>
         <fieldset data-tour="states">
           <legend>States</legend>
           <div class="row">
             <label>Editing <select id="state" aria-label="Sound state"></select></label>
             <label>Name <input id="stateName" type="text" aria-label="State name" data-tour="state-name"></label>
+          </div>
+          <div class="row">
             <button type="button" id="addState">Add state</button>
             <button type="button" id="copyState">Copy state</button>
             <button type="button" id="removeState">Remove state</button>
           </div>
-          <p class="hint">The preset edits this state. Markers on the morph lane move from one state to the next.</p>
+          <p class="hint">The preset edits this state. Morph markers and Perform's scenes move between states.</p>
         </fieldset>
         <fieldset data-tour="macros">
           <legend>Macros</legend>
           <div id="macros" class="sliders"></div>
-          <p class="hint">Eight moves for the state you are editing. They sit on top of the preset.</p>
+          <p class="hint">Eight moves for the state you are editing, on top of the preset.</p>
         </fieldset>
         <fieldset data-tour="gestures">
           <legend>Gestures</legend>
@@ -239,18 +255,18 @@
           <legend>Kit slot</legend>
           <div class="row">
             <label>Slot <select id="kitSlot" aria-label="Kit slot"></select></label>
-            <label>File <input id="kitFile" type="file" accept="audio/*" aria-label="One hit to match into the slot"></label>
+            <label class="file-button">From a file <input id="kitFile" type="file" accept="audio/*" aria-label="One hit to match into the slot"></label>
             <button type="button" id="kitRecord">Record one hit</button>
             <button type="button" id="kitHear">Hear slot</button>
-            <button type="button" id="teachSlot" data-tour="teach" title="Hold and repeat one sound. The next beat take uses what you taught.">Teach this slot</button>
+            <button type="button" id="teachSlot" data-tour="teach" title="Hold and repeat one sound. The next beat take uses what you taught.">Hold to teach</button>
           </div>
-          <p id="kitStatus" class="hint" role="status">A beat layer only. One hit, from the mic or a file, becomes that slot.</p>
+          <p id="kitStatus" class="hint" role="status">One hit, from the mic or a file, becomes that slot.</p>
         </fieldset>
         <fieldset data-tour="influence">
           <legend>Influence</legend>
           <div class="row">
-            <label>File <input id="infFile" type="file" accept="audio/*" aria-label="Audio file to match"></label>
-            <button type="button" id="listen">Listen</button>
+            <label class="file-button">From a file <input id="infFile" type="file" accept="audio/*" aria-label="Audio file to match"></label>
+            <button type="button" id="listen" title="Hold and make the sound you want this layer to move toward">Hold to listen</button>
             <label>Saved <select id="savedSource" aria-label="Sources saved on the Influence page"></select></label>
             <button type="button" id="useSaved" disabled>Use saved</button>
           </div>
@@ -259,7 +275,7 @@
           <div class="row" id="aspects"></div>
           <div class="row">
             <label>Amount <input id="amount" type="range" min="0" max="100" value="0" aria-label="Influence amount"></label>
-            <label><input id="useSound" type="checkbox"> Use the sound itself</label>
+            <label class="check"><input id="useSound" type="checkbox"> Use the sound itself</label>
           </div>
           <div class="row">
             <button type="button" id="commit">Commit</button>
@@ -267,14 +283,22 @@
             <button type="button" id="playSource" data-tour="source">Play source</button>
             <button type="button" id="holdNote" data-tour="hold-note" title="Hold to play this layer at the source pitch.">Hold note</button>
           </div>
-          <p id="infStatus" class="hint" role="status">No Influence yet. A file or Listen sets a target the state blends toward.</p>
+          <p id="infStatus" class="hint" role="status">No Influence yet. A file or Hold to listen sets a target the state blends toward.</p>
         </fieldset>
       </div>
     </aside>
+    <section class="panel" id="panel-perform" role="tabpanel" aria-labelledby="tab-perform" tabindex="-1" data-tour="perform-view">
+      <h2>Perform <span class="dim keyhint">Keys A to K play, Z and X change the octave</span></h2>
+      <div class="sound performview" id="soundPerform"></div>
+    </section>
   </div>
   <footer class="statusline">
-    <span id="engineStatus">Press Start to play.</span>
-    <span id="storageStatus"></span>
+    <span id="capStatus" class="msg" role="status">Press Start to hear the song.</span>
+    <button type="button" id="nextStep" class="next" hidden></button>
+    <span class="right">
+      <span id="engineStatus">Audio off.</span>
+      <span id="storageStatus"></span>
+    </span>
   </footer>
   <div id="tour" class="tour" hidden>
     <div>
@@ -291,23 +315,96 @@
       <label>Name <input id="projNameInput" type="text" aria-label="Project name"></label>
       <button type="button" id="renameBtn">Rename</button>
     </div>
+    <h3>Share</h3>
+    <div class="row">
+      <button type="button" id="exportWav" class="primary" data-tour="wav" title="Render the song to a stereo file. The click is not in it.">Export mix (WAV)</button>
+      <button type="button" id="exportBtn" title="One zip of the project and its audio, to import later">Export zip</button>
+      <label class="file-button">Import zip <input id="importFile" type="file" accept=".zip,application/zip" aria-label="Import a project zip"></label>
+    </div>
+    <h3>Projects</h3>
     <div class="row">
       <button type="button" id="newBtn">New</button>
       <button type="button" id="saveBtn">Save</button>
       <button type="button" id="saveAsBtn">Save as</button>
-      <button type="button" id="deleteBtn">Delete</button>
     </div>
     <div class="row">
       <label>Open <select id="openList" aria-label="Saved projects"></select></label>
       <button type="button" id="openBtn">Open</button>
     </div>
+    <p class="hint">The song is saved as you edit; Save writes it now. A zip includes the audio and opens in a later Earworm.</p>
+    <h3>Tidy</h3>
     <div class="row">
-      <button type="button" id="exportBtn">Export zip</button>
-      <button type="button" id="exportWav" data-tour="wav" title="Render the song to a stereo file. The click is not in it.">Export mix</button>
-      <label>Import <input id="importFile" type="file" accept=".zip,application/zip" aria-label="Import a project zip"></label>
       <button type="button" id="cleanBtn" title="Removes takes and sources nothing in the song or in Undo still uses">Clean up</button>
+      <button type="button" id="deleteBtn" class="danger">Delete project…</button>
     </div>
-    <p class="hint">Save writes the journal now. The song is also saved as you edit. Export is one zip you can import later, including a project from an older Earworm.</p>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </dialog>
+
+  <dialog id="setupDialog" aria-labelledby="setupTitle">
+    <h2 id="setupTitle">Setup</h2>
+    <h3>Mic timing</h3>
+    <div class="row">
+      <label data-tour="align">Align <span class="unit"><input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"> ms</span></label>
+      <button type="button" id="measure" data-tour="measure" title="Play five chirps and time how long they take to come back.">Measure</button>
+    </div>
+    <p class="hint">The round trip from the speakers back to the mic. A take is placed that much earlier. Measure with headphones on.</p>
+    <h3>Metronome</h3>
+    <div class="row">
+      <label>Level <input id="metroLevel" type="range" min="0" max="100" value="70" aria-label="Metronome level"></label>
+      <label>Bar <input id="metroBar" type="number" min="1" max="32" step="1" value="4" aria-label="Beats in a bar"></label>
+      <button type="button" id="metroVoice" title="Plain tick, or a hit from the beat layer">Tick</button>
+    </div>
+    <h3>Vowel bands</h3>
+    <div class="row">
+      <label data-tour="bands">Bands
+        <select id="bands" aria-label="Vowel bands. The song engine uses 16.">
+          <option value="16" selected>16</option>
+          <option value="24">24</option>
+        </select>
+      </label>
+    </div>
+    <h3>Theme</h3>
+    <div class="row" role="radiogroup" aria-label="Theme">
+      <label class="check"><input type="radio" name="theme" value="system" checked> System</label>
+      <label class="check"><input type="radio" name="theme" value="light"> Light</label>
+      <label class="check"><input type="radio" name="theme" value="dark"> Dark</label>
+    </div>
+    <h3>Test pages</h3>
+    <div class="row"><button type="button" id="testsBtn">Milestone and gate pages</button></div>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </dialog>
+
+  <dialog id="keysDialog" aria-labelledby="keysTitle">
+    <h2 id="keysTitle">Keys</h2>
+    <table class="keys">
+      <tbody>
+        <tr><th scope="row"><kbd>Space</kbd></th><td>Play or stop. With the mic on: hold to capture</td></tr>
+        <tr><th scope="row"><kbd>Esc</kbd></th><td>Stop</td></tr>
+        <tr><th scope="row"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>Z</kbd></th><td>Undo (add <kbd>Shift</kbd> to redo)</td></tr>
+        <tr><th scope="row"><kbd>Alt</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></th><td>Track, Sound, Perform</td></tr>
+        <tr><th scope="row"><kbd>?</kbd></th><td>This list</td></tr>
+      </tbody>
+      <tbody>
+        <tr><th scope="rowgroup" colspan="2">Pattern grid</th></tr>
+        <tr><th scope="row">Arrows</th><td>Move the cursor</td></tr>
+        <tr><th scope="row"><kbd>Enter</kbd> / <kbd>Delete</kbd></th><td>Add / remove a note or hit</td></tr>
+        <tr><th scope="row"><kbd>Shift</kbd> <kbd>↑</kbd> <kbd>↓</kbd></th><td>Move the selected notes a semitone</td></tr>
+        <tr><th scope="row"><kbd>1</kbd>–<kbd>4</kbd></th><td>Kit slot of the selected hits</td></tr>
+      </tbody>
+      <tbody>
+        <tr><th scope="rowgroup" colspan="2">Timeline</th></tr>
+        <tr><th scope="row"><kbd>←</kbd> <kbd>→</kbd></th><td>Pick the previous or next note or hit</td></tr>
+        <tr><th scope="row"><kbd>↑</kbd> <kbd>↓</kbd></th><td>The lane above or below</td></tr>
+        <tr><th scope="row"><kbd>Shift</kbd> <kbd>←</kbd> <kbd>→</kbd></th><td>Move it by the snap (a 16th when Snap is off)</td></tr>
+        <tr><th scope="row"><kbd>Shift</kbd> <kbd>↑</kbd> <kbd>↓</kbd></th><td>A semitone up or down (a hit: the kit slot above or below)</td></tr>
+        <tr><th scope="row"><kbd>Delete</kbd></th><td>Remove the selection</td></tr>
+      </tbody>
+      <tbody>
+        <tr><th scope="rowgroup" colspan="2">Perform</th></tr>
+        <tr><th scope="row"><kbd>A</kbd> <kbd>W</kbd> <kbd>S</kbd> … <kbd>K</kbd></th><td>Play an octave from C (a beat layer: <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <kbd>F</kbd> play slots 1 to 4)</td></tr>
+        <tr><th scope="row"><kbd>Z</kbd> / <kbd>X</kbd></th><td>Octave down / up</td></tr>
+      </tbody>
+    </table>
     <form method="dialog"><button type="submit">Close</button></form>
   </dialog>
 

@@ -14,7 +14,7 @@ import {
   TUNE_OCTAVE, TUNE_REF_CENTS, TUNE_ROOT, TUNE_SCALE, TUNE_SLIDES, TUNE_SNAP, TUNE_SPEED, TUNE_VIBRATO,
 } from '../m1/protocol';
 import { SCALES } from '../host/protocol';
-import { snapChoices } from '../m3/geometry';
+import { snapChoices, stateColor } from '../m3/geometry';
 import { Analysis, teach, type Hit as AnalysisHit } from '../m2/analysis';
 import { SLOT_NAMES } from '../m2/sounds';
 import { meanLive } from '../m2/take';
@@ -89,14 +89,20 @@ async function main(): Promise<void> {
   app.stopFlushOnHide = flushOnHide(db);
   if (storageNote) app.fail(storageNote);
   const tutorial = new TutorialRunner();
-  const capture = new AppCapture(app, (s) => { $('capStatus').textContent = s; }, () => tutorial.event('capture') && paintTour());
+  const capture = new AppCapture(app, (s) => { $('capStatus').textContent = s; offerNext(s); }, () => tutorial.event('capture') && paintTour());
   const timeline = new GlTimeline(app, () => acted('timeline'));
   const glyphCanvas = document.getElementById('klont');
   const ribbonCanvas = document.getElementById('ribbon');
   const glyph = glyphCanvas instanceof HTMLCanvasElement ? new KlontGlyph(glyphCanvas) : null;
   const ribbon = ribbonCanvas instanceof HTMLCanvasElement ? new Ribbon(ribbonCanvas, 8, 36) : null;
   const ribbonFrames: Float32Array[] = [];
-  const ribbonColors = { fg: '#e7eef6', muted: '#b4c4d4', line: '#3d5166', accent: '#f0b429' };
+  /** The ribbon's colors, read from the theme's tokens (style.css). */
+  const themeColors = () => {
+    const css = getComputedStyle(document.documentElement);
+    const v = (k: string, d: string) => css.getPropertyValue(k).trim() || d;
+    return { fg: v('--text', '#e7eef6'), muted: v('--dim', '#b4c4d4'), line: v('--line', '#3d5166'), accent: v('--accent', '#f0b429') };
+  };
+  let ribbonColors = themeColors();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   let bands: 16 | 24 = 16;
   let liveTarget: ArrayLike<number> | null = null;
@@ -124,7 +130,7 @@ async function main(): Promise<void> {
   }
   const synth = new SynthPanel(app, () => layer(), (k) => acted(k), {
     patch: $('soundPatch'), mod: $('soundMod'), pick: $<HTMLSelectElement>('modPick'), pickBox: $('modPickBox'),
-    views: [...document.querySelectorAll<HTMLButtonElement>('[data-view]')], simple: $('soundSimple'), perform: $('soundPerform'),
+    views: [...document.querySelectorAll<HTMLButtonElement>('[data-view]')], simple: $('soundSimple'),
   });
   const perform = new PerformPanel(app, $('soundPerform'), {
     layer: () => layer(), listening: (id) => synth.listening(id), toggleListen: (id) => synth.toggleListen(id), kv,
@@ -139,12 +145,16 @@ async function main(): Promise<void> {
     document.querySelectorAll('[data-tour].tour-on').forEach((e) => e.classList.remove('tour-on'));
     const step = tutorial.step;
     const box = $('tour');
-    if (!step) { box.hidden = true; return; }
+    if (!step) { box.hidden = true; tourDialog?.close(); tourDialog = null; return; }
     box.hidden = false;
     $('tourTitle').textContent = step.title;
     $('tourBody').textContent = step.body;
     btn('tourNext').textContent = step.advance === 'next' ? step.action : 'Skip';
-    document.querySelector(`[data-tour="${step.target}"]`)?.classList.add('tour-on');
+    const target = document.querySelector(`[data-tour="${step.target}"]`);
+    target?.classList.add('tour-on');
+    const dlg = target?.closest('dialog') ?? null;
+    if (tourDialog && tourDialog !== dlg) { tourDialog.close(); tourDialog = null; }
+    if (dlg instanceof HTMLDialogElement && !dlg.open) { dlg.show(); tourDialog = dlg; }
     const soundish = step.target === 'influence' || step.target === 'states' || step.target === 'state-name' || step.target === 'macros' || step.target === 'gestures' || step.target === 'kit' || step.target === 'teach' || step.target === 'pan' || step.target === 'tune' || step.target === 'source' || step.target === 'hold-note'
       || ['sound-views', 'patch-view', 'mod-view', 'mod-pick', 'env1', 'route-amount', 'matrix', 'shaper', 'features'].includes(step.target);
     if (['env1', 'route-amount', 'matrix', 'shaper', 'features'].includes(step.target)) {
@@ -155,12 +165,48 @@ async function main(): Promise<void> {
     if (panel && window.matchMedia('(max-width: 959px)').matches) showPanel(panel);
   }
 
+  /** A dialog the tour opened to show a step's control, closed when the tour moves on. */
+  let tourDialog: HTMLDialogElement | null = null;
+
+  // ---- places (docs/ui.md "Three places, one transport"). Narrow screens show one panel at a
+  // time; from 960 px Track shows the layers, the track and the sound together, and Perform
+  // shows the layers and the play surface.
+  const PLACES = ['layers', 'pattern', 'sound', 'perform'] as const;
+  const wideScreen = window.matchMedia('(min-width: 960px)');
   function showPanel(name: string): void {
-    for (const id of ['layers', 'pattern', 'sound']) {
-      const on = id === name;
-      $(`panel-${id}`).classList.toggle('on', on);
-      $(`tab-${id}`).setAttribute('aria-selected', String(on));
+    const place = wideScreen.matches && name !== 'perform' ? 'pattern' : name;
+    document.body.dataset.place = place;
+    for (const id of PLACES) $(`tab-${id}`).setAttribute('aria-selected', String(id === place));
+    synth.performShown = place === 'perform';
+    perform.active = place === 'perform';
+    if (place === 'perform') perform.render();
+    timeline.invalidate();
+  }
+  wideScreen.addEventListener('change', () => showPanel(document.body.dataset.place ?? 'pattern'));
+
+  /** The next step after a take or a pass, offered in the status line (docs/ui.md "How one feature leads to the next"). */
+  let nextAction: (() => void) | null = null;
+  function setNext(label: string, act: (() => void) | null): void {
+    const b = btn('nextStep');
+    nextAction = act;
+    b.hidden = !act;
+    b.textContent = label;
+  }
+  function offerNext(s: string): void {
+    if (/^(Placed|Imported)/.test(s)) {
+      const sec = section();
+      const l = layer();
+      const clip = sec && l ? sec.clips[l.id] : undefined;
+      if (sec?.feel === 'grid' && clip && !clip.flex?.on) {
+        setNext('Quantize it', () => { showPanel('pattern'); btn('quantize').click(); });
+        return;
+      }
     }
+    if (/^Recorded/.test(s)) {
+      setNext('Show the lanes', () => { showPanel('pattern'); document.querySelector('.lanes')?.scrollIntoView({ block: 'nearest' }); });
+      return;
+    }
+    setNext('', null);
   }
 
   // ---- panels
@@ -237,6 +283,7 @@ async function main(): Promise<void> {
         cell.title = view.title;
         cell.setAttribute('role', 'gridcell');
         cell.setAttribute('aria-label', `${l.name}, row ${r + 1}, ${view.label}`);
+        cell.tabIndex = cursor.row === r && cursor.col === c ? 0 : -1;
         cell.addEventListener('click', () => {
           cursor = { row: r, col: c };
           app.ui.layerId = l.id;
@@ -250,7 +297,7 @@ async function main(): Promise<void> {
       tb.append(tr);
     }
     table.replaceChildren(thead, tb);
-    table.tabIndex = 0;
+    table.tabIndex = -1;
     if (keepFocus) {
       const cell = table.querySelector(`tr[data-row="${cursor.row}"] td:nth-child(${cursor.col + 2}) button`);
       if (cell instanceof HTMLElement) cell.focus();
@@ -259,11 +306,19 @@ async function main(): Promise<void> {
     const box = $('morphList');
     box.replaceChildren();
     morph.forEach((m, i) => {
+      const k = Math.max(0, layer()?.states.findIndex((s) => s.id === m.state) ?? 0);
       const name = layer()?.states.find((s) => s.id === m.state)?.name ?? m.state;
       const b = document.createElement('button');
       b.type = 'button';
-      b.textContent = `${positionLabel(sec, m.t)} ${name} ×`;
+      // The timeline marks a marker's state with notches as well as its color (docs/ui.md).
+      const notch = document.createElement('span');
+      notch.className = 'notch';
+      notch.style.color = stateColor(k);
+      notch.textContent = '▮'.repeat(k + 1);
+      notch.setAttribute('aria-hidden', 'true');
+      b.append(notch, `${positionLabel(sec, m.t)} ${name} ×`);
       b.title = 'Remove this marker';
+      b.setAttribute('aria-label', `Remove the marker at ${positionLabel(sec, m.t)}, to ${name}`);
       b.addEventListener('click', () => app.run(() => app.store.dispatch('removeMorphMarker', { section: sec.id, layer: app.ui.layerId, index: i })));
       box.append(b);
     });
@@ -306,6 +361,8 @@ async function main(): Promise<void> {
     const preset = $<HTMLSelectElement>('preset');
     const state = $<HTMLSelectElement>('state');
     if (!l) return;
+    $('soundLayer').textContent = l.name;
+    perform.renderCaptureMode($('captureMode'), l);
     {
       // Factory presets, then the user's, for this kind of layer; "Custom" when the sound matches none.
       const fits = (p: PresetFile) => (p.kind === 'beat') === (l.kind === 'beat');
@@ -448,6 +505,13 @@ async function main(): Promise<void> {
     btn('undo').disabled = !app.store.history.canUndo;
     btn('redo').disabled = !app.store.history.canRedo;
     btn('capture').disabled = !app.host || !app.stream;
+    btn('start').hidden = !!app.host;
+    btn('startMic').hidden = !!app.host;
+    const chip = $('audioState');
+    chip.hidden = !app.host;
+    chip.textContent = app.stream ? 'Mic on' : 'Mic off';
+    chip.classList.toggle('on', !!app.stream);
+    $('intoLayer').textContent = layer()?.name ?? '—';
     btn('record').disabled = !app.host;
     num('importTake').disabled = !app.host;
     btn('play').disabled = !app.host;
@@ -601,6 +665,11 @@ async function main(): Promise<void> {
       if (document.activeElement !== el) el.value = String(Math.round((f?.slotStrength?.[k] ?? 1) * 100));
     });
     $('flexNote').textContent = clip ? flexNote(clip, l!, grid) : '';
+    const gridName = choices.find((c) => c.value === value)?.label ?? '';
+    $('flexSummary').textContent = !clip ? 'no clip on this layer in this section'
+      : !grid ? 'a free section has no grid'
+      : f?.on ? `on · ${gridName}${f.triplets ? ' triplets' : ''} · ${strength}%${f.feel.kind === 'swing' ? ` · swing ${Math.round(f.feel.amount * 100)}%` : ''} · ${audio.value === 'hits' ? 'hits' : 'smooth'}`
+      : 'off: the clip plays as performed';
   }
 
   /** What the Feel row says about the clip: what its anchors are, and what Q1 cannot move yet. */
@@ -917,7 +986,11 @@ async function main(): Promise<void> {
     // Quantize turns Feel on at full strength with the Snap value as the grid (docs/quant.md): the
     // notes keep their played timing and the clip plays them on the grid.
     const grid = clip.timeSnap > 0 ? clip.timeSnap : PPQ / 4;
-    if (app.run(() => app.store.dispatch('setFlex', { section: sec.id, layer: l.id, flex: quantizeFlex(clip.flex, grid) }))) acted('quantize');
+    if (app.run(() => app.store.dispatch('setFlex', { section: sec.id, layer: l.id, flex: quantizeFlex(clip.flex, grid) }))) {
+      $<HTMLDetailsElement>('flexBox').open = true;
+      setNext('', null);
+      acted('quantize');
+    }
   });
   btn('dupSection').addEventListener('click', () => {
     const sec = section();
@@ -992,7 +1065,7 @@ async function main(): Promise<void> {
   NOTE_NAMES.forEach((n, i) => tuneRoot.append(new Option(n, String(i))));
   SCALES.forEach((n, i) => tuneScale.append(new Option(n, String(i))));
   const tuneRanges: { id: string; label: string; key: keyof TuneFields; min: number; max: number; scale: number }[] = [
-    { id: 'tuneSnap', label: 'Snap', key: 'snap', min: 0, max: 100, scale: 100 },
+    { id: 'tuneSnap', label: 'Pitch snap', key: 'snap', min: 0, max: 100, scale: 100 },
     { id: 'tuneSpeed', label: 'Speed', key: 'speedMs', min: 0, max: 250, scale: 1 },
     { id: 'tuneVibrato', label: 'Vibrato', key: 'vibrato', min: 0, max: 200, scale: 100 },
     { id: 'tuneLevel', label: 'Level', key: 'levelOut', min: 0, max: 100, scale: 100 },
@@ -1624,6 +1697,18 @@ async function main(): Promise<void> {
   });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { app.host?.stop(); return; }
+    if (e.altKey && !e.metaKey && !e.ctrlKey && ['Digit1', 'Digit2', 'Digit3'].includes(e.code)) {
+      e.preventDefault();
+      const place = e.code === 'Digit1' ? 'pattern' : e.code === 'Digit2' ? 'sound' : 'perform';
+      showPanel(place);
+      $(`panel-${place}`).focus();
+      return;
+    }
+    if (e.key === '?' && !typingIn(e.target) && !document.querySelector('dialog[open]')) {
+      e.preventDefault();
+      $<HTMLDialogElement>('keysDialog').showModal();
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
@@ -1828,9 +1913,28 @@ async function main(): Promise<void> {
     paintTour();
   });
   btn('tourClose').addEventListener('click', () => { tutorial.stop(); paintTour(); });
-  for (const id of ['layers', 'pattern', 'sound']) {
+  for (const id of PLACES) {
     btn(`tab-${id}`).addEventListener('click', () => showPanel(id));
   }
+  btn('setupBtn').addEventListener('click', () => $<HTMLDialogElement>('setupDialog').showModal());
+  btn('keysBtn').addEventListener('click', () => $<HTMLDialogElement>('keysDialog').showModal());
+  btn('nextStep').addEventListener('click', () => { const act = nextAction; setNext('', null); act?.(); });
+
+  // ---- theme: System follows prefers-color-scheme; Light and Dark are kept in this browser.
+  const THEME_KEY = 'earworm.theme';
+  const retheme = () => { ribbonColors = themeColors(); timeline.retheme(); synth.render(); };
+  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="theme"]')) {
+    radio.checked = radio.value === (document.documentElement.dataset.theme ?? 'system');
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      const t = radio.value;
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      else delete document.documentElement.dataset.theme;
+      try { if (t === 'light' || t === 'dark') localStorage.setItem(THEME_KEY, t); else localStorage.removeItem(THEME_KEY); } catch { /* storage off: the choice lasts this visit */ }
+      retheme();
+    });
+  }
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', retheme);
 
   // ---- start
 
@@ -1884,6 +1988,9 @@ async function main(): Promise<void> {
     requestAnimationFrame(tick);
     capture.poll();
     timeline.frame();
+    document.body.classList.toggle('capturing', capture.holding || capture.recording);
+    const recLabel = capture.recording ? '● Recording' : '● Record';
+    if (btn('record').textContent !== recLabel) btn('record').textContent = recLabel;
     const singing = layer();
     const stateNow = singing ? app.ui.editState(singing) : null;
     const metersNow = app.readMeters();
