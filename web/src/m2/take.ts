@@ -18,6 +18,19 @@ export const MIC_RING_SEC = POLY_MAX_TAKE_SEC + 1;
 export const TUNED = 24;
 /** Frames per second (10 ms frames). */
 export const FRAME_RATE = 100;
+/** Voicing slot of a frame record (crates/dsp/src/frame.rs): 2 when the live tier's gate was
+ *  shut, that is the input was below the capture threshold. */
+const VOICING = 7, SILENT = 2;
+
+/** Whether a take's frames hold a voice: at least MIN_TAKE_SEC of frames with the gate open, the
+ *  same bound a take's length must meet. A pass recorded with the mic on but nobody singing
+ *  (playing keys, say) has none, and its take is not kept, so it cannot replace written notes. */
+export function heardVoice(frames: Float32Array): boolean {
+  let open = 0;
+  for (let i = VOICING; i < frames.length; i += CURVE_STRIDE) if (frames[i] !== SILENT) open++;
+  return open >= MIN_TAKE_SEC * FRAME_RATE;
+}
+
 /** Cents above C0 of the lowest representable pitch for the follow check, and C0 in Hz. */
 export const C0_HZ = 16.351597831287414;
 

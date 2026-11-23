@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { liveTierOver } from '../project/import-take';
 import { CLIP_WORDS, CURVE_MAGIC, CURVE_STRIDE, EVENT_WORDS, FEEL_FREE, SECTION_WORDS, TRACK_HEADER_WORDS, TRACK_MAGIC } from '../m1/track';
 import type { Hit, Note } from './analysis';
-import { MAX_TAKE_SEC, MIC_RING_SEC, POLY_MAX_TAKE_SEC, buildCurveBlob, buildTrackBlob, hitsToEvents, levelDelayMs, loopSeconds, meanLive, measureFollow,
+import { MAX_TAKE_SEC, MIC_RING_SEC, heardVoice, POLY_MAX_TAKE_SEC, buildCurveBlob, buildTrackBlob, hitsToEvents, levelDelayMs, loopSeconds, meanLive, measureFollow,
   noteTargets, notesToEvents, pitchLockDelaysMs, tally, withTuned } from './take';
 
 const SR = 48000;
@@ -177,5 +179,29 @@ describe('tally', () => {
     expect(MAX_TAKE_SEC).toBeLessThan(MIC_RING_SEC);
     expect(POLY_MAX_TAKE_SEC).toBe(300);
     expect(POLY_MAX_TAKE_SEC).toBeLessThan(MIC_RING_SEC);
+  });
+});
+
+describe('heardVoice', () => {
+  // Frames from the live tier itself, so the gate is the capture threshold the app uses.
+  const klont = readFileSync(new URL('../../public/wasm/klont.wasm', import.meta.url));
+  const room = (n: number) => { let s = 1; return Float32Array.from({ length: n }, () => ((s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 2 ** 32 - 0.5) * 2e-4); };
+
+  it('finds no voice in silence or room noise, and finds a hum', async () => {
+    const n = 4 * SR;
+    expect(heardVoice((await liveTierOver(klont, new Float32Array(n), SR)).frames)).toBe(false);
+    expect(heardVoice((await liveTierOver(klont, room(n), SR)).frames)).toBe(false);
+    const hum = room(n);
+    for (let i = SR; i < 3 * SR; i++) hum[i] += 0.3 * Math.sin((2 * Math.PI * 220 * i) / SR);
+    expect(heardVoice((await liveTierOver(klont, hum, SR)).frames)).toBe(true);
+  });
+
+  it('needs half a second of open gate', () => {
+    const frames = new Float32Array(200 * CURVE_STRIDE);
+    for (let i = 0; i < 200; i++) frames[i * CURVE_STRIDE + 7] = 2;
+    for (let i = 0; i < 49; i++) frames[i * CURVE_STRIDE + 7] = 0;
+    expect(heardVoice(frames)).toBe(false);
+    frames[49 * CURVE_STRIDE + 7] = 1;
+    expect(heardVoice(frames)).toBe(true);
   });
 });

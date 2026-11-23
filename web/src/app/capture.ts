@@ -23,7 +23,7 @@ import { tuneFromTake } from './tune';
 import { newId } from '../project/commands';
 import { clockMark, placeTake, type ClockMark } from '../project/overdub';
 import type { Take } from '../project/types';
-import { MAX_TAKE_SEC, MIN_TAKE_SEC, POLY_MAX_TAKE_SEC } from '../m2/take';
+import { heardVoice, MAX_TAKE_SEC, MIN_TAKE_SEC, POLY_MAX_TAKE_SEC } from '../m2/take';
 
 const FRAME_RATE = 100;
 const FRAME_STRIDE = 25;
@@ -240,11 +240,19 @@ export class AppCapture implements RecordHooks {
     }
     if (a.mic && !a.listening && !a.poly) host.arm(a.layerIdx, false);
     const n = a.mic ? Math.min(host.framesTotal(), a.f0 + maxTakeSec(a) * FRAME_RATE) - a.f0 : 0;
-    const takeOk = a.mic && n >= MIN_TAKE_SEC * FRAME_RATE;
-    if (!takeOk && (!a.pass || a.pass.empty)) { this.status(a.mic ? `Ignored: ${(n / FRAME_RATE).toFixed(2)} s is under ${MIN_TAKE_SEC} s.` : 'Nothing was played.'); return; }
+    const long = a.mic && n >= MIN_TAKE_SEC * FRAME_RATE;
+    // A take with no voice in it is dropped (docs/S5.md, "Where the build differs"): with the mic on during
+    // a pass of keys it would otherwise replace the clip's notes with none.
+    const quiet = long && !heardVoice(host.readFrames(a.f0, n));
+    const takeOk = long && !quiet;
+    if (!takeOk && (!a.pass || a.pass.empty)) {
+      this.status(!a.mic ? 'Nothing was played.' : quiet ? 'Ignored: the mic heard nothing above the capture threshold.'
+        : `Ignored: ${(n / FRAME_RATE).toFixed(2)} s is under ${MIN_TAKE_SEC} s.`);
+      return;
+    }
     this.busy = true;
     try {
-      await this.place(a, takeOk ? n : 0);
+      await this.place(a, takeOk ? n : 0, quiet);
       this.onPlaced();
     } catch (e) {
       this.status('');
@@ -318,12 +326,12 @@ export class AppCapture implements RecordHooks {
   }
 
   /** Put the take (n frames; 0: none) and the pass into the document as one undo step. */
-  private async place(a: Active, n: number): Promise<void> {
+  private async place(a: Active, n: number, quiet = false): Promise<void> {
     const { app } = this;
     const host = app.host!;
     const layer = app.doc.layers.find((l) => l.id === a.layerId);
     if (!layer) throw new Error('The layer was removed while recording.');
-    if (n === 0 || a.listening) { await this.placePass(a, n); return; }
+    if (n === 0 || a.listening) { await this.placePass(a, n, quiet); return; }
     if (a.poly && isPoly(layer)) { await this.placePoly(a, n); return; }
     this.status(`Second pass on ${(n / FRAME_RATE).toFixed(1)} s…`);
     const mic = host.readMic(a.f0 * host.frameLen(), n * host.frameLen());
@@ -418,7 +426,7 @@ export class AppCapture implements RecordHooks {
   }
 
   /** A pass without a take, or with a take into a listening layer (its audio and features, no notes). */
-  private async placePass(a: Active, n: number): Promise<void> {
+  private async placePass(a: Active, n: number, quiet = false): Promise<void> {
     const { app } = this;
     const host = app.host!;
     let take: Take | null = null;
@@ -449,6 +457,6 @@ export class AppCapture implements RecordHooks {
       for (const x of cmds) run(x.name as 'setClip', x.args as never);
     });
     app.clearError();
-    this.status(`Recorded ${a.pass ? this.passWhat(a.pass) : 'the pass'}${t ? `, and ${(n / FRAME_RATE).toFixed(1)} s of the mic into a listening layer` : ''}.`);
+    this.status(`Recorded ${a.pass ? this.passWhat(a.pass) : 'the pass'}${t ? `, and ${(n / FRAME_RATE).toFixed(1)} s of the mic into a listening layer` : ''}.${quiet ? ' The mic heard nothing, so no take was kept.' : ''}`);
   }
 }
