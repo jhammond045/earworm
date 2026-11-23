@@ -312,7 +312,7 @@ kbd {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--dim); font-size: var(--fs-0); pointer-events: none;
 }
-body.capturing .ribbon-empty { display: none; }
+body.capturing .ribbon-empty, .ribbonwrap.drawn .ribbon-empty { display: none; }
 .scopes {
   display: grid; grid-template-columns: repeat(2, minmax(96px, 140px)); grid-auto-rows: min-content;
   gap: 3px var(--s-2); align-content: center; max-height: 64px; overflow: auto;

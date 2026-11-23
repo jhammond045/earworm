@@ -809,6 +809,12 @@ async function main(): Promise<void> {
 
   session.onChange((doc, kind) => {
     if (kind === 'swap') {
+      // Nothing on screen belongs to the project that was open: its message and its last capture go.
+      $('capStatus').textContent = '';
+      if (ribbonCanvas instanceof HTMLCanvasElement) {
+        ribbonCanvas.getContext('2d')?.clearRect(0, 0, ribbonCanvas.width, ribbonCanvas.height);
+        ribbonCanvas.parentElement!.classList.remove('drawn');
+      }
       app.ui.selection = { layerId: '', ids: [] };
       app.ui.marker = null;
       app.ui.sectionId = '';
@@ -2074,6 +2080,7 @@ async function main(): Promise<void> {
       for (let i = 0; i < n; i++) ribbonFrames.push(recordFromFrame(raw.subarray(i * 25, i * 25 + 25)));
       ribbon.draw({ count: ribbonFrames.length, get: (back) => ribbonFrames[ribbonFrames.length - 1 - back] ?? null },
         singing?.tune.scale ?? 0, singing?.tune.root ?? 0, ribbonColors, true);
+      ribbonCanvas!.parentElement!.classList.add('drawn');
     }
     const m = app.readMeters();
     synth.frame(m);
