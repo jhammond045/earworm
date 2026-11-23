@@ -95,6 +95,18 @@ button.down, button[aria-pressed="true"] {
   border-color: var(--accent);
   color: var(--hot);
 }
+/* A file input dressed as the buttons beside it; the input stays focusable for the keyboard. */
+.file-button {
+  position: relative; display: inline-flex; align-items: center; box-sizing: border-box;
+  background: var(--panel-2); background-image: var(--shadow-inset);
+  border: 1px solid var(--line); border-radius: var(--r-1);
+  padding: 4px 10px; cursor: pointer; min-height: 32px;
+}
+.bank .file-button { min-height: 36px; }
+.file-button:hover { border-color: var(--line-strong); }
+.file-button:has(input:disabled) { opacity: 0.45; cursor: default; }
+.file-button:focus-within { outline: var(--focus); outline-offset: 2px; }
+.file-button input[type="file"] { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: inherit; }
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: var(--focus);
   outline-offset: 2px;

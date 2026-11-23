@@ -333,3 +333,42 @@ fn beats_corpus() {
     assert!(beat_kind as f32 >= 0.85 * takes as f32, "kind=beat {beat_kind} of {takes}");
     assert!(tempo_ok as f32 >= 0.85 * takes as f32, "tempo within 3% (or half, double) {tempo_ok} of {takes}");
 }
+
+/// Listening examples for docs/Q2.md (writes nothing unless Q2_WAV names a directory): two
+/// corpus takes whose anchors read early, as played and quantized to 8ths at full strength in
+/// hits mode, with a quiet click on every beat to judge the landing against. 6 s each.
+#[test]
+fn listening_examples() {
+    use common::flex_map::*;
+    if std::env::var("Q2_WAV").is_err() {
+        return;
+    }
+    let bpm = 100.0f32;
+    let beat = 60.0 / bpm as f64;
+    for (pi, name) in [(3, "four"), (4, "voiced")] {
+        let take = make_take(pi, bpm, 401);
+        let anchors = found(&take.audio, Kind::Beat);
+        let errs: Vec<f64> = take.hits.iter().filter_map(|&(t, _)| anchors.iter().map(|a| a.t - t as f64).min_by(|x, y| x.abs().total_cmp(&y.abs())).filter(|e| e.abs() < 0.05)).collect();
+        println!("corpus {name}: {} of {} hits have an anchor within 50 ms, mean error {:+.1} ms", errs.len(), take.hits.len(), errs.iter().sum::<f64>() / errs.len() as f64 * 1000.0);
+        let moved = quantize(&anchors, 0.3, beat / 2.0, 1.0);
+        let map = stretch_map(&moved, take.audio.len() as f64 / SR as f64);
+        let after = stretch_alone(&take.audio, &map, klont::stretch::MODE_HITS, 0);
+        let n = (6.0 * SR) as usize;
+        let click = |x: &[f32]| {
+            let mut y = x[..n].to_vec();
+            let mut k = 0;
+            while 0.3 + k as f64 * beat < 6.0 {
+                let a = ((0.3 + k as f64 * beat) * SR as f64) as usize;
+                for i in 0..240.min(n - a) {
+                    y[a + i] += 0.05 * (std::f32::consts::TAU * 2000.0 * i as f32 / SR).sin() * (1.0 - i as f32 / 240.0);
+                }
+                k += 1;
+            }
+            y
+        };
+        let (b, a) = (click(&take.audio), click(&after));
+        let g = 0.89 / b.iter().chain(&a).fold(0.0f32, |m, v| m.max(v.abs()));
+        write_wav(&format!("corpus-{name}-0-as-played"), &b.iter().map(|v| v * g).collect::<Vec<_>>());
+        write_wav(&format!("corpus-{name}-2-strength-100"), &a.iter().map(|v| v * g).collect::<Vec<_>>());
+    }
+}

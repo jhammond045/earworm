@@ -5,9 +5,12 @@
 //! # Track blob (`ew_load` kind LOAD_TRACK)
 //!
 //! 32-bit little-endian words. `u32` words are integers, the rest are f32.
-//! Three versions load: v1 (magic "EWT1"), v2 (magic "EWT2", M4), which adds
-//! the morph markers below, and v3 (magic "EWT3", S5), which adds each clip's
-//! take audio and automation lanes. The layout shown is v3; v2 differs in that
+//! Five versions load: v1 (magic "EWT1"), v2 (magic "EWT2", M4), which adds
+//! the morph markers below, v3 (magic "EWT3", S5), which adds each clip's
+//! take audio and automation lanes, v4 (magic "EWT4", docs/poly.md P3), which
+//! gives each note its own curve, and v5 (magic "EWT5", docs/quant.md Q2),
+//! which is v4 plus a flags word on every warp anchor and an audio mode on
+//! each clip. The layout shown is v3, with v4's and v5's additions marked; v2 differs in that
 //! header word 7 is 0, clips are 12 words (words 10 and 11 are 0) and there is
 //! no lane section; v1 also has header word 6 0, 8-word clips and no morph array.
 //!
@@ -32,16 +35,24 @@
 //!   the sample pool, -1 none) and u32 first_lane; then u32 n_lanes,
 //!   u32 first_audio_warp, u32 n_audio_warp (a run in the warp array the take's
 //!   audio is read through instead of the clip's own; empty: the clip's own,
-//!   docs/quant.md Q1), u32 0: 16 words in all)
+//!   docs/quant.md Q1), u32 audio mode (v5; 0 before): MODE_READ reads the
+//!   take through the audio warp run with linear interpolation (a stretch
+//!   changes the pitch), MODE_HITS and MODE_SMOOTH stretch it with its pitch
+//!   kept (crates/klont/src/stretch.rs): 16 words in all)
 //! events, n_events x 16 words (one record for notes and hits):
 //!   0 t, 1 dur (section units), 2 cents (NaN: kit slot pitch), 3 hard (0..1),
 //!   4 u32 slot (kit slot for hits), 5 strength (0..1, velocity),
 //!   6 attack, 7 burst, 8 bend, 9 hold, 10 vowel, 11 tone, 12 end_stop,
 //!   13 end_click (hit shape, TDD HitShape; NaN or 0 when unused), 14 0, 15 0
 //!   (v4, magic "EWT4", docs/poly.md P3: 14 i32 note-curve slot (LOAD_NOTE_CURVES; -1 none),
-//!   15 u32 the note's index in that slot's note table; otherwise v4 is v3)
-//! warp anchors, n_warp x 2 words:
-//!   f32 take_sec, f32 clip_t (section units), sorted by clip_t
+//!   15 u32 the note's index in that slot's note table; otherwise v4 is v3;
+//!   v5 keeps these)
+//! warp anchors, n_warp x 2 words (3 in v5):
+//!   f32 take_sec, f32 clip_t (section units), sorted by clip_t,
+//!   (v5) u32 flags: POINT_HARD, POINT_RUN (stretch.rs; 0 on a curve's map).
+//!   A stretching clip's audio warp run is its time map folded into the
+//!   loop: runs of points, each starting with a POINT_RUN point and every
+//!   run's first and last points hard
 //! morph markers (v2), n_morph x 4 words:
 //!   f32 t (section units), u32 state index (< MAX_STATES), f32 len_ms (>= 0),
 //!   u32 shape (MORPH_LINE, _EASE, _LATE, _STEP, _WOBBLE)
@@ -109,6 +120,7 @@ pub const TRACK_MAGIC: u32 = 0x3154_5745; // "EWT1"
 pub const TRACK_MAGIC2: u32 = 0x3254_5745; // "EWT2"
 pub const TRACK_MAGIC3: u32 = 0x3354_5745; // "EWT3"
 pub const TRACK_MAGIC4: u32 = 0x3454_5745; // "EWT4"
+pub const TRACK_MAGIC5: u32 = 0x3554_5745; // "EWT5"
 pub const LANE_VALUE: u32 = 0;
 pub const LANE_MACRO: u32 = 1;
 pub const LANE_LEVEL: u32 = 2;
@@ -173,6 +185,8 @@ pub struct Clip {
     /// keeps the performed timing (docs/quant.md, Q1).
     pub first_audio_warp: u32,
     pub n_audio_warp: u32,
+    /// How the take audio plays (v5): stretch::MODE_READ, MODE_HITS or MODE_SMOOTH.
+    pub audio_mode: u32,
 }
 
 /// One automation lane (v3): its target and its run of points.
@@ -235,6 +249,8 @@ pub struct Event {
 pub struct WarpAnchor {
     pub take_sec: f64,
     pub clip_t: f64,
+    /// v5: stretch::POINT_HARD, POINT_RUN; 0 before.
+    pub flags: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,6 +269,7 @@ const CLIP_WORDS3: usize = 16;
 const LANE_WORDS: usize = 4;
 const POINT_WORDS: usize = 3;
 const WARP_WORDS: usize = 2;
+const WARP_WORDS5: usize = 3;
 const MORPH_WORDS: usize = 4;
 
 /// Tolerance, in section units, when comparing a position with an event time
@@ -315,6 +332,7 @@ struct Dims {
     points: usize,
     v2: bool,
     v3: bool,
+    v5: bool,
 }
 
 impl Dims {
@@ -327,8 +345,11 @@ impl Dims {
     fn warp_base(&self) -> usize {
         self.ev_base() + self.events * EVENT_WORDS
     }
+    fn warp_words(&self) -> usize {
+        if self.v5 { WARP_WORDS5 } else { WARP_WORDS }
+    }
     fn morph_base(&self) -> usize {
-        self.warp_base() + self.warp * WARP_WORDS
+        self.warp_base() + self.warp * self.warp_words()
     }
     /// The lane section starts with its point count (v3).
     fn lane_base(&self) -> usize {
@@ -355,6 +376,7 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
     } else {
         (-1, 0, 0, 0, 0)
     };
+    let audio_mode = if d.v5 { word(b, o + 15)? } else { 0 };
     let clip = Clip {
         first_morph,
         n_morph,
@@ -363,6 +385,7 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
         n_lanes,
         first_audio_warp,
         n_audio_warp,
+        audio_mode,
         section: word(b, o)?,
         layer: word(b, o + 1)?,
         loop_len: fword(b, o + 2)? as f64,
@@ -389,6 +412,7 @@ fn read_clip(b: &[u8], d: &Dims, i: usize) -> Result<Clip, LoadError> {
         || !in_run(clip.first_lane, clip.n_lanes, d.lanes)
         || clip.audio < -1
         || clip.audio >= crate::protocol::MAX_SAMPLES as i32
+        || clip.audio_mode > crate::stretch::MODE_SMOOTH
     {
         return Err(LoadError::Malformed);
     }
@@ -431,13 +455,14 @@ fn read_event(b: &[u8], base: usize, i: usize, v4: bool) -> Result<Event, LoadEr
     Ok(e)
 }
 
-fn read_warp(b: &[u8], base: usize, i: usize) -> Result<WarpAnchor, LoadError> {
-    let o = base + i * WARP_WORDS;
+fn read_warp(b: &[u8], d: &Dims, i: usize) -> Result<WarpAnchor, LoadError> {
+    let o = d.warp_base() + i * d.warp_words();
     let a = WarpAnchor {
         take_sec: fword(b, o)? as f64,
         clip_t: fword(b, o + 1)? as f64,
+        flags: if d.v5 { word(b, o + 2)? } else { 0 },
     };
-    if !(a.take_sec.is_finite() && a.clip_t.is_finite()) {
+    if !(a.take_sec.is_finite() && a.clip_t.is_finite()) || a.flags > 3 {
         return Err(LoadError::Malformed);
     }
     Ok(a)
@@ -522,7 +547,7 @@ impl Track {
         }
     }
 
-    /// Parse a blob (v1 or v2) into the pools. On error the previous contents
+    /// Parse a blob (v1 to v5) into the pools. On error the previous contents
     /// are kept. Validates counts against the MAX_* limits and every index
     /// (section, layer < protocol::MAX_LAYERS, event, warp and morph runs in
     /// range, lengths and loop_len finite and > 0, repeats >= 1, morph state
@@ -534,10 +559,11 @@ impl Track {
             return Err(LoadError::Malformed);
         }
         let magic = word(bytes, 0)?;
-        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 && magic != TRACK_MAGIC3 && magic != TRACK_MAGIC4 {
+        if magic != TRACK_MAGIC && magic != TRACK_MAGIC2 && magic != TRACK_MAGIC3 && magic != TRACK_MAGIC4 && magic != TRACK_MAGIC5 {
             return Err(LoadError::BadMagic);
         }
-        let v4 = magic == TRACK_MAGIC4;
+        let v5 = magic == TRACK_MAGIC5;
+        let v4 = magic == TRACK_MAGIC4 || v5;
         let v3 = magic == TRACK_MAGIC3 || v4;
         let v2 = magic == TRACK_MAGIC2 || v3;
         let mut d = Dims {
@@ -550,6 +576,7 @@ impl Track {
             points: 0,
             v2,
             v3,
+            v5,
         };
         let flags = word(bytes, 5)?;
         if d.sections > MAX_SECTIONS
@@ -571,7 +598,7 @@ impl Track {
         if bytes.len() != words * 4 {
             return Err(LoadError::Malformed);
         }
-        let (ev_base, warp_base, morph_base) = (d.ev_base(), d.warp_base(), d.morph_base());
+        let (ev_base, morph_base) = (d.ev_base(), d.morph_base());
 
         // Check pass: nothing is modified.
         for i in 0..d.sections {
@@ -581,7 +608,7 @@ impl Track {
             read_event(bytes, ev_base, i, v4)?;
         }
         for i in 0..d.warp {
-            read_warp(bytes, warp_base, i)?;
+            read_warp(bytes, &d, i)?;
         }
         for i in 0..d.morph {
             read_morph(bytes, morph_base, i)?;
@@ -613,7 +640,7 @@ impl Track {
             for (first, n) in [(c.first_warp, c.n_warp), (c.first_audio_warp, c.n_audio_warp)] {
                 let mut last = f64::NEG_INFINITY;
                 for k in 0..n as usize {
-                    let a = read_warp(bytes, warp_base, first as usize + k)?;
+                    let a = read_warp(bytes, &d, first as usize + k)?;
                     if a.clip_t < last {
                         return Err(LoadError::Malformed);
                     }
@@ -660,7 +687,7 @@ impl Track {
             }
         }
         for i in 0..d.warp {
-            if let Ok(a) = read_warp(bytes, warp_base, i) {
+            if let Ok(a) = read_warp(bytes, &d, i) {
                 self.warp.push(a);
             }
         }
@@ -1749,11 +1776,13 @@ mod tests {
             &[
                 WarpAnchor {
                     take_sec: 0.0,
-                    clip_t: 0.0
+                    clip_t: 0.0,
+                    flags: 0
                 },
                 WarpAnchor {
                     take_sec: 1.0,
-                    clip_t: 960.0
+                    clip_t: 960.0,
+                    flags: 0
                 }
             ]
         );
@@ -2043,7 +2072,7 @@ mod tests {
             assert_eq!(t.clip_morph(t.clip(0)).len(), 2, "{what}");
         }
         let mut w = good.clone();
-        w[0] = 0x3554_5745; // "EWT5"
+        w[0] = 0x3654_5745; // "EWT6": not a version yet
         assert_eq!(t.load(&bytes(&w)), Err(LoadError::BadMagic));
     }
 

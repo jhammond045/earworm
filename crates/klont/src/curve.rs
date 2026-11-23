@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn warp() {
-        let a = |t: f64, c: f64| WarpAnchor { take_sec: t, clip_t: c };
+        let a = |t: f64, c: f64| WarpAnchor { take_sec: t, clip_t: c, flags: 0 };
         assert_eq!(warp_to_take(&[], 480.0, 0.001), 0.48);
         assert_eq!(warp_to_take(&[a(1.0, 960.0)], 1440.0, 0.002), 1.0 + 480.0 * 0.002);
         assert_eq!(warp_to_take(&[a(1.0, 960.0)], 0.0, 0.002), 1.0 - 960.0 * 0.002);

@@ -20,6 +20,7 @@ pub mod patch;
 pub mod protocol;
 pub mod samples;
 pub mod seq;
+pub mod stretch;
 pub mod voice;
 
 pub use engine::Engine;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { checkFlex, clipAnchors, feelTime, flexClip, laneValue, mapTime, quantize, quantizeFlex, targetOf, warpToTake, type FlexAnchor, type Target } from './flex';
+import { checkFlex, clipAnchors, feelTime, flexAudio, flexClip, laneValue, mapTime, quantize, quantizeFlex, stretchMap, targetOf, warpToTake, type FlexAnchor, type Target } from './flex';
+import { POINT_HARD, POINT_RUN } from '../m1/track';
 import type { BeatClip, Flex, MelodyClip } from './types';
 
 // A grid section at 120 bpm: 960 ticks a beat, 1920 ticks a second; 16ths are 240 ticks.
@@ -168,6 +169,83 @@ describe('flexClip', () => {
     const m = flexClip(melody({ take: 'k', takes: ['k'], notes, warp, flex: quantizeFlex(undefined, 240) }) as MelodyClip & { flex: Flex }, new Float32Array([2, 1, 1]), UPS);
     expect(m.notes![0].t).toBe(0);
     expect(warpToTake(m.warp!, 0, 1 / UPS)).toBeCloseTo(2, 9);
+  });
+});
+
+describe('stretchMap', () => {
+  // A take placed at clip time p0 (ticks), anchors at take seconds `secs`, quantized to 16ths.
+  const GAP = 0.012 * UPS;
+  const moved = (p0: number, secs: number[], soft: number[] = []) => {
+    const anchors = secs.map((sec, i) => ({ t: (((p0 + sec * UPS) % BAR) + BAR) % BAR, w: 1, hard: !soft.includes(i), kit: -1, sec }));
+    return quantize(anchors, target());
+  };
+  const runs = (m: ReturnType<typeof stretchMap>) => {
+    const out: (typeof m)[] = [];
+    for (const p of m) (p.flags! & POINT_RUN ? out.push([p]) : out[out.length - 1].push(p));
+    return out;
+  };
+
+  /** The runs cover the loop end to end: each starts where the one before it ended. */
+  const coversLoop = (r: ReturnType<typeof runs>) => {
+    expect(r[0][0].clipT).toBe(0);
+    for (let i = 1; i < r.length; i++) expect(r[i][0].clipT).toBeCloseTo(r[i - 1][r[i - 1].length - 1].clipT, 9);
+    expect(r[r.length - 1][r[r.length - 1].length - 1].clipT).toBe(BAR);
+  };
+
+  it('covers the loop through the moved anchors for a take placed at its start', () => {
+    const mv = moved(0, [0.26, 0.77, 1.24, 1.5], [2]);
+    const m = stretchMap(mv, BAR, UPS, 2, GAP);
+    const r = runs(m);
+    // The first anchor moved 19 ms earlier, so the line through it puts the take's first 6.6 ms
+    // at the end of the pass before: a short second run that ends the loop.
+    expect(r.length).toBe(2);
+    coversLoop(r);
+    expect(r[0][0].flags).toBe(POINT_HARD | POINT_RUN);
+    expect(r[1][0].takeSec).toBe(0);
+    // Each anchor plays at its moved time and keeps its take second; the soft one only bends.
+    for (const x of mv) {
+      const p = m.find((q) => Math.abs(q.takeSec - x.sec!) < 1e-9)!;
+      expect(p.clipT).toBeCloseTo(x.dst, 9);
+      expect(p.flags).toBe(x.hard ? POINT_HARD : 0);
+    }
+    for (const run of r) {
+      for (let i = 1; i < run.length; i++) {
+        expect(run[i].clipT).toBeGreaterThan(run[i - 1].clipT);
+        expect(run[i].takeSec).toBeGreaterThan(run[i - 1].takeSec);
+      }
+    }
+  });
+
+  it('cuts a take placed across the loop end into two runs at the loop start', () => {
+    // 1.8 s from clip time 1000: the last 0.32 s play at the top of the loop.
+    const mv = moved(1000, [0.1, 0.6, 1.2, 1.7]);
+    const r = runs(stretchMap(mv, BAR, UPS, 1.8, GAP));
+    expect(r.length).toBe(2);
+    expect(r[0][0].clipT).toBe(0);
+    expect(r[0][r[0].length - 1].takeSec).toBeCloseTo(1.8, 9);
+    expect(r[1][r[1].length - 1].clipT).toBe(BAR);
+    // The cut reads the take continuously: the second run ends where the first begins.
+    expect(r[1][r[1].length - 1].takeSec).toBeCloseTo(r[0][0].takeSec, 9);
+    expect(r[1][0].takeSec).toBe(0);
+  });
+
+  it('plays the earlier part where a take longer than the loop would overlap itself', () => {
+    const mv = moved(0, [0.26, 0.77, 1.5, 2.26]);
+    const r = runs(stretchMap(mv, BAR, UPS, 2.5, GAP));
+    // The take's start plays across the loop end, and its last 0.5 s, which would play over
+    // its start again, are left out.
+    coversLoop(r);
+    expect(Math.max(...r.flat().map((p) => p.takeSec))).toBeLessThan(2.1);
+  });
+
+  it('is empty without anchors that know their take second', () => {
+    expect(stretchMap(quantize([a(250), a(1940)], target()), BAR, UPS, 2, GAP)).toEqual([]);
+  });
+
+  it('picks hits for beats and smooth otherwise, unless the clip says', () => {
+    const f = quantizeFlex(undefined, 240);
+    expect([flexAudio(f, 'beat'), flexAudio(f, 'melody'), flexAudio(f, 'texture'), flexAudio({ ...f, audio: 'hits' }, 'melody')]).toEqual(['hits', 'smooth', 'smooth', 'hits']);
+    expect(() => checkFlex({ ...f, audio: 'wsola' as never })).toThrow(RangeError);
   });
 });
 

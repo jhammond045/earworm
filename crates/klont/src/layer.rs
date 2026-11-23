@@ -337,6 +337,9 @@ pub enum RawSrc {
     /// A take's audio in the sample pool: its frame position at the tick start and the step per
     /// output sample.
     Take { sample: u8, pos: f64, step: f64 },
+    /// The take's audio stretched through its clip's time map, by the layer's stretcher
+    /// (docs/quant.md Q2), already synced for this tick.
+    Stretch,
 }
 
 /// Gains of the blend at mix `m` (0..1) and raw trim `trim` (linear): exactly synth-only at 0
@@ -541,6 +544,8 @@ pub struct Layer {
     raw: RawSrc,
     raw_pos: f64,
     raw_on: bool,
+    /// The flexed take's audio, stretched (RawSrc::Stretch).
+    stretch: Box<crate::stretch::LayerStretch>,
     gs: Ramp,
     gx: Ramp,
 }
@@ -676,6 +681,7 @@ impl Layer {
             raw: RawSrc::None,
             raw_pos: 0.0,
             raw_on: false,
+            stretch: Box::new(crate::stretch::LayerStretch::new(sr)),
             gs: Ramp { g: 1.0, t: 1.0, d: 0.0, left: 0 },
             gx: Ramp::default(),
         };
@@ -1699,9 +1705,22 @@ impl Layer {
         self.patch.input.is_some() && !self.pending
     }
 
+    /// Sync the layer's stretcher with the clip playing now (before `set_raw(RawSrc::Stretch)`).
+    /// False when the clip's map gives nothing to stretch.
+    pub fn sync_stretch(&mut self, at: &crate::stretch::StretchAt) -> bool {
+        if !self.has_input() {
+            return false;
+        }
+        self.stretch.sync(at);
+        self.stretch.playing()
+    }
+
     /// Where the raw input comes from this tick (before `voices_tick`).
     pub fn set_raw(&mut self, src: RawSrc) {
         self.raw = if self.has_input() { src } else { RawSrc::None };
+        if self.raw != RawSrc::Stretch {
+            self.stretch.stop();
+        }
         if let RawSrc::Take { pos, .. } = self.raw {
             self.raw_pos = pos;
         }
@@ -1716,6 +1735,8 @@ impl Layer {
     /// ringing from the last playback are cut.
     pub fn play_reset(&mut self) {
         let seed = self.seed;
+        // The stretcher keeps nothing from before Play; the first tick starts it at the position.
+        self.stretch.stop();
         // What still rings from the last playback stops, so playback starts from silence as an
         // export does. Notes played live (keys, the mic) sound on.
         self.unqueue(|s| s.seq);
@@ -2059,6 +2080,7 @@ impl Layer {
                     self.raw_pos = pos;
                 }
             }
+            RawSrc::Stretch => self.stretch.process(&mut raw[..n], pool),
             RawSrc::None => {}
         }
         let p = &*self.patch;

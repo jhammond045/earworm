@@ -7,6 +7,7 @@
 
 import { encodeLayerBlob, encodeSample, encodeStates } from '../m1/blobs';
 import {
+  AUDIO_HITS, AUDIO_SMOOTH, MAX_STRETCH_POINTS,
   encodeCurve, encodeNoteCurves, encodeTrack, LANE_LEVEL, LANE_MACRO, LANE_PAN, LANE_PERF, LANE_VALUE, MAX_CURVES, MAX_SAMPLES,
   type TrackClip, type TrackEvent, type TrackInput, type TrackLane,
 } from '../m1/track';
@@ -18,7 +19,7 @@ import {
 import { classicPatch, classicVectors, isClassic } from '../synth/classic';
 import { inputAt, layoutOf, patchBlob, type Patch } from '../synth/patch';
 import { KIT_SLOTS, LANE_SHAPES, MORPH_SHAPES, PPQ, type AutoLane, type Hit, type Layer, type MorphMarker, type Project, type Section, type Take } from './types';
-import { flexActive, flexClip } from './flex';
+import { MIN_GAP_SEC, flexActive, flexAudio, flexClip, stretchMap } from './flex';
 
 export interface Upload {
   /** LOAD_TRACK, LOAD_PATCH, LOAD_LAYER, LOAD_CURVE, LOAD_SAMPLE or LOAD_STATES (m1/protocol.ts). */
@@ -404,12 +405,18 @@ export class Compiler {
         if (!c) return;
         const audio = c.take ? (this.audioOf.get(c.take) ?? -1) : -1;
         const lanes = lanesFor(c.auto, l);
-        // Flex (docs/quant.md, Q1): notes, hits and the warp map the curves are read through go
-        // through the clip's time map. The take's audio keeps its performed timing until Q2.
+        // Flex (docs/quant.md): notes, hits and the warp map the curves are read through go
+        // through the clip's time map, and the take's audio is stretched through it (Q2).
         const take = c.take ? doc.takes[c.take] : undefined;
-        const flexed = flexActive(c, s.feel === 'grid') ? flexClip(c, take ? anchorsFor(take) : null, sectionUnitsPerSec(s)) : null;
+        const ups = sectionUnitsPerSec(s);
+        const flexed = flexActive(c, s.feel === 'grid') ? flexClip(c, take ? anchorsFor(take) : null, ups) : null;
+        const stretch = flexed && take && audio >= 0 ? stretchMap(flexed.moved, c.loopLen, ups, take.frameCount / 100, MIN_GAP_SEC * ups) : [];
+        // A map past the engine's capacity keeps the take at its performed timing, as Q1 did.
+        const stretched = stretch.length && stretch.length <= MAX_STRETCH_POINTS
+          ? { audioWarp: stretch, audioMode: flexAudio(c.flex!, l.kind) === 'hits' ? AUDIO_HITS : AUDIO_SMOOTH }
+          : null;
         if (c.kind === 'beat') {
-          clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(flexed?.hits ?? c.hits), morph: morphFor(c.morph, l), audio, lanes });
+          clips.push({ section: si, layer: li, loopLen: c.loopLen, curve: -1, events: hitEvents(flexed?.hits ?? c.hits), morph: morphFor(c.morph, l), audio, lanes, ...stretched });
           return;
         }
         const oct = 1200 * l.tune.octave;
@@ -421,10 +428,13 @@ export class Compiler {
         const noteCurve = (n: { curve?: number }) =>
           n.curve !== undefined && n.curve >= 0 && n.curve < nNotes ? { noteCurve: noteSlot, noteIndex: n.curve } : {};
         const warp = flexed?.warp ?? c.warp;
-        // The audio keeps the clip's own map; an empty one reads the take at clip time, as the engine does.
-        const audioWarp = audio >= 0 && warp !== c.warp
-          ? (c.warp.length ? c.warp : [{ takeSec: 0, clipT: 0 }, { takeSec: c.loopLen / sectionUnitsPerSec(s), clipT: c.loopLen }])
-          : undefined;
+        // Without a stretch map (no anchor with a take second) the audio keeps the clip's own map;
+        // an empty one reads the take at clip time, as the engine does.
+        const audioWarp = stretched
+          ? null
+          : audio >= 0 && warp !== c.warp
+            ? (c.warp.length ? c.warp : [{ takeSec: 0, clipT: 0 }, { takeSec: c.loopLen / ups, clipT: c.loopLen }])
+            : undefined;
         clips.push({
           section: si, layer: li, loopLen: c.loopLen, curve,
           events: (flexed?.notes ?? c.notes).map((n) => ({ t: n.t, dur: n.dur, cents: n.cents + oct, hard: n.hard, strength: n.vel ?? 1, ...noteCurve(n) })),
@@ -433,6 +443,7 @@ export class Compiler {
           audio,
           lanes,
           ...(audioWarp ? { audioWarp } : {}),
+          ...stretched,
         });
       });
     });

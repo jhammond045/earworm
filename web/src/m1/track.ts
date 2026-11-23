@@ -6,6 +6,7 @@ export const TRACK_MAGIC = 0x31545745; // "EWT1"
 export const TRACK_MAGIC2 = 0x32545745; // "EWT2": v1 plus morph markers
 export const TRACK_MAGIC3 = 0x33545745; // "EWT3": v2 plus take audio and automation lanes (S5)
 export const TRACK_MAGIC4 = 0x34545745; // "EWT4": v3 plus a note curve per note (docs/poly.md P3)
+export const TRACK_MAGIC5 = 0x35545745; // "EWT5": v4 plus warp anchor flags and a clip audio mode (Q2)
 export const CURVE_MAGIC = 0x31435745; // "EWC1"
 export const NOTE_CURVE_MAGIC = 0x314e5745; // "EWN1"
 /** Floats per note-curve record: pitch offset (cents), volume, intensity, hardness, onset. */
@@ -42,6 +43,15 @@ export const MAX_MORPH = 4096;
 export const MAX_STATES = 8;
 export const EVENT_WORDS = 16;
 export const WARP_WORDS = 2;
+export const WARP_WORDS5 = 3;
+/** Clip audio modes and warp anchor flags (crates/klont/src/stretch.rs). */
+export const AUDIO_READ = 0;
+export const AUDIO_HITS = 1;
+export const AUDIO_SMOOTH = 2;
+export const POINT_HARD = 1;
+export const POINT_RUN = 2;
+/** Most points of one clip's stretch map the engine holds (crates/klont/src/stretch.rs MAX_POINTS). */
+export const MAX_STRETCH_POINTS = 1024;
 export const CURVE_STRIDE = 25;
 export const CURVE_HEADER_WORDS = 2;
 
@@ -97,6 +107,8 @@ export interface TrackEvent {
 export interface TrackWarpAnchor {
   takeSec: number;
   clipT: number;
+  /** POINT_HARD, POINT_RUN. Any flag in the track makes the blob v5. */
+  flags?: number;
 }
 
 /** A morph marker (resolution step 1, crates/klont/src/seq.rs "Morph lane"). */
@@ -129,6 +141,10 @@ export interface TrackClip {
   /** The warp map the take's audio is read through instead of `warp` (a flexed clip keeps its
    *  audio at the performed timing, docs/quant.md Q1). Empty / undefined: `warp`. Makes the blob v3. */
   audioWarp?: TrackWarpAnchor[];
+  /** AUDIO_READ (default), AUDIO_HITS or AUDIO_SMOOTH: how the take audio plays through
+   *  `audioWarp`, which is then the clip's time map folded into the loop (docs/quant.md Q2).
+   *  Any mode but AUDIO_READ makes the blob v5. */
+  audioMode?: number;
 }
 
 /** An automation lane: LANE_* kind, index (value, macro or perf source), points sorted by t with
@@ -223,6 +239,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       const out = [...(list ?? [])].map((a, k) => {
         finite(a.takeSec, `clip ${i} ${what} ${k} takeSec`);
         finite(a.clipT, `clip ${i} ${what} ${k} clipT`);
+        int(a.flags ?? 0, 0, POINT_HARD | POINT_RUN, `clip ${i} ${what} ${k} flags`);
         return a;
       });
       return out.sort((a, b) => a.clipT - b.clipT);
@@ -255,7 +272,8 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       });
       return { kind: l.kind, index: l.index, points: [...points].sort((a, b) => a.t - b.t) };
     });
-    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, audioWarp, morph, audio, lanes };
+    const audioMode = int(c.audioMode ?? AUDIO_READ, AUDIO_READ, AUDIO_SMOOTH, `clip ${i} audioMode`);
+    return { section: c.section, layer: c.layer, loopLen, curve, events: sorted, warp, audioWarp, morph, audio, lanes, audioMode };
   });
 
   const nEvents = clips.reduce((n, c) => n + c.events.length, 0);
@@ -269,8 +287,10 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
   if (nLanes > MAX_LANES) fail(`more than ${MAX_LANES} automation lanes`);
   if (nPoints > MAX_LANE_POINTS) fail(`more than ${MAX_LANE_POINTS} automation points`);
   // The oldest version that holds everything, so existing tracks and fixtures stay byte-identical.
-  const v4 = clips.some((c) => c.events.some((e) => (e.noteCurve ?? -1) >= 0));
+  const v4n = clips.some((c) => c.events.some((e) => (e.noteCurve ?? -1) >= 0));
   if (clips.some((c) => c.events.some((e) => (e.noteCurve ?? -1) >= MAX_CURVES))) fail(`note-curve slot past ${MAX_CURVES - 1}`);
+  const v5 = clips.some((c) => c.audioMode !== AUDIO_READ || [...c.warp, ...c.audioWarp].some((a) => (a.flags ?? 0) !== 0));
+  const v4 = v5 || v4n;
   const v3 = v4 || nLanes > 0 || clips.some((c) => c.audio >= 0 || c.audioWarp.length > 0);
   const v2 = v3 || nMorph > 0;
 
@@ -279,11 +299,11 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       sections.length * SECTION_WORDS +
       clips.length * (v3 ? CLIP_WORDS3 : v2 ? CLIP_WORDS2 : CLIP_WORDS) +
       nEvents * EVENT_WORDS +
-      nWarp * WARP_WORDS +
+      nWarp * (v5 ? WARP_WORDS5 : WARP_WORDS) +
       nMorph * MORPH_WORDS +
       (v3 ? 1 + nLanes * LANE_WORDS + nPoints * POINT_WORDS : 0),
   );
-  w.u(v4 ? TRACK_MAGIC4 : v3 ? TRACK_MAGIC3 : v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
+  w.u(v5 ? TRACK_MAGIC5 : v4 ? TRACK_MAGIC4 : v3 ? TRACK_MAGIC3 : v2 ? TRACK_MAGIC2 : TRACK_MAGIC);
   w.u(sections.length);
   w.u(clips.length);
   w.u(nEvents);
@@ -322,7 +342,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
       // The audio warp run follows the clip's own warp run in the warp array.
       w.u(c.audioWarp.length ? fw + c.warp.length : 0);
       w.u(c.audioWarp.length);
-      w.zeros(1);
+      w.u(c.audioMode);
     } else if (v2) {
       w.u(fm);
       w.u(c.morph.length);
@@ -361,6 +381,7 @@ export function encodeTrack(t: TrackInput): ArrayBuffer {
     for (const a of [...c.warp, ...c.audioWarp]) {
       w.f(a.takeSec);
       w.f(a.clipT);
+      if (v5) w.u(a.flags ?? 0);
     }
   }
   for (const c of clips) {

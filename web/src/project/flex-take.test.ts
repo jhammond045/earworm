@@ -13,6 +13,8 @@ import { AnalysisCore } from '../m2/analysis';
 import { classicPatch, valuesFromVocab } from '../synth/classic';
 import { Compiler } from './compile';
 import { flexClip, quantizeFlex, warpToTake } from './flex';
+import { Store } from './store';
+import { importedClip, liveTierOver } from './import-take';
 import { clockMark, placeTake } from './overdub';
 import type { Flex, Layer, MelodyClip, Project, Take } from './types';
 
@@ -71,6 +73,36 @@ function readTrack(blob: ArrayBuffer): { events: number[]; warp: { takeSec: numb
   const events = Array.from({ length: u[c + 4] }, (_, i) => f[evBase + (u[c + 3] + i) * 16]);
   const warp = Array.from({ length: u[c + 7] }, (_, i) => ({ takeSec: f[warpBase + 2 * (u[c + 6] + i)], clipT: f[warpBase + 2 * (u[c + 6] + i) + 1] }));
   return { events, warp };
+}
+
+/** A fresh wasm engine, with a way to load uploads and send messages. */
+function wasmEngine() {
+  const { ex, e } = instantiateEngine(klont, SR, 4096);
+  const mem = () => ex.memory.buffer as ArrayBuffer;
+  const tb = () => readBufferTable(mem(), ex.ew_buffers(e));
+  const send = (msgs: pr.Msg[]) => {
+    const t = tb();
+    const v = new DataView(mem(), t.control, pr.CONTROL_CAP * pr.MSG_BYTES);
+    msgs.forEach((m, i) => encodeMessage(v, i * pr.MSG_BYTES, m[0], m[1], m[2], m[3], m[4], m[5] ?? 0));
+    new Uint32Array(mem(), t.controlCount, 1)[0] = msgs.length;
+  };
+  const load = (ups: { kind: number; slot: number; blob: ArrayBuffer; what: string }[]) => {
+    for (const up of ups) {
+      const t = tb();
+      new Uint8Array(mem(), t.staging, up.blob.byteLength).set(new Uint8Array(up.blob));
+      expect(ex.ew_load(e, up.slot, up.kind, t.staging, up.blob.byteLength), up.what).toBe(pr.LOAD_OK);
+    }
+  };
+  /** Render `n` samples (a multiple of 4096), left channel. */
+  const render = (n: number) => {
+    const out = new Float32Array(n);
+    for (let pos = 0; pos < n; pos += 4096) {
+      ex.ew_render(e, 4096);
+      out.set(new Float32Array(mem(), tb().outputL, 4096), pos);
+    }
+    return out;
+  };
+  return { ex, e, mem, tb, send, load, render };
 }
 
 describe('flex on a sung take (Q1)', () => {
@@ -139,4 +171,122 @@ describe('flex on a sung take (Q1)', () => {
     }
     expect(Math.max(...rows.map((r) => Math.abs(r.before)))).toBeGreaterThan(20);
   });
+});
+
+describe('flex on a sung take (Q2)', () => {
+  it('stretches the raw voice so each attack lands where its note moved, sample for sample', () => {
+    // As above: the singer, captured live, the second pass, the take placed.
+    const w = wasmEngine();
+    const doc0 = project();
+    w.load(new Compiler().compile(doc0, () => null));
+    w.send([[pr.MSG_PLAY, 0, 0, 0, 0], [pr.MSG_ARM, 0, 0, 0, 1]]);
+    const total = Math.round(2.6 * SR / BLOCK) * BLOCK;
+    const x = singer(total, 0);
+    const mic = new Float32Array(total);
+    const frames: number[] = [];
+    let meters = new Float32Array(pr.METER_LEN);
+    for (let pos = 0; pos < total; pos += BLOCK) {
+      new Float32Array(w.mem(), w.tb().input, BLOCK).set(x.subarray(pos, pos + BLOCK));
+      w.ex.ew_process(w.e, BLOCK);
+      const t = w.tb();
+      mic.set(new Float32Array(w.mem(), t.input, BLOCK), pos);
+      frames.push(...new Float32Array(w.mem(), t.frames, new Uint32Array(w.mem(), t.framesCount, 1)[0] * STRIDE));
+      meters = new Float32Array(w.mem(), t.meter, pr.METER_LEN).slice();
+    }
+    w.ex.ew_free(w.e);
+    const nFrames = frames.length / STRIDE;
+    const rec = Float32Array.from(frames);
+    const audio = mic.slice(0, nFrames * FRAME);
+    const sp = AnalysisCore.fromBytes(analysis).secondPass(audio, SR, rec, { kind: 'melody' });
+    const take: Take = { id: 'take', audio: 'a', frames: 'f', rate: SR, latencyMs: 0, frameCount: nFrames, kind: 'melody',
+      refCents: sp.refCents, root: sp.root, scale: sp.scale, bpm: null, anchors: 'anchors-take', anchorsVersion: 1 };
+    const clip = placeTake({ doc: doc0, sectionId: 's', layerId: 'mel', take, startSample: clockMark(meters).sample - total, mark: clockMark(meters), roundTripSamples: 0, notes: sp.notes, hits: [] }) as MelodyClip;
+    // The layer plays only its raw input: an input element at mix 1.
+    const store = new Store({ ...doc0, takes: { take }, sections: [{ ...doc0.sections[0], clips: { mel: clip } }] });
+    store.dispatch('addChannelFx', { layer: 'mel', type: 'input' });
+    store.dispatch('setValues', { layer: 'mel', state: 's', values: { 'input1.mix': 1 } });
+    const flex = quantizeFlex(undefined, 480);
+    const withFlex = (f: Flex | undefined): Project => ({ ...store.doc, sections: [{ ...store.doc.sections[0], clips: { mel: { ...clip, ...(f ? { flex: f } : {}) } } }] });
+    const play = (doc: Project) => {
+      const ups = new Compiler().compile(doc, (t) => (t.id === 'take' ? rec : null), { audioFor: (t) => (t.id === 'take' ? audio : null), anchorsFor: (t) => (t.id === 'take' ? sp.anchors : null) });
+      const track = new Uint32Array(ups.find((u) => u.what === 'track')!.blob);
+      const r = wasmEngine();
+      r.load(ups);
+      r.send([[pr.MSG_PLAY, 0, 0, 0, 0]]);
+      const out = r.render(4096 * 30);
+      r.ex.ew_free(r.e);
+      return { out, magic: track[0], mode: track[8 + 8 + 15] };
+    };
+    const asSung = play(withFlex(undefined));
+    const smooth = play(withFlex({ ...flex, audio: 'smooth' }));
+    const hits = play(withFlex({ ...flex, audio: 'hits' }));
+    expect([asSung.magic, smooth.magic, hits.magic]).toEqual([0x33545745, 0x35545745, 0x35545745]);
+    expect([smooth.mode, hits.mode]).toEqual([2, 1]);
+
+    // Each note's attack: the 20 ms of the take from its anchor, found in the output within
+    // 30 ms of where the map puts it (the first pass of the loop).
+    const moved = flexClip({ ...clip, flex } as MelodyClip & { flex: Flex }, sp.anchors, UPS).moved.filter((m) => m.hard && m.sec !== undefined);
+    expect(moved.length).toBe(8);
+    const find = (out: Float32Array, sec: number, at: number) => {
+      const s = Math.round(sec * SR), u = Math.round(at * SR), len = Math.round(0.02 * SR);
+      const score = (lag: number) => {
+        let xy = 0, xx = 1e-12, yy = 1e-12;
+        for (let i = 0; i < len; i++) {
+          const a = audio[s + i], b = out[u + lag + i] ?? 0;
+          xy += a * b; xx += a * a; yy += b * b;
+        }
+        return xy / Math.sqrt(xx * yy);
+      };
+      // Every 4th lag over 30 ms either way, then each lag around the best.
+      let best = { lag: 0, c: -Infinity };
+      for (let lag = -1440; lag <= 1440; lag += 4) { const c = score(lag); if (c > best.c) best = { lag, c }; }
+      for (let lag = best.lag - 3; lag <= best.lag + 3; lag++) { const c = score(lag); if (c > best.c) best = { lag, c }; }
+      return best;
+    };
+    const rows = moved.map((m) => ({
+      sung: find(asSung.out, m.sec!, m.sec!), smooth: find(smooth.out, m.sec!, m.dst / UPS), hits: find(hits.out, m.sec!, m.dst / UPS),
+      movedMs: ((m.dst - m.src) / UPS) * 1000,
+    }));
+    console.log(`Q2, a sung take stretched to 8ths through the wasm engine: notes moved ${rows.map((r) => r.movedMs.toFixed(1)).join(', ')} ms; attack found off the map's sample by smooth ${rows.map((r) => r.smooth.lag).join(', ')}, hits ${rows.map((r) => r.hits.lag).join(', ')} samples; worst correlation smooth ${Math.min(...rows.map((r) => r.smooth.c)).toFixed(4)}, hits ${Math.min(...rows.map((r) => r.hits.c)).toFixed(4)}`);
+    for (const r of rows) {
+      expect(r.sung.lag).toBe(0);
+      expect(r.smooth.lag).toBe(0);
+      expect(r.hits.lag).toBe(0);
+      expect(r.smooth.c).toBeGreaterThan(0.99);
+      expect(r.hits.c).toBeGreaterThan(0.99);
+    }
+    expect(Math.max(...rows.map((r) => Math.abs(r.movedMs)))).toBeGreaterThan(20);
+  }, 30_000);
+});
+
+describe('importing an audio file as a take (Q2)', () => {
+  it('runs the live tier as a capture does, and places the take from the section start', async () => {
+    // The same singing, captured live (as above) and imported as a file.
+    const total = Math.round(2.6 * SR / BLOCK) * BLOCK;
+    const x = singer(total, 0);
+    const w = wasmEngine();
+    w.load(new Compiler().compile(project(), () => null));
+    const mic = new Float32Array(total);
+    const frames: number[] = [];
+    for (let pos = 0; pos < total; pos += BLOCK) {
+      new Float32Array(w.mem(), w.tb().input, BLOCK).set(x.subarray(pos, pos + BLOCK));
+      w.ex.ew_process(w.e, BLOCK);
+      const t = w.tb();
+      mic.set(new Float32Array(w.mem(), t.input, BLOCK), pos);
+      frames.push(...new Float32Array(w.mem(), t.frames, new Uint32Array(w.mem(), t.framesCount, 1)[0] * STRIDE));
+    }
+    w.ex.ew_free(w.e);
+    const imp = await liveTierOver(klont, x, SR);
+    const n = imp.frames.length / STRIDE;
+    expect(n).toBe(Math.floor(total / FRAME));
+    expect(Array.from(imp.frames)).toEqual(frames.slice(0, n * STRIDE));
+    expect(Array.from(imp.audio)).toEqual(Array.from(mic.slice(0, n * FRAME)));
+
+    const sp = AnalysisCore.fromBytes(analysis).secondPass(imp.audio, SR, imp.frames, { kind: 'melody' });
+    const take: Take = { id: 'take', audio: 'a', frames: 'f', rate: SR, latencyMs: 0, frameCount: n, kind: 'melody',
+      refCents: sp.refCents, root: sp.root, scale: sp.scale, bpm: null, anchors: 'anchors-take', anchorsVersion: 1 };
+    const clip = importedClip(project(), 's', 'mel', take, sp.notes, sp.hits) as MelodyClip;
+    // Take second t lands at clip time t: the file starts on the downbeat.
+    clip.notes.forEach((note, i) => expect(note.t).toBeCloseTo(sp.notes[i].t * UPS, 6));
+  }, 30_000);
 });

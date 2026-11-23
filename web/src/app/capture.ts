@@ -8,7 +8,9 @@
 // undo step. A take into a listening layer keeps its audio and features but no notes of its own:
 // the layer's notes come from MIDI or the keys.
 
-import { micConstraints } from '../m1/klont-host';
+import { loadKlontBytes, micConstraints } from '../m1/klont-host';
+import { importedClip, liveTierOver, toMono } from '../project/import-take';
+import { inputAt } from '../synth/patch';
 import { LAYER_LEVEL, LAYER_PAN, M_COUNT_SEQ, M_PLAYING, M_SECTION, MSG_RECORD, MSG_SET_LAYER, MSG_SET_MACRO, MSG_SET_PARAM, SET_BASE } from '../m1/protocol';
 import { listeningClip, Pass, passCommands, stateValue, withHand, type RecordHooks } from '../record/record';
 import { layoutOf } from '../synth/patch';
@@ -245,6 +247,59 @@ export class AppCapture implements RecordHooks {
     } catch (e) {
       this.status('');
       this.app.fail(e instanceof Error ? e.message : String(e));
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** Import an audio file as a take on the selected layer, from the start of the section
+   *  (docs/quant.md Q2). The layer gets an input element at mix 1 if it has none, so the take
+   *  plays as audio; Feel then stretches it. One undo step. */
+  async importFile(file: File, layerId: string, sectionId: string): Promise<void> {
+    const { app } = this;
+    const host = app.host;
+    if (!host || !app.analysis) throw new Error('Start the audio first.');
+    if (this.cap || this.busy) throw new Error('Finish recording first.');
+    const layer = app.doc.layers.find((l) => l.id === layerId);
+    if (!layer) throw new Error('Pick a layer to import into.');
+    this.busy = true;
+    try {
+      this.status(`Reading ${file.name}…`);
+      const buf = await host.ctx.decodeAudioData(await file.arrayBuffer());
+      const x = toMono(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c)), host.sampleRate);
+      const { audio, frames } = await liveTierOver(await loadKlontBytes(), x, host.sampleRate);
+      const n = frames.length / FRAME_STRIDE;
+      if (n < MIN_TAKE_SEC * FRAME_RATE) throw new Error(`${file.name} is under ${MIN_TAKE_SEC} s.`);
+      this.status(`Second pass on ${(n / FRAME_RATE).toFixed(1)} s…`);
+      const sp = await app.analysis.secondPass(audio.slice(), host.sampleRate, frames.slice(), {
+        kind: layer.kind, taught: layer.kind === 'beat' ? this.taught ?? undefined : undefined,
+      });
+      for (let i = 0; i < Math.min(n, sp.pitch.length); i++) frames[i * FRAME_STRIDE] = sp.pitch[i];
+      const take: Take = {
+        id: newId('take'), audio: '', frames: '', rate: host.sampleRate, latencyMs: 0, frameCount: n, kind: layer.kind,
+        refCents: sp.refCents, root: sp.root, scale: sp.scale, bpm: sp.bpm,
+      };
+      take.audio = `audio-${take.id}`;
+      take.frames = `frames-${take.id}`;
+      take.anchors = anchorsRef(take.id);
+      take.anchorsVersion = ANCHORS_VERSION;
+      await app.session.putTake(take.id, { audio, frames, anchors: sp.anchors });
+      if (!app.doc.sections.some((s) => s.id === sectionId)) throw new Error('The section was removed while importing.');
+      const clip = importedClip(app.doc, sectionId, layerId, take, sp.notes, sp.hits);
+      const needsInput = inputAt(layer.patch) < 0;
+      const tune = layer.kind === 'beat' ? null : tuneFromTake(sp);
+      const state = app.ui.editState(layer).id;
+      app.store.batch('Import take', (run) => {
+        run('addTake', { take });
+        run('setClip', { section: sectionId, layer: layerId, clip });
+        if (needsInput) run('addChannelFx', { layer: layerId, type: 'input' });
+        if (needsInput) run('setValues', { layer: layerId, state, values: { 'input1.mix': 1 } });
+        if (tune) run('setLayer', { id: layerId, tune });
+      });
+      app.ui.select(layerId, []);
+      app.clearError();
+      const what = layer.kind === 'beat' ? `${sp.hits.length} hits` : `${sp.notes.length} notes`;
+      this.status(`Imported ${file.name}: ${(n / FRAME_RATE).toFixed(1)} s, ${what}, ${sp.anchors.length / 3} anchors.${needsInput ? ' The layer plays it as audio (an input element at mix 1).' : ''}`);
     } finally {
       this.busy = false;
     }

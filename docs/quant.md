@@ -1,6 +1,6 @@
 # Flex quantize: timing decided at play time
 
-Nov 22, 2026. Design, approved. Stage Q1 is built: see [Q1.md](Q1.md) for what it does and where it differs from this page; the later stages are not. A throwaway prototype in `experiments/flexquant` measured the parts that carry risk; its full output is [experiments/flexquant/results.md](../experiments/flexquant/results.md), and "Prototype" below summarizes it.
+Nov 22, 2026. Design, approved. Stages Q1 and Q2 are built: see [Q1.md](Q1.md) and [Q2.md](Q2.md) for what they do and where they differ from this page; the later stages are not. A throwaway prototype in `experiments/flexquant` measured the parts that carry risk; its full output is [experiments/flexquant/results.md](../experiments/flexquant/results.md), and "Prototype" below summarizes it.
 
 Today Quantize moves note starts once, in the document, and leaves the take behind. This page makes quantizing a setting of the clip that is applied every time the track plays or exports. The take keeps its performed timing. The app finds **anchors** in it (onsets, note starts, hits, peaks of a sung feature), pulls them toward a **target** (a grid at any resolution, a swing, a groove, or the timing of another layer) by a **strength** that a lane can automate, and the engine plays the notes, the curves and the take's audio through the resulting time map, stretching the audio between anchors without changing its pitch. One layer can set the timing of any number of others.
 
@@ -264,10 +264,10 @@ Strength is not a route target. Routes run per control tick in the engine, and a
 
 | Change | Detail |
 | --- | --- |
-| Track blob v4 | Warp anchors gain a flags word (bit 0: hard). Clips gain the audio mode (0 today's read, 1 hits, 2 smooth). v1 to v3 still load, and the encoder keeps writing the oldest version that holds the track, so projects without flex stay byte-identical. |
+| Track blob v5 (v4 went to poly takes, P3) | Warp anchors gain a flags word (bit 0: hard; bit 1: starts a run, for the map folded into the loop). Clips gain the audio mode (0 today's read, 1 hits, 2 smooth). v1 to v4 still load, and the encoder keeps writing the oldest version that holds the track, so projects without flex stay byte-identical. |
 | Stretcher | One per layer with two renderers, for the crossfade between stretches, plus a second stretcher for a map that changes while playing (it restarts at the playing position and crossfades 5 ms from the old one). All buffers are allocated at start-up: under 100 KB per phase vocoder renderer, under 400 KB per layer. |
 | `take_audio`, `RawSrc::Take` | Hand the stretcher the clip's map and position instead of a varispeed step. Clips without flex keep today's read. |
-| Loop wrap | The clip's loop start is a hard anchor: the last stretch fades out over 5 ms past the loop end while the first starts. |
+| Loop wrap | The clip's loop start is a hard anchor: the first stretch's pre-roll fades in over the last 5 ms of a pass while the last stretch fades out. |
 | Beat clips | Get a warp map (today they have none), so a beat take's audio follows its hits. |
 | Cost | `bench --costs` gains the stretcher, priced per layer; a layer pays it only while its clip stretches. |
 
@@ -337,7 +337,7 @@ Anchor detection in the analysis worker (onsets with the high-band pass, note st
 
 ### Q2: stretching the take's audio
 
-The stretcher (hits and smooth) in `crates/klont`, track blob v4, the crossfade for a map that changes while playing, the loop wrap, the cost in `bench --costs`; importing an audio file as a take.
+The stretcher (hits and smooth) in `crates/klont`, track blob v5, the crossfade for a map that changes while playing, the loop wrap, the cost in `bench --costs`; importing an audio file as a take.
 
 - Rust tests on the prototype's takes as fixtures: every attack at a hard anchor found at the sample the map gives (correlation above 0.99); sung pitch within 5 cents; legato joins within 0.5 dB of the input's level; spectral distance to the ideal render below the untouched input's.
 - Determinism: two exports bit-identical; 128-sample and 333-sample calls bit-identical; play from eight points repeats exactly and matches a whole render from the next hard anchor on; live playback from a stop against an export, bit-identical.

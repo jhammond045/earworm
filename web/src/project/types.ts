@@ -295,7 +295,12 @@ export interface Flex {
   slotStrength?: number[];
   /** Section units: anchors further than this from their slot are not pulled (they ride along). */
   catch: number;
+  /** How the take's audio is stretched through the map (docs/quant.md Q2): slices for beats,
+   *  a phase vocoder for melody and texture. Missing: by the layer's kind (FLEX_AUDIO_DEFAULT). */
+  audio?: FlexAudio;
 }
+
+export type FlexAudio = 'hits' | 'smooth';
 
 /** Straight: the section's grid. Swing: every second slot of a pair of `unit` falls at `amount`
  *  of the pair (0.5 straight, 0.66 a triplet feel), in section units. */

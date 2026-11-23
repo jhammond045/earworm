@@ -1,6 +1,7 @@
 //! The flex prototype's synthetic takes (experiments/flexquant, docs/quant.md "Prototype"),
-//! with known timing: a drum loop and a sung line. Moved here as the prototype wrote them, less
-//! the "ideal" render (every event on its slot) that only the stretching checks need.
+//! with known timing: a drum loop and a sung line. Moved here as the prototype wrote them. Each
+//! take is rendered twice from the same per-event random streams: as performed, and with every
+//! event exactly on its grid slot (`ideal`, what a perfect quantize would sound like).
 
 use super::SR;
 const TAU: f32 = std::f32::consts::TAU;
@@ -46,6 +47,7 @@ pub struct Event {
 
 pub struct Take {
     pub audio: Vec<f32>,
+    pub ideal: Vec<f32>,
     pub events: Vec<Event>,
     pub bpm: f64,
     /// Seconds before beat 0.
@@ -123,7 +125,7 @@ pub fn drums(seed: u64, bpm: f64, bars: usize, feel: &Feel) -> Take {
     let spb = 60.0 / bpm;
     let total = lead + (bars * 4) as f64 * spb + 0.6;
     let n = (total * SR as f64) as usize;
-    let mut audio = vec![0.0f32; n];
+    let (mut audio, mut ideal) = (vec![0.0f32; n], vec![0.0f32; n]);
     let mut r = Rng::new(seed);
     let mut events = Vec::new();
     let steps = bars * 16;
@@ -144,7 +146,8 @@ pub fn drums(seed: u64, bpm: f64, bars: usize, feel: &Feel) -> Take {
         let drift = feel.drift_ms / 1000.0 * (std::f64::consts::TAU * s as f64 / steps as f64).sin();
         let jit = feel.jitter_ms / 1000.0 * r.normal() as f64;
         let t = lead + beat * spb + swing + late + drift + jit;
-        // One random stream per event (the prototype also rendered each event on its slot with it).
+        let grid_t = lead + beat * spb;
+        // One random stream per event, so the performed and the ideal render use the same waveform.
         let ev_seed = seed.wrapping_mul(1000).wrapping_add(s as u64);
         let accent = if step % 2 == 0 { 1.0 } else { 0.45 };
         for (bit, make) in [(1u8, kick as fn(&mut Rng) -> Vec<f32>), (2, snare), (4, hat)] {
@@ -152,16 +155,19 @@ pub fn drums(seed: u64, bpm: f64, bars: usize, feel: &Feel) -> Take {
                 let w = make(&mut Rng::new(ev_seed ^ bit as u64));
                 let g = if bit == 4 { accent } else { 1.0 } * 0.5;
                 mix_at(&mut audio, t, &w, g);
+                mix_at(&mut ideal, grid_t, &w, g);
             }
         }
         events.push(Event { t, beat, class, cents: 0.0 });
     }
-    // Room noise at about -66 dB, as a real take always has some.
+    // Room noise at about -66 dB, the same in both renders, as a real take always has some.
     let mut nr = Rng::new(seed ^ 0x5eed);
-    for a in audio.iter_mut() {
-        *a += 0.0005 * nr.normal();
+    for (a, b) in audio.iter_mut().zip(ideal.iter_mut()) {
+        let v = 0.0005 * nr.normal();
+        *a += v;
+        *b += v;
     }
-    Take { audio, events, bpm, lead }
+    Take { audio, ideal, events, bpm, lead }
 }
 
 // ---------------------------------------------------------------- sung line
@@ -310,7 +316,7 @@ fn voice(notes: &[Sung], total: f64, seed: u64) -> Vec<f32> {
 }
 
 /// The melody sung against a 100 bpm grid: each onset late by `lag_ms` on average, with
-/// `jitter_ms` of random timing.
+/// `jitter_ms` of random timing. The ideal render puts every onset and end on the grid.
 pub fn sung(seed: u64, bpm: f64, lag_ms: f64, jitter_ms: f64) -> Take {
     let lead = 0.3;
     let spb = 60.0 / bpm;
@@ -338,10 +344,11 @@ pub fn sung(seed: u64, bpm: f64, lag_ms: f64, jitter_ms: f64) -> Take {
     let total = lead + 16.0 * spb + 0.6;
     let performed = plan(true);
     let audio = voice(&performed, total, seed);
+    let ideal = voice(&plan(false), total, seed);
     let events = performed
         .iter()
         .zip(MELODY.iter())
         .map(|(p, &(beat, _, _, link))| Event { t: p.on, beat, class: link, cents: p.cents })
         .collect();
-    Take { audio, events, bpm, lead }
+    Take { audio, ideal, events, bpm, lead }
 }

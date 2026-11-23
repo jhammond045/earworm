@@ -23,9 +23,9 @@ fn every_field() {
     assert_eq!((t.n_clips(), t.n_events()), (3, 9));
 
     let want_clips = [
-        Clip { section: 0, layer: 0, loop_len: 3840.0, first_event: 0, n_events: 3, curve: 3, first_warp: 0, n_warp: 3, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0 },
-        Clip { section: 0, layer: 1, loop_len: 1920.0, first_event: 3, n_events: 4, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0 },
-        Clip { section: 1, layer: 7, loop_len: 2.5, first_event: 7, n_events: 2, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0 },
+        Clip { section: 0, layer: 0, loop_len: 3840.0, first_event: 0, n_events: 3, curve: 3, first_warp: 0, n_warp: 3, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0, audio_mode: 0 },
+        Clip { section: 0, layer: 1, loop_len: 1920.0, first_event: 3, n_events: 4, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0, audio_mode: 0 },
+        Clip { section: 1, layer: 7, loop_len: 2.5, first_event: 7, n_events: 2, curve: -1, first_warp: 3, n_warp: 0, first_morph: 0, n_morph: 0, audio: -1, first_lane: 0, n_lanes: 0, first_audio_warp: 0, n_audio_warp: 0, audio_mode: 0 },
     ];
     for (i, w) in want_clips.iter().enumerate() {
         assert_eq!(t.clip(i), w, "clip {i}");
@@ -37,9 +37,9 @@ fn every_field() {
     assert_eq!(
         t.warp(t.clip(0)),
         &[
-            WarpAnchor { take_sec: 0.25, clip_t: 0.0 },
-            WarpAnchor { take_sec: 1.0, clip_t: 960.0 },
-            WarpAnchor { take_sec: 2.0, clip_t: 2000.0 },
+            WarpAnchor { take_sec: 0.25, clip_t: 0.0, flags: 0 },
+            WarpAnchor { take_sec: 1.0, clip_t: 960.0, flags: 0 },
+            WarpAnchor { take_sec: 2.0, clip_t: 2000.0, flags: 0 },
         ]
     );
     assert!(t.warp(t.clip(1)).is_empty());
@@ -121,4 +121,21 @@ fn transport_through_both_sections() {
     assert_eq!(tr.section(), 1);
     assert!((tr.pos() - 70000.0 / 48000.0).abs() < 1e-9);
     assert_eq!(tr.bpm(), 0.0);
+}
+
+/// `web/src/m1/track.test.ts` "track blob v5": a clip that stretches its take audio in smooth
+/// mode through a map of two runs (docs/quant.md Q2).
+#[test]
+fn v5_every_field() {
+    let mut t = Track::new();
+    t.load(include_bytes!("fixtures/track_v5.bin")).expect("v5 fixture loads");
+    let c = *t.clip(0);
+    assert_eq!((c.layer, c.audio, c.audio_mode, c.curve), (2, 8, klont::stretch::MODE_SMOOTH, 1));
+    assert_eq!(t.warp(&c), &[WarpAnchor { take_sec: 0.0, clip_t: 0.0, flags: 0 }, WarpAnchor { take_sec: 0.5, clip_t: 960.0, flags: 0 }]);
+    let a = t.audio_warp(&c);
+    let want = [(1.5, 0.0, 3), (1.9, 900.0, 1), (0.2, 960.0, 3), (0.6, 1950.0, 0), (1.5, 3840.0, 1)];
+    assert_eq!(a.len(), want.len());
+    for (x, &(s, u, f)) in a.iter().zip(&want) {
+        assert_eq!((x.take_sec as f32, x.clip_t, x.flags), (s as f32, u, f));
+    }
 }

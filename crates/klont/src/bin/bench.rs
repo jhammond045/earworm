@@ -24,6 +24,11 @@
 //! figures of crates/params/modules.toml, which the engine and the app use to cap a layer's
 //! voices.
 //!
+//! With `--costs`, also the take stretcher (docs/quant.md Q2): 8 layers playing only their raw
+//! input, each a clip whose 4 s take is stretched through a map with a hard point every 0.25 s
+//! pulled 15 ms either way, in hits and smooth mode, against the same layers reading the take
+//! without stretching (MODE_READ). Best of 5, CPU time of this thread.
+//!
 //! Scene "worst allowed" (stage S3): 8 layers, each with the heaviest patch the caps allow (every
 //! voice module at its cap, all on, 48 routes moving the partial bank, a full channel), playing
 //! as many voices as its cost leaves room for, beside the classic worst case.
@@ -223,6 +228,81 @@ fn costs(seconds: f64) {
         println!("  {name:>13} {c:7.2}");
     }
     println!("  {:>13} {routes:7.2}\n  {:>13} {rebuild:7.2}", "route", "rebuild");
+    stretch_costs(seconds);
+}
+
+/// 8 layers each playing only its raw input: a clip whose take is stretched in `mode`.
+fn stretch_scene(mode: u32) -> Box<Engine> {
+    use klont::stretch::{POINT_HARD, POINT_RUN};
+    const LEN: f64 = 4.0;
+    const BPM: f64 = 120.0;
+    let ups = BPM * 960.0 / 60.0;
+    let mut e = Engine::new(SR, BLOCK);
+    let mut v = build::simple_voice(&[params::T_OSC]);
+    v.set.push((1, P::amp::GAIN, 0.0));
+    let patch = build::patch_with(&[v], &[(params::T_INPUT, false)], &[(0, P::input::MIX, 1.0)], &[]);
+    // A sung-like tone with an accent every 0.25 s.
+    let n = (LEN * SR as f64) as usize;
+    let take: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f64 / SR as f64;
+            let env = 0.5 + 0.5 * (-(t % 0.25) / 0.03).exp();
+            (0.1 * env * (1..=5).map(|k| (std::f64::consts::TAU * 220.0 * k as f64 * t).sin() / k as f64).sum::<f64>()) as f32
+        })
+        .collect();
+    assert_eq!(e.load_bytes(8, LOAD_SAMPLE, &klont::classic::sample_blob(SR, f32::NAN, &take)), LOAD_OK);
+    let map: Vec<(f64, f64, u32)> = (0..=16)
+        .map(|k| {
+            let s = k as f64 * 0.25;
+            let u = if k == 0 || k == 16 { s } else { s + if k % 2 == 1 { 0.015 } else { -0.015 } };
+            (u, s, POINT_HARD | if k == 0 { POINT_RUN } else { 0 })
+        })
+        .collect();
+    let ticks = (LEN * ups) as f32;
+    let m = map.len() as u32;
+    let l = MAX_LAYERS as u32;
+    let mut w: Vec<u32> = vec![klont::seq::TRACK_MAGIC5, 1, l, 0, m * l, 1, 0, 0];
+    w.extend([klont::seq::FEEL_GRID, ticks.to_bits(), (BPM as f32).to_bits(), 1, 0, 1, 0, 0]);
+    for i in 0..l {
+        w.extend([0, i, ticks.to_bits(), 0, 0, u32::MAX, 0, 0, 0, 0, 8, 0, 0, i * m, m, mode]);
+    }
+    for _ in 0..l {
+        for &(u, s, f) in &map {
+            w.extend([(s as f32).to_bits(), ((u * ups) as f32).to_bits(), f]);
+        }
+    }
+    w.push(0);
+    let blob: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+    for i in 0..l {
+        assert_eq!(e.load_bytes(i, LOAD_PATCH, &patch), LOAD_OK);
+    }
+    assert_eq!(e.load_bytes(0, LOAD_TRACK, &blob), LOAD_OK);
+    e.push(MSG_PLAY, 0, 0, 0, 0.0, 0);
+    e
+}
+
+fn stretch_costs(seconds: f64) {
+    use klont::stretch::{MODE_HITS, MODE_READ, MODE_SMOOTH};
+    let blocks = (seconds * SR as f64 / BLOCK as f64) as usize;
+    let ns = |mode: u32| {
+        (0..5)
+            .map(|_| {
+                let mut e = stretch_scene(mode);
+                for _ in 0..200 {
+                    e.render(BLOCK);
+                }
+                let t = cpu_s();
+                for _ in 0..blocks {
+                    e.render(BLOCK);
+                }
+                (cpu_s() - t) * 1e9 / (blocks * BLOCK) as f64
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let (read, hits, smooth) = (ns(MODE_READ), ns(MODE_HITS), ns(MODE_SMOOTH));
+    let per = |x: f64| (x - read) / MAX_LAYERS as f64;
+    println!("take stretcher, 8 layers playing only a stretched take, ns per sample: read without stretching {read:.1}, hits {hits:.1}, smooth {smooth:.1}");
+    println!("  {:>13} {:7.2}\n  {:>13} {:7.2}", "stretch_hits", per(hits), "stretch_smooth", per(smooth));
 }
 
 fn main() {

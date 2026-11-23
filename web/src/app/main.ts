@@ -27,7 +27,7 @@ import { Session } from '../m3/session';
 import { liveMatch, type LiveMatch, type Match } from '../m4/match';
 import { commands, newId } from '../project/commands';
 import { Compiler, sectionUnitsPerSec } from '../project/compile';
-import { ANCHOR_HARD, ANCHOR_LEN, quantizeFlex } from '../project/flex';
+import { ANCHOR_HARD, ANCHOR_LEN, flexAudio, quantizeFlex } from '../project/flex';
 import { cleanupPlan, unusedRefs } from '../project/cleanup';
 import { exportProject, importProject } from '../project/archive';
 import { historyResets } from '../project/migrate';
@@ -449,6 +449,7 @@ async function main(): Promise<void> {
     btn('redo').disabled = !app.store.history.canRedo;
     btn('capture').disabled = !app.host || !app.stream;
     btn('record').disabled = !app.host;
+    num('importTake').disabled = !app.host;
     btn('play').disabled = !app.host;
     btn('stop').disabled = !app.host;
     num('projNameInput').value = doc.name;
@@ -581,7 +582,9 @@ async function main(): Promise<void> {
     }
     if (document.activeElement !== sel) sel.value = String(value);
     const editing = !!f && grid;
-    for (const id of ['flexGrid', 'flexTriplets', 'flexFeel', 'flexSwing', 'flexStrength', 'flexCatch']) num(id).disabled = !editing;
+    for (const id of ['flexGrid', 'flexTriplets', 'flexFeel', 'flexSwing', 'flexStrength', 'flexCatch', 'flexAudio']) num(id).disabled = !editing;
+    const audio = $<HTMLSelectElement>('flexAudio');
+    if (document.activeElement !== audio) audio.value = f && l ? flexAudio(f, l.kind) : l?.kind === 'beat' ? 'hits' : 'smooth';
     if (document.activeElement !== num('flexTriplets')) num('flexTriplets').checked = !!f?.triplets;
     const feel = $<HTMLSelectElement>('flexFeel');
     if (document.activeElement !== feel) feel.value = f?.feel.kind ?? 'straight';
@@ -615,7 +618,9 @@ async function main(): Promise<void> {
     } else {
       what = `Anchors: the ${clip.kind === 'beat' ? 'hit' : 'note'} starts.`;
     }
-    const raw = inputAt(l.patch) >= 0 && clip.take ? ' The raw input plays at the timing it was performed until stretching is built.' : '';
+    const raw = inputAt(l.patch) >= 0 && clip.take
+      ? placed ? ' The raw input is stretched with the anchors.' : ' The raw input plays at the timing it was performed: the take has no placement to stretch it by.'
+      : '';
     return clip.flex?.on ? `${what}${raw}` : 'Off: the clip plays as performed.';
   }
 
@@ -636,6 +641,7 @@ async function main(): Promise<void> {
     setFlex((f) => ({ ...f, grid: g, catch: f.catch === f.grid / 2 ? g / 2 : f.catch, feel: f.feel.kind === 'swing' ? { ...f.feel, unit: g } : f.feel }));
   });
   num('flexTriplets').addEventListener('change', () => setFlex((f) => ({ ...f, triplets: num('flexTriplets').checked })));
+  $<HTMLSelectElement>('flexAudio').addEventListener('change', () => setFlex((f) => ({ ...f, audio: $<HTMLSelectElement>('flexAudio').value === 'hits' ? 'hits' : 'smooth' })));
   $<HTMLSelectElement>('flexFeel').addEventListener('change', () => {
     const swing = $<HTMLSelectElement>('flexFeel').value === 'swing';
     setFlex((f) => ({ ...f, feel: swing ? { kind: 'swing', amount: Number(num('flexSwing').value) / 100 || 0.58, unit: f.grid } : { kind: 'straight' } }));
@@ -1593,6 +1599,15 @@ async function main(): Promise<void> {
 
   holdButton(btn('capture'), () => { capture.start(); acted('capture'); }, () => { void capture.end(); });
   btn('record').addEventListener('click', () => { capture.toggleRecord(); acted('capture'); });
+  num('importTake').addEventListener('change', () => {
+    const input = num('importTake');
+    const file = input.files?.[0];
+    input.value = '';
+    const sec = section();
+    const l = layer();
+    if (!file || !sec || !l) return;
+    capture.importFile(file, l.id, sec.id).catch((e) => app.fail(e instanceof Error ? e.message : String(e)));
+  });
   $<HTMLSelectElement>('laneTarget').addEventListener('change', () => {
     const l = layer();
     if (!l) return;
@@ -1720,7 +1735,10 @@ async function main(): Promise<void> {
       const song = uploadsToSong(uploads);
       const seconds = songSeconds(app.doc);
       $('engineStatus').textContent = 'Rendering the mix…';
-      const job = renderer.render(song, { once: true, settle: true, maxSeconds: Math.min(180, Math.max(2, seconds + 12)) }, (p) => {
+      // At the rate the takes were captured at, as live playback runs: a take stretches only at
+      // its own rate (docs/Q2.md), and the export then matches what is heard.
+      const sampleRate = app.host?.sampleRate;
+      const job = renderer.render(song, { once: true, settle: true, maxSeconds: Math.min(180, Math.max(2, seconds + 12)), ...(sampleRate ? { sampleRate } : {}) }, (p) => {
         $('engineStatus').textContent = `Rendering ${p.seconds.toFixed(1)} s…`;
       });
       const res = await job.promise;

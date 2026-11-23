@@ -8,8 +8,9 @@
 // loop. The map is periodic with the loop: an anchor played just before the loop end can be
 // pulled to the next pass's first slot, and its note then starts at the top of the loop.
 
-import type { AutoLane, BeatClip, Clip, Flex, FlexFeel, Hit, MelodyClip, Note, WarpAnchor } from './types';
+import type { AutoLane, BeatClip, Clip, Flex, FlexAudio, FlexFeel, Hit, LayerKind, MelodyClip, Note, WarpAnchor } from './types';
 import { FLEX_STRENGTH } from './types';
+import { POINT_HARD, POINT_RUN, type TrackWarpAnchor } from '../m1/track';
 
 /** Anchors closer than this to the one before them ride along instead of moving, so anchors never
  *  cross and every stretch between two of them is long enough for Q2's crossfade. */
@@ -27,6 +28,8 @@ export interface FlexAnchor {
   hard: boolean;
   /** Kit slot of a beat anchor, -1 none. */
   kit: number;
+  /** Take second, when the anchor has one (the take's own anchors, or a note placed on it). */
+  sec?: number;
 }
 
 /** One anchor after quantizing: where it was played and where it now plays (section units). */
@@ -36,6 +39,8 @@ export interface Moved {
   /** The slot it was pulled to (bent time), NaN for a rider. */
   slot: number;
   hard: boolean;
+  /** Take second, when known (FlexAnchor.sec). */
+  sec?: number;
 }
 
 export interface Target {
@@ -117,12 +122,12 @@ export function quantize(anchors: FlexAnchor[], tg: Target): Moved[] {
     const dst = a.t + s * (slot - a.t);
     const prev = out[out.length - 1];
     if (prev && (dst < prev.dst + tg.minGap || a.t < prev.src + tg.minGap)) { riders.push(a); return; }
-    out.push({ src: a.t, dst, slot, hard: a.hard });
+    out.push({ src: a.t, dst, slot, hard: a.hard, sec: a.sec });
   });
   // Across the loop end: the last must stay before the first of the next pass.
   while (out.length > 1 && (out[out.length - 1].dst + tg.minGap > out[0].dst + len || out[out.length - 1].src + tg.minGap > out[0].src + len)) {
     const m = out.pop()!;
-    riders.push({ t: m.src, w: 0, hard: m.hard, kit: -1 });
+    riders.push({ t: m.src, w: 0, hard: m.hard, kit: -1, sec: m.sec });
   }
   // Riders keep their transient as a point of the map, on the line the moved anchors draw.
   const line = out.slice();
@@ -134,7 +139,7 @@ export function quantize(anchors: FlexAnchor[], tg: Target): Moved[] {
     const next = i < out.length ? out[i] : out.length ? { src: out[0].src + len, dst: out[0].dst + len } : null;
     const okPrev = !prev || (a.t - prev.src >= tg.minGap && dst - prev.dst >= tg.minGap);
     const okNext = !next || (next.src - a.t >= tg.minGap && next.dst - dst >= tg.minGap);
-    if (okPrev && okNext) out.splice(i, 0, { src: a.t, dst, slot: NaN, hard: a.hard });
+    if (okPrev && okNext) out.splice(i, 0, { src: a.t, dst, slot: NaN, hard: a.hard, sec: a.sec });
   }
   return out;
 }
@@ -201,13 +206,15 @@ export function clipAnchors(clip: Clip, takeAnchors: Float32Array | null, ups: n
       const kind = (flags >> 1) & 3;
       out.push({
         t: takeToClip(warp, ups, clip.loopLen, takeAnchors[i]), w: takeAnchors[i + 1], hard: (flags & ANCHOR_HARD) !== 0,
-        kit: clip.kind === 'beat' && kind === ANCHOR_KIND_HIT ? (flags >> 3) & 3 : -1,
+        kit: clip.kind === 'beat' && kind === ANCHOR_KIND_HIT ? (flags >> 3) & 3 : -1, sec: takeAnchors[i],
       });
     }
     return out;
   }
-  if (clip.kind === 'beat') return clip.hits.map((h) => ({ t: h.t, w: h.strength, hard: true, kit: h.slot }));
-  return clip.notes.map((n) => ({ t: n.t, w: 0.5 + n.hard, hard: true, kit: -1 }));
+  // A start on a placed take also knows its take second, so the take's audio can follow it.
+  const sec = (t: number) => (clip.take && warp.length ? warpToTake(warp, t, 1 / ups) : undefined);
+  if (clip.kind === 'beat') return clip.hits.map((h) => ({ t: h.t, w: h.strength, hard: true, kit: h.slot, sec: sec(h.t) }));
+  return clip.notes.map((n) => ({ t: n.t, w: 0.5 + n.hard, hard: true, kit: -1, sec: sec(n.t) }));
 }
 
 /** Whether the clip's flex setting does anything in this section. Free sections have no grid; the
@@ -290,6 +297,72 @@ function flexWarp(c: MelodyClip, moved: Moved[], ups: number): WarpAnchor[] {
   return out.sort((a, b) => a.clipT - b.clipT || a.takeSec - b.takeSec);
 }
 
+/** The audio mode a clip without one uses: slices for beats, the phase vocoder otherwise. */
+export function flexAudio(f: Flex, kind: LayerKind): FlexAudio {
+  return f.audio ?? (kind === 'beat' ? 'hits' : 'smooth');
+}
+
+/** The time map the take's audio is stretched through (docs/quant.md "Stretching the audio"),
+ *  folded into the loop for the engine: runs of points (played clip time in [0, loopLen], take
+ *  second, flags), each run a stretch of the take that plays inside one pass. A take placed
+ *  across the loop end gives two runs; the loop start cuts them. Where two parts of the take
+ *  would play at once (a take longer than the loop), the earlier part plays.
+ *
+ *  `moved`: the clip's quantized anchors, with their take seconds. `takeLen`: the take's length
+ *  in seconds. `minGap`: section units; interior points this close to a run's ends are dropped,
+ *  so every stretch is long enough for its crossfade, and pieces shorter than 6 ms are left out.
+ *  Empty: nothing to stretch. */
+export function stretchMap(moved: Moved[], len: number, ups: number, takeLen: number, minGap: number): TrackWarpAnchor[] {
+  // The anchors in take order, unwrapped so performed time keeps increasing with the take.
+  const known = moved.filter((m) => m.sec !== undefined && Number.isFinite(m.sec)).sort((a, b) => a.sec! - b.sec!);
+  const chain: { sec: number; c: number; hard: boolean }[] = [];
+  for (const m of known) {
+    const prev = chain[chain.length - 1];
+    let c = m.src;
+    if (prev) {
+      c += Math.round((prev.c + (m.sec! - prev.sec) * ups - m.src) / len) * len;
+      if (!(m.sec! > prev.sec && c > prev.c)) continue;
+    }
+    chain.push({ sec: m.sec!, c, hard: m.hard });
+  }
+  if (!chain.length || !(len > 0)) return [];
+  const first = chain[0], last = chain[chain.length - 1];
+  if (first.sec > 0) chain.unshift({ sec: 0, c: first.c - first.sec * ups, hard: true });
+  if (takeLen > last.sec) chain.push({ sec: takeLen, c: last.c + (takeLen - last.sec) * ups, hard: true });
+  // Where each plays, unwrapped.
+  const pts = chain.map((p) => ({ d: mapTime(moved, len, p.c), sec: p.sec, hard: p.hard }));
+  const secAt = (d: number) => {
+    let i = 0;
+    while (i + 2 < pts.length && pts[i + 1].d <= d) i++;
+    const a = pts[i], b = pts[i + 1];
+    return b.d > a.d ? a.sec + ((b.sec - a.sec) * (d - a.d)) / (b.d - a.d) : a.sec;
+  };
+  // Each pass's part of the take, folded into the loop; parts already covered are left out.
+  const covered: [number, number][] = [];
+  const runs: TrackWarpAnchor[][] = [];
+  const k0 = Math.floor(pts[0].d / len), k1 = Math.floor(pts[pts.length - 1].d / len);
+  for (let k = k0; k <= k1; k++) {
+    const base = k * len;
+    let free: [number, number][] = [[Math.max(pts[0].d, base) - base, Math.min(pts[pts.length - 1].d, base + len) - base]];
+    for (const [ca, cb] of covered) {
+      free = free.flatMap(([a, b]) => (cb <= a || ca >= b ? [[a, b]] : [[a, Math.min(b, ca)], [Math.max(a, cb), b]]).filter(([x, y]) => y > x) as [number, number][]);
+    }
+    for (const [a, b] of free) {
+      // A piece shorter than the 5 ms crossfade would overlap three stretches at once.
+      if (b - a < 0.006 * ups) continue;
+      covered.push([a, b]);
+      const run: TrackWarpAnchor[] = [{ clipT: a, takeSec: secAt(a + base), flags: POINT_HARD | POINT_RUN }];
+      for (const p of pts) {
+        const d = p.d - base;
+        if (d >= a + minGap && d <= b - minGap) run.push({ clipT: d, takeSec: p.sec, flags: p.hard ? POINT_HARD : 0 });
+      }
+      run.push({ clipT: b, takeSec: secAt(b + base), flags: POINT_HARD });
+      runs.push(run);
+    }
+  }
+  return runs.sort((x, y) => x[0].clipT - y[0].clipT).flat();
+}
+
 /** Flex as the Quantize button turns it on: the grid at full strength, catching anchors half a
  *  slot away, keeping the clip's other choices when it already has some. */
 export function quantizeFlex(prev: Flex | undefined, grid: number): Flex {
@@ -312,6 +385,7 @@ export function checkFlex(f: Flex): Flex {
     if (a < 0.5 || a > 0.75) throw new RangeError('swing amount must be from 0.5 to 0.75');
     if (!(fin(f.feel.unit, 'swing unit') > 0)) throw new RangeError('swing unit must be above 0');
   } else if (f.feel?.kind !== 'straight') throw new RangeError('flex feel must be straight or swing');
+  if (f.audio !== undefined && f.audio !== 'hits' && f.audio !== 'smooth') throw new RangeError('flex audio must be hits or smooth');
   if (f.slotStrength !== undefined) {
     if (!Array.isArray(f.slotStrength) || f.slotStrength.length > 4) throw new RangeError('flex slot strengths must be up to four numbers');
     for (const v of f.slotStrength) if (fin(v, 'slot strength') < 0 || v > 1) throw new RangeError('flex slot strengths must be from 0 to 1');

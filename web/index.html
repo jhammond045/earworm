@@ -48,6 +48,7 @@
     <button type="button" id="enableMic" hidden>Enable mic</button>
     <button type="button" id="capture" data-tour="capture" disabled title="Hold to record into the selected layer. Stopped songs get a one-bar count-in.">Capture</button>
     <button type="button" id="record" disabled aria-pressed="false" title="Press to record a pass, press again to stop: the mic into the selected layer, and the notes, knob moves and scene taps you play, as one undo step.">Record</button>
+    <label class="file-button" title="Put an audio file on the selected layer as a take, from the start of the section, so Feel can quantize and stretch it.">Import take <input type="file" id="importTake" accept="audio/*" disabled aria-label="Import an audio file as a take"></label>
     <label class="dim" data-tour="align">Align <input id="roundTrip" type="number" min="0" max="400" step="1" value="30" aria-label="Round trip in milliseconds, used to place a take on the beat"> ms</label>
     <button type="button" id="measure" data-tour="measure" title="Play five chirps and time how long they take to come back.">Measure</button>
     <label class="dim" data-tour="bands">Bands
@@ -137,6 +138,7 @@
           <label id="flexSwingWrap">Swing <input type="number" id="flexSwing" min="50" max="75" step="1" aria-label="Swing, percent"> %</label>
           <label>Strength <input type="range" id="flexStrength" min="0" max="100" step="1" aria-label="Feel strength"> <output id="flexStrengthOut"></output></label>
           <label>Catch ± <input type="number" id="flexCatch" min="0" max="500" step="1" aria-label="Catch, ms"> ms</label>
+          <label>Audio <select id="flexAudio" aria-label="How the take's audio is stretched"><option value="hits">Hits</option><option value="smooth">Smooth</option></select></label>
           <span id="flexKit" class="flex-kit">Kit slots <input type="number" min="0" max="100" step="5" aria-label="Kit slot 1 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 2 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 3 strength, percent"><input type="number" min="0" max="100" step="5" aria-label="Kit slot 4 strength, percent"> %</span>
           <span id="flexNote" class="hint"></span>
         </div>

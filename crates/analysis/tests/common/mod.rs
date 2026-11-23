@@ -403,6 +403,7 @@ pub use analysis::score::{NoteScore, match_notes};
 
 // ---------------------------------------------------------------- flex anchors
 
+pub mod flex_map;
 pub mod flex_takes;
 
 /// How well found anchor times match true onsets: each true time is matched to at most one

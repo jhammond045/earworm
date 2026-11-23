@@ -12,6 +12,12 @@ import {
   MORPH_STEP,
   TRACK_MAGIC,
   TRACK_MAGIC2,
+  TRACK_MAGIC3,
+  TRACK_MAGIC4,
+  TRACK_MAGIC5,
+  AUDIO_SMOOTH,
+  POINT_HARD,
+  POINT_RUN,
   encodeCurve,
   encodeTrack,
   type TrackInput,
@@ -268,3 +274,49 @@ describe('cross-language fixture', () => {
 function f32bits(x: number): number {
   return new Uint32Array(new Float32Array([x]).buffer)[0];
 }
+
+/** A stretching clip (docs/quant.md Q2) behind crates/klont/tests/fixtures/track_v5.bin, which
+ *  crates/klont/tests/track_fixture.rs reads. */
+const v5Track: TrackInput = {
+  loop: true,
+  sections: [{ feel: 'grid', length: 3840, bpm: 120 }],
+  clips: [{
+    section: 0, layer: 2, loopLen: 3840, curve: 1, audio: 8, audioMode: AUDIO_SMOOTH,
+    events: [{ t: 0, dur: 960, cents: 4800, hard: 1 }],
+    warp: [{ takeSec: 0, clipT: 0 }, { takeSec: 0.5, clipT: 960 }],
+    audioWarp: [
+      { takeSec: 1.5, clipT: 0, flags: POINT_HARD | POINT_RUN },
+      { takeSec: 1.9, clipT: 900, flags: POINT_HARD },
+      { takeSec: 0.2, clipT: 960, flags: POINT_HARD | POINT_RUN },
+      { takeSec: 0.6, clipT: 1950, flags: 0 },
+      { takeSec: 1.5, clipT: 3840, flags: POINT_HARD },
+    ],
+  }],
+};
+const v5Path = resolve(import.meta.dirname, '../../../crates/klont/tests/fixtures/track_v5.bin');
+
+describe('track blob v5', () => {
+  it('is written only when a clip stretches or an anchor has flags', () => {
+    const plain = { ...v5Track, clips: [{ ...v5Track.clips[0], audioMode: undefined, audioWarp: v5Track.clips[0].audioWarp!.map((a) => ({ ...a, flags: 0 })) }] };
+    expect(words(encodeTrack(plain))[0]).toBe(TRACK_MAGIC3);
+    expect(words(encodeTrack(v5Track))[0]).toBe(TRACK_MAGIC5);
+  });
+  it('gives warp anchors a flags word and clips their audio mode', () => {
+    const w = words(encodeTrack(v5Track));
+    const clip = 8 + 8;
+    expect(w[clip + 15]).toBe(AUDIO_SMOOTH);
+    expect([w[clip + 13], w[clip + 14]]).toEqual([2, 5]);
+    const warp = clip + 16 + EVENT_WORDS;
+    expect(Array.from(w.slice(warp, warp + 3 * 7)).filter((_, i) => i % 3 === 2)).toEqual([0, 0, 3, 1, 3, 0, 1]);
+  });
+  it('rejects an unknown flag or mode', () => {
+    expect(() => encodeTrack({ ...v5Track, clips: [{ ...v5Track.clips[0], audioMode: 3 }] })).toThrow(RangeError);
+    expect(() => encodeTrack({ ...v5Track, clips: [{ ...v5Track.clips[0], audioWarp: [{ takeSec: 0, clipT: 0, flags: 4 }] }] })).toThrow(RangeError);
+  });
+  it('matches crates/klont/tests/fixtures/track_v5.bin', () => {
+    const got = new Uint8Array(encodeTrack(v5Track));
+    if (process.env.WRITE_FIXTURE === '1') writeFileSync(v5Path, got);
+    expect(existsSync(v5Path), 'fixture missing: run with WRITE_FIXTURE=1').toBe(true);
+    expect(Buffer.from(got).equals(Buffer.from(readFileSync(v5Path)))).toBe(true);
+  });
+});

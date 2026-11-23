@@ -33,6 +33,8 @@ struct LiveMsg {
 
 pub struct Engine {
     sr: f32,
+    /// Counts track loads, so a layer's stretcher compares its clip's map only after one.
+    track_gen: u64,
     max_block: usize,
     input: Vec<f32>,
     out_l: Vec<f32>,
@@ -103,6 +105,7 @@ impl Engine {
         };
         let max_block = max_block.clamp(1, 1 << 16);
         let mut e = Box::new(Engine {
+            track_gen: 0,
             sr,
             max_block,
             input: vec![0.0; max_block],
@@ -250,6 +253,7 @@ impl Engine {
                 let jump_uid = self.transport.queued_jump().map_or(0, uid);
                 match self.track.load(bytes) {
                     Ok(()) => {
+                        self.track_gen += 1;
                         self.transport.follow_uids(&self.track, cur_uid, jump_uid);
                         self.transport.track_changed(&self.track);
                         LOAD_OK
@@ -925,8 +929,11 @@ impl Engine {
                 RawSrc::None
             } else if self.live_on && (l.listen || armed == li as i32) {
                 RawSrc::Mic
+            } else if let Some(ci) = clip_i {
+                let stretched = stretch_at(&self.track, &self.samples, ci, pos, ups, self.sr, self.track_gen).is_some_and(|at| l.sync_stretch(&at));
+                if stretched { RawSrc::Stretch } else { take_audio(&self.track, &self.samples, ci, pos, ups).unwrap_or(RawSrc::None) }
             } else {
-                clip_i.and_then(|ci| take_audio(&self.track, &self.samples, ci, pos, ups)).unwrap_or(RawSrc::None)
+                RawSrc::None
             };
             l.set_raw(raw);
             let mut rec = [0.0f32; CURVE_STRIDE];
@@ -1149,6 +1156,39 @@ fn take_audio(track: &Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64
     let b = curve::warp_to_take(warp, t + ups * TICK as f64, slope);
     let rate = s.rate as f64;
     Some(RawSrc::Take { sample: clip.audio as u8, pos: a * rate, step: (b - a) * rate / TICK as f64 })
+}
+
+/// Where clip `ci`'s stretched take audio is at transport position `pos`, when the clip stretches
+/// (audio mode hits or smooth, a map, the take at the engine's rate). None: today's read.
+fn stretch_at<'a>(track: &'a Track, samples: &SamplePool, ci: usize, pos: f64, ups: f64, sr: f32, track_gen: u64) -> Option<crate::stretch::StretchAt<'a>> {
+    let clip = track.clip(ci);
+    if clip.audio < 0 || clip.audio_mode == crate::stretch::MODE_READ || clip.n_audio_warp == 0 || !(clip.loop_len > 0.0) {
+        return None;
+    }
+    let s = samples.get(clip.audio as usize)?;
+    // A take at another rate would need resampling first; it keeps the read without stretching.
+    if (s.rate - sr).abs() > 0.5 {
+        return None;
+    }
+    let sec = track.section(clip.section as usize);
+    let slope = if sec.feel == crate::seq::FEEL_FREE { 1.0 } else { 60.0 / (sec.bpm.max(1.0) * crate::seq::PPQ) };
+    let spu = slope * sr as f64;
+    // During a tempo ramp into the section the transport runs slower or faster than the section's
+    // tempo, which the stretcher counts in; it plays on and catches up when the ramp ends.
+    let ramping = (ups * spu - 1.0).abs() > 1e-6;
+    let t = pos - (pos / clip.loop_len).floor() * clip.loop_len;
+    Some(crate::stretch::StretchAt {
+        clip: ci,
+        track_gen,
+        mode: clip.audio_mode,
+        region: s.region,
+        len: clip.loop_len * spu,
+        u: t * spu,
+        spu,
+        rate: s.rate as f64,
+        map: track.audio_warp(clip),
+        ramping,
+    })
 }
 
 /// The frame of layer `li`'s clip take in `section` at transport position `pos` (section
