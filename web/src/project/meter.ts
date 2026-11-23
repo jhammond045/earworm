@@ -82,6 +82,14 @@ export function sectionPlayedLength(doc: Pick<Project, 'meters' | 'metro'>, s: S
   return playedLength(s.beats * PPQ, m1.bars.beats, patternOf(s, m1.id));
 }
 
+/** The section's name and length as the section stepper shows it: the played length, with the
+ *  written one beside it when Meter 1's pattern changes it ("A 3 beats (4 written)"). */
+export function sectionLabel(doc: Pick<Project, 'meters' | 'metro'>, s: Section): string {
+  if (s.feel !== 'grid') return `${s.name} ${s.seconds}s`;
+  const played = +(sectionPlayedLength(doc, s) / PPQ).toFixed(2);
+  return played === s.beats ? `${s.name} ${s.beats} beats` : `${s.name} ${played} beats (${s.beats} written)`;
+}
+
 /** Beats in one of Meter 1's bars as the section plays them: the pattern's length, or the
  *  meter's beats per bar. The click accents these and the transport counts them. */
 export function playedBar(doc: Pick<Project, 'meters' | 'metro'>, s: Section | undefined): number {

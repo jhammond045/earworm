@@ -15,7 +15,7 @@ import {
 } from '../m1/protocol';
 import { SCALES } from '../host/protocol';
 import { snapChoices, stateColor } from '../m3/geometry';
-import { metersOf, playedBar, writtenAt } from '../project/meter';
+import { metersOf, playedBar, sectionLabel, writtenAt } from '../project/meter';
 import { lockTag, MeterRow } from './meter-ui';
 import { Analysis, teach, type Hit as AnalysisHit } from '../m2/analysis';
 import { SLOT_NAMES } from '../m2/sounds';
@@ -513,7 +513,7 @@ async function main(): Promise<void> {
     const doc = app.doc;
     const sec = section();
     $('projectName').textContent = doc.name || 'Untitled';
-    $('secName').textContent = sec ? `${sec.name} ${sec.feel === 'grid' ? `${sec.beats} beats` : `${sec.seconds}s`}` : '—';
+    $('secName').textContent = sec ? sectionLabel(doc, sec) : '—';
     if (document.activeElement !== num('bpm') && sec?.feel === 'grid') num('bpm').value = String(sec.bpm);
     num('bpm').disabled = !sec || sec.feel !== 'grid';
     if (sec && document.activeElement !== num('secRename')) num('secRename').value = sec.name;

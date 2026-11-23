@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { POINT_HARD, POINT_RUN } from '../m1/track';
 import {
   METER1, checkPattern, cutAt, metersOf, parsePattern, playOrder, playedBar, playedLength, presets, remapEvents, remapRuns,
-  remapStretch, remapWarp, sectionPlayedLength, writtenAt, type Remap,
+  remapStretch, remapWarp, sectionLabel, sectionPlayedLength, writtenAt, type Remap,
 } from './meter';
 import { warpToTake } from './flex';
 import { PPQ, type Section } from './types';
@@ -40,6 +40,10 @@ describe('play order', () => {
     expect(playedBar(doc, s)).toBe(3);
     expect(sectionPlayedLength(doc, { ...s, play: { other: [1, 2, 3] } })).toBe(16 * B);
     expect(sectionPlayedLength(doc, { ...s, feel: 'free' })).toBe(8);
+    // The section stepper shows what plays, and the written length when they differ.
+    expect(sectionLabel(doc, { ...s, name: 'A', beats: 4 })).toBe('A 3 beats (4 written)');
+    expect(sectionLabel(doc, { ...s, name: 'A', play: {} })).toBe('A 16 beats');
+    expect(sectionLabel(doc, { ...s, name: 'A', feel: 'free' })).toBe('A 8s');
     // The playhead: played beat 3 (0-based) is written beat 4, the next bar's first.
     expect(writtenAt(doc, s, 3 * B + 10)).toBe(4 * B + 10);
   });
