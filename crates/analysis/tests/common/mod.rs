@@ -405,6 +405,7 @@ pub use analysis::score::{NoteScore, match_notes};
 
 pub mod flex_map;
 pub mod flex_takes;
+pub mod grooves;
 
 /// How well found anchor times match true onsets: each true time is matched to at most one
 /// found time within 50 ms, nearest pairs first (as the flex prototype matched them).
