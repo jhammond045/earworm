@@ -807,10 +807,13 @@ async function main(): Promise<void> {
   };
   app.ui.subscribe(() => app.refreshAll());
 
+  let opened = false;
   session.onChange((doc, kind) => {
     if (kind === 'swap') {
-      // Nothing on screen belongs to the project that was open: its message and its last capture go.
-      $('capStatus').textContent = '';
+      // Nothing on screen belongs to the project that was open: its message and its last capture
+      // go. The first project of the page keeps the page's opening message.
+      if (opened) $('capStatus').textContent = '';
+      opened = true;
       if (ribbonCanvas instanceof HTMLCanvasElement) {
         ribbonCanvas.getContext('2d')?.clearRect(0, 0, ribbonCanvas.width, ribbonCanvas.height);
         ribbonCanvas.parentElement!.classList.remove('drawn');
