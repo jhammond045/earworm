@@ -5,7 +5,7 @@
 
 import workletUrl from './klont-processor.ts?worker&url';
 import type { KlontProcessorOptions } from './klont-processor';
-import { CONTROL_CAP, LOAD_BAD_KIND, LOAD_PATCH, METER_LEN, MSG_BYTES, MSG_JUMP, MSG_NOTE_OFF, MSG_NOTE_ON, MSG_PANIC, MSG_PLAY,
+import { CONTROL_CAP, LOAD_BAD_KIND, LOAD_NOTE_CURVES, METER_LEN, MSG_BYTES, MSG_JUMP, MSG_NOTE_OFF, MSG_NOTE_ON, MSG_PANIC, MSG_PLAY,
   MSG_ARM, MSG_COUNT_IN, MSG_RESET_SINGER, MSG_SELECT_LAYER, MSG_SET_BUDGET, MSG_SET_LAYER, MSG_SET_LIVE_KIT, MSG_SET_MACRO,
   MSG_SET_METRO, MSG_SET_PARAM, MSG_SET_TUNE, MSG_STOP, METRO_BAR, METRO_LAYER, METRO_LEVEL, METRO_ON, METRO_SLOT,
   METRO_VOICE, SET_BASE, encodeMessage } from './protocol';
@@ -163,9 +163,9 @@ export class KlontHost {
   setBudget(n: number): void { this.send(MSG_SET_BUDGET, 0, 0, 0, n); }
   selectLayer(layer: number): void { this.send(MSG_SELECT_LAYER, layer, 0, 0, 0); }
 
-  /** Copy a blob into the engine (kind: LOAD_TRACK .. LOAD_PATCH). The buffer is copied, not transferred. */
+  /** Copy a blob into the engine (kind: LOAD_TRACK .. LOAD_NOTE_CURVES). The buffer is copied, not transferred. */
   load(kind: number, slot: number, blob: ArrayBuffer): Promise<number> {
-    if (kind < 1 || kind > LOAD_PATCH) return Promise.resolve(LOAD_BAD_KIND);
+    if (kind < 1 || kind > LOAD_NOTE_CURVES) return Promise.resolve(LOAD_BAD_KIND);
     const id = this.nextId++;
     const copy = blob.slice(0);
     return new Promise((resolve) => {
