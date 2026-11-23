@@ -531,7 +531,8 @@ table.matrix td button { min-height: 24px; }
   }
   .panel:last-child { border-right: 0; }
   .bank button, .strip button { min-height: 32px; }
-  .gridwrap { max-height: calc(100vh - 340px); }
+  /* The panel is a flex column; without flex: none the scrolling grid shrinks to its border. */
+  .gridwrap { flex: none; max-height: calc(100vh - 340px); }
 }
 @media (min-width: 1440px) {
   .workspace { grid-template-columns: 260px minmax(0, 1fr) 380px; }
