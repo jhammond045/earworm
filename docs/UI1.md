@@ -62,7 +62,7 @@ Measured on the build machine in headless Chrome, Nov 22, 2026. The before and a
 | Export mix | "Mix saved. 30.8× realtime, peak 0.56", from File |
 | A lesson step inside Setup | Setup opens without a backdrop, the tour bar stays usable, Align is outlined |
 | Console errors during the walks | None |
-| `pnpm test` | All pass: 448 Vitest tests in 57 files, and 365 Rust tests (4 ignored, as before) |
+| `pnpm test` | All pass: 449 Vitest tests in 57 files (on top of the poly-take commits that landed during the pass), and 365 Rust tests (4 ignored, as before) |
 
 ## Where the build differs from ui.md
 
