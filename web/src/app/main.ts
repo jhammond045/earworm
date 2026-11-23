@@ -1069,7 +1069,7 @@ async function main(): Promise<void> {
     const m = app.doc.metro ?? defaultMetro();
     const level = Number(num('metroLevel').value) / 100;
     const i = Math.max(0, app.doc.layers.findIndex((l) => l.id === m.layerId));
-    app.host?.setMetro(m.on, level, m.voice, i, m.slot, m.bar);
+    app.host?.setMetro(m.on, level, m.voice, i, m.slot, playedBar(app.doc, playingSection(app.doc)));
   });
   num('metroLevel').addEventListener('change', () => {
     app.run(() => app.store.dispatch('setMetro', { level: Number(num('metroLevel').value) / 100 }));

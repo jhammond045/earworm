@@ -1,6 +1,6 @@
 # Meter remap: playing beats in a new order
 
-Nov 22, 2026. Design, for the owner's approval; nothing is built in the app. A throwaway prototype in `experiments/meterremap` measured the parts that carry risk; its full output is [experiments/meterremap/results.md](../experiments/meterremap/results.md), and "Prototype" below summarizes it.
+Nov 22, 2026. Design, approved by the owner with every recommended answer; stage R1 is built ([R1.md](R1.md)). A throwaway prototype in `experiments/meterremap` measured the parts that carry risk; its full output is [experiments/meterremap/results.md](../experiments/meterremap/results.md), and "Prototype" below summarizes it.
 
 The owner asked whether a take could change meter: a 4/4 groove played in 3/4 by dropping a beat from every bar, a 3/4 one played in 4/4 by repeating one, a 5/4 one in 4/4 (the well-known edits of Take Five, which is in 5/4), and whether the beats of a bar could be shuffled (1 2 3 4 played as 1 3 4 2). Any track should be able to provide the bars for others, any number of these meters should exist, and a track can lock to one of them or stay free.
 
