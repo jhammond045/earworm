@@ -33,8 +33,11 @@ const FLUSH_S = 0.1; // message mode: live chunk period
 // Same values as in klont-host.ts.
 /** Frame record: 24-float feature frame plus the tuned pitch (CURVE_STRIDE in the engine). */
 const FRAME_STRIDE = 25;
-const MIC_SECONDS = 60;
-const FRAME_RING = 6000;
+const MIC_SECONDS = 301; // MIC_RING_SEC in m2/take.ts: a 5-minute poly take and a second
+const FRAME_RING = MIC_SECONDS * 100;
+const OUT_SECONDS = 60;
+/** Message mode ships the rings every 100 ms, so the worklet's own copies need only a few seconds. */
+const LOCAL_SECONDS = 4;
 
 export interface KlontProcessorOptions {
   bytes: ArrayBuffer;
@@ -99,10 +102,13 @@ class KlontProcessor extends AudioWorkletProcessor {
     }
     this.live = !!o.input;
     if (this.live) {
-      const cap = Math.ceil(MIC_SECONDS * sampleRate);
+      const shared = !!o.mic;
+      const cap = Math.ceil((shared ? MIC_SECONDS : LOCAL_SECONDS) * sampleRate);
+      const outCap = Math.ceil((shared ? OUT_SECONDS : LOCAL_SECONDS) * sampleRate);
+      const frameCap = shared ? FRAME_RING : LOCAL_SECONDS * 100;
       this.mic = new RecordRing(o.mic ?? new ArrayBuffer(RecordRing.bytes(cap, 1)), cap, 1);
-      this.outRing = new RecordRing(o.out ?? new ArrayBuffer(RecordRing.bytes(cap, 1)), cap, 1);
-      this.frames = new RecordRing(o.frames ?? new ArrayBuffer(RecordRing.bytes(FRAME_RING, FRAME_STRIDE)), FRAME_RING, FRAME_STRIDE);
+      this.outRing = new RecordRing(o.out ?? new ArrayBuffer(RecordRing.bytes(outCap, 1)), outCap, 1);
+      this.frames = new RecordRing(o.frames ?? new ArrayBuffer(RecordRing.bytes(frameCap, FRAME_STRIDE)), frameCap, FRAME_STRIDE);
     }
     this.port.onmessage = (ev) => this.onMessage(ev.data);
     this.refreshViews();

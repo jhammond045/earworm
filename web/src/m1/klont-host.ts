@@ -11,13 +11,16 @@ import { CONTROL_CAP, LOAD_BAD_KIND, LOAD_PATCH, METER_LEN, MSG_BYTES, MSG_JUMP,
   METRO_VOICE, SET_BASE, encodeMessage } from './protocol';
 import { ControlRing, MeterBlock, RecordRing } from '../host/rings';
 import { micConstraints } from '../host/engine-host';
+import { MIC_RING_SEC } from '../m2/take';
 
 export { micConstraints };
 
 // Same values as in klont-processor.ts (which cannot be imported outside the worklet).
 const FRAME_STRIDE = 25; // 24-float feature frame plus the tuned pitch
-const FRAME_RING = 6000;
-const MIC_SECONDS = 60;
+const MIC_SECONDS = MIC_RING_SEC;
+const FRAME_RING = MIC_RING_SEC * 100;
+/** The output ring is only read over the last few seconds (the follow delay checks). */
+const OUT_SECONDS = 60;
 
 export type TransportMode = 'shared' | 'message';
 
@@ -45,7 +48,7 @@ export function wantsFallback(): boolean {
   return new URLSearchParams(globalThis.location?.search ?? '').get('fallback') === '1' || !globalThis.crossOriginIsolated;
 }
 
-interface LiveBufs { cap: number; frames: ArrayBufferLike; mic: ArrayBufferLike; out: ArrayBufferLike }
+interface LiveBufs { cap: number; outCap: number; frames: ArrayBufferLike; mic: ArrayBufferLike; out: ArrayBufferLike }
 
 const moduleAdded = new WeakSet<BaseAudioContext>();
 
@@ -74,7 +77,7 @@ export class KlontHost {
     if (live) {
       this.frames = new RecordRing(live.frames, FRAME_RING, FRAME_STRIDE);
       this.mic = new RecordRing(live.mic, live.cap, 1);
-      this.out = new RecordRing(live.out, live.cap, 1);
+      this.out = new RecordRing(live.out, live.outCap, 1);
     }
   }
 
@@ -90,7 +93,8 @@ export class KlontHost {
     let live: LiveBufs | undefined;
     if (opts.input) {
       const cap = Math.ceil(MIC_SECONDS * ctx.sampleRate);
-      live = { cap, frames: mk(RecordRing.bytes(FRAME_RING, FRAME_STRIDE)), mic: mk(RecordRing.bytes(cap, 1)), out: mk(RecordRing.bytes(cap, 1)) };
+      const outCap = Math.ceil(OUT_SECONDS * ctx.sampleRate);
+      live = { cap, outCap, frames: mk(RecordRing.bytes(FRAME_RING, FRAME_STRIDE)), mic: mk(RecordRing.bytes(cap, 1)), out: mk(RecordRing.bytes(outCap, 1)) };
       if (shared) Object.assign(po, { frames: live.frames, mic: live.mic, out: live.out });
     }
     const node = new AudioWorkletNode(ctx, 'earworm-klont', {
@@ -209,7 +213,7 @@ export class KlontHost {
   /** Frames written to the frame ring since the engine started (the global frame count). */
   framesTotal(): number { return this.frames?.total() ?? 0; }
   /** Records [start, start + count) by global frame index, 25 floats each. Frames
-   *  not in the ring (older than 6000 frames or not written yet) read as zeros. */
+   *  not in the ring (older than 301 s or not written yet) read as zeros. */
   readFrames(start: number, count: number): Float32Array {
     const out = new Float32Array(Math.max(0, count) * FRAME_STRIDE);
     this.frames?.readRange(start, count, out);
@@ -217,7 +221,7 @@ export class KlontHost {
   }
   /** Mic samples written to the mic ring since the engine started. */
   samplesTotal(): number { return this.mic?.total() ?? 0; }
-  /** High-passed mic samples [start, start + count) by global sample index (zeros outside the 60 s ring). */
+  /** High-passed mic samples [start, start + count) by global sample index (zeros outside the 301 s ring). */
   readMic(start: number, count: number): Float32Array {
     const out = new Float32Array(Math.max(0, count));
     this.mic?.readRange(start, count, out);

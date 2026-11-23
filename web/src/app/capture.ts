@@ -23,11 +23,13 @@ import { tuneFromTake } from './tune';
 import { newId } from '../project/commands';
 import { clockMark, placeTake, type ClockMark } from '../project/overdub';
 import type { Take } from '../project/types';
+import { MAX_TAKE_SEC, MIN_TAKE_SEC, POLY_MAX_TAKE_SEC } from '../m2/take';
 
-const MIN_TAKE_SEC = 0.5;
-const MAX_TAKE_SEC = 59;
 const FRAME_RATE = 100;
 const FRAME_STRIDE = 25;
+
+/** Poly takes stream through their pass and can run 5 minutes; mono takes stop at 59 s. */
+const maxTakeSec = (a: Active) => (a.poly ? POLY_MAX_TAKE_SEC : MAX_TAKE_SEC);
 
 interface Active {
   layerId: string;
@@ -215,7 +217,7 @@ export class AppCapture implements RecordHooks {
       this.beginPass(a);
       this.status(latched ? `Recording a pass${mic ? ` (the mic into ${doc.layers[layerIdx].name})` : ''}… press Record again to stop.` : `Recording into ${doc.layers[layerIdx].name}…`);
     }
-    a.timer = window.setTimeout(() => { void this.end(); }, MAX_TAKE_SEC * 1000);
+    a.timer = window.setTimeout(() => { void this.end(); }, maxTakeSec(a) * 1000);
     this.cap = a;
     if (app.ui.sectionId !== a.sectionId) { app.ui.sectionId = a.sectionId; app.ui.changed(); }
   }
@@ -237,7 +239,7 @@ export class AppCapture implements RecordHooks {
       if (!a.marks.length && this.lastMark) a.marks.push(this.lastMark);
     }
     if (a.mic && !a.listening && !a.poly) host.arm(a.layerIdx, false);
-    const n = a.mic ? Math.min(host.framesTotal(), a.f0 + MAX_TAKE_SEC * FRAME_RATE) - a.f0 : 0;
+    const n = a.mic ? Math.min(host.framesTotal(), a.f0 + maxTakeSec(a) * FRAME_RATE) - a.f0 : 0;
     const takeOk = a.mic && n >= MIN_TAKE_SEC * FRAME_RATE;
     if (!takeOk && (!a.pass || a.pass.empty)) { this.status(a.mic ? `Ignored: ${(n / FRAME_RATE).toFixed(2)} s is under ${MIN_TAKE_SEC} s.` : 'Nothing was played.'); return; }
     this.busy = true;

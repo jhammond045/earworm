@@ -6,8 +6,14 @@ import type { Hit, Note, SecondPass } from './analysis';
 
 /** Takes shorter than this are ignored (TDD "Input"). */
 export const MIN_TAKE_SEC = 0.5;
-/** The mic and out rings hold 60 s; stop a little short so the start is never overwritten. */
+/** A mono take stops a little short of 60 s. Its second pass holds the whole take in the analysis
+ *  worker, which at 5 minutes would take 171 MB (280 MB for a beat take) against 35 MB at 60 s. */
 export const MAX_TAKE_SEC = 59;
+/** A poly take (docs/P3.md) can run 5 minutes: its pass streams the take in a second at a time. */
+export const POLY_MAX_TAKE_SEC = 300;
+/** The mic and frame rings hold a second more than the longest take, so its start is never
+ *  overwritten; klont-processor.ts keeps the same figure. */
+export const MIC_RING_SEC = POLY_MAX_TAKE_SEC + 1;
 /** Index of the tuned pitch in a 25-float frame record. */
 export const TUNED = 24;
 /** Frames per second (10 ms frames). */

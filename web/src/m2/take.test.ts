@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CLIP_WORDS, CURVE_MAGIC, CURVE_STRIDE, EVENT_WORDS, FEEL_FREE, SECTION_WORDS, TRACK_HEADER_WORDS, TRACK_MAGIC } from '../m1/track';
 import type { Hit, Note } from './analysis';
-import { MAX_TAKE_SEC, buildCurveBlob, buildTrackBlob, hitsToEvents, levelDelayMs, loopSeconds, meanLive, measureFollow,
+import { MAX_TAKE_SEC, MIC_RING_SEC, POLY_MAX_TAKE_SEC, buildCurveBlob, buildTrackBlob, hitsToEvents, levelDelayMs, loopSeconds, meanLive, measureFollow,
   noteTargets, notesToEvents, pitchLockDelaysMs, tally, withTuned } from './take';
 
 const SR = 48000;
@@ -173,7 +173,9 @@ describe('tally', () => {
     expect(tally([{ kept: true }, { kept: false }]).meets).toBe(false);
     expect(tally([]).meets).toBe(false);
   });
-  it('takes cap below the 60 s rings', () => {
-    expect(MAX_TAKE_SEC).toBeLessThanOrEqual(60);
+  it('takes cap below the mic and frame rings', () => {
+    expect(MAX_TAKE_SEC).toBeLessThan(MIC_RING_SEC);
+    expect(POLY_MAX_TAKE_SEC).toBe(300);
+    expect(POLY_MAX_TAKE_SEC).toBeLessThan(MIC_RING_SEC);
   });
 });
