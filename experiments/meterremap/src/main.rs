@@ -170,7 +170,12 @@ fn remap_cases(wav: &Option<String>) {
         let b = bars::detect(&f, &METERS);
         detect_rows.push(format!("| {} | {} | {} | {} |", c.what, c.pattern.len(), b.meter, if b.phase == 0 { "beat 1".to_string() } else { format!("beat {}", b.phase + 1) }));
         // Listening files.
-        let gain = 0.9 / vars.iter().map(|v| peak(&v.out)).chain([peak(&perf.mix), peak(&ide.mix)]).fold(0.0, f32::max);
+        // One gain per groove, from its source, so every file of a groove can be compared by ear.
+        let gain = 0.7 / peak(&perf.mix);
+        let loudest = vars.iter().map(|v| peak(&v.out)).chain([peak(&ide.mix)]).fold(0.0, f32::max);
+        if loudest * gain > 1.0 {
+            eprintln!("{}: a render peaks at {:.2} and clips in its WAV file", c.name, loudest * gain);
+        }
         write_wav(wav, &format!("{}-0-source", c.name), &perf.mix, gain);
         for (i, v) in vars.iter().enumerate() {
             write_wav(wav, &format!("{}-{}-{}", c.name, i + 1, v.name.replace(", ", "-").replace(' ', "-")), &v.out, gain);
@@ -340,7 +345,7 @@ fn detection_real(dir: &str) {
     let loops = read_index(dir);
     println!("## Bars from audio: real recordings\n");
     println!("{} Apple Loops in 4/4 (the loops GarageBand installs), each tiled to at least 16 beats and started a random number of beats in. The truth is 4 beats per bar with the downbeat where the loop starts, as Apple loops are cut.\n", loops.len());
-    println!("| Loops | Count | Beats per bar right (4) | Read as 2 or 8 | Downbeat right, when 4 found | Downbeat right, 4 typed |");
+    println!("| Loops | Count | Beats per bar right (4) | Read as 2 | Downbeat right, when 4 found | Downbeat right, 4 typed |");
     println!("| --- | --- | --- | --- | --- | --- |");
     let mut by: std::collections::BTreeMap<String, Tally> = Default::default();
     let mut all = Tally::default();
@@ -419,7 +424,7 @@ fn detection_real(dir: &str) {
         }
     }
     println!("{}", band.row("Bands: drums, bass and keys or guitar summed"));
-    println!("\nWrong beats per bar, by what was found: {}.\n", wrong.iter().map(|(m, n)| format!("{m}: {n}")).collect::<Vec<_>>().join(", "));
+    println!("\nWrong beats per bar, by what was found instead: {}.\n", wrong.iter().map(|(m, n)| format!("{m}: {n}")).collect::<Vec<_>>().join(", "));
 }
 
 /// A band from the loops: drums, bass and keys of one genre at one tempo, each 8 or 16 beats,
@@ -466,9 +471,9 @@ fn real_examples(dir: &str, wav: &Option<String>) {
         return;
     };
     println!("## Remapping real loops\n");
-    println!("A band of three real loops at one tempo, 4 bars of 4/4: {names} ({:.0} bpm). No ideal exists for real audio, so the join measure here compares the high band in the 8 ms before each join with the same before every beat of the source: 0 dB means a join is no spikier than the take's own beat starts. Downbeats are at the start of the source.\n", 60.0 / spb);
-    println!("| Pattern | Render | Joins | Spike before joins, mean / worst (dB) | Detected beats per bar | Downbeat found at |");
-    println!("| --- | --- | --- | --- | --- | --- |");
+    println!("A band of three real loops at one tempo, 4 bars of 4/4: {names} ({:.0} bpm). No ideal exists for real audio, so the join measure here compares the high band in the 8 ms before each join with the same before every beat of the source: 0 dB means a join is no spikier than the take's own beat starts. The loops start on their downbeats, so the cuts use the true bars.\n", 60.0 / spb);
+    println!("| Pattern | Render | Joins | Spike before joins, mean / worst (dB) |");
+    println!("| --- | --- | --- | --- |");
     let lead = (0.3 * SR as f64) as usize;
     let len = stems[0].len() + 2 * lead;
     let pad = |x: &[f32]| -> Vec<f32> {
@@ -500,18 +505,15 @@ fn real_examples(dir: &str, wav: &Option<String>) {
             add(&mut sl, &remap::slicer(s, &r, out_len, (0.005 * SR) as i64, (0.030 * SR) as i64));
         }
         let grid = remap::engine_hits(&mix, &runs_for(&mix, &g, &src, false), out_len);
-        let out_beats: Vec<f64> = (0..src.len()).map(|j| g.at(j as f64)).collect();
         gain = gain.min(0.9 / [&one, &st, &sl, &grid].iter().map(|v| peak(v)).fold(0.0, f32::max));
         for (rname, out, runs) in [("engine, one take", &one, &mix_runs), ("engine, stems", &st, &mix_runs), ("slicer, stems", &sl, &mix_runs)] {
             let joins = remap::joins(runs);
             let (m, w) = join_spike(out, &joins, &mix, &beats);
-            let f = bars::features(out, SR, &out_beats, spb);
-            let b = bars::detect(&f, &METERS);
-            println!("| {} | {rname} | {} | {m:+.1} / {w:+.1} | {} | beat {} |", pattern_str(&pat), joins.len(), b.meter, b.phase + 1);
+            println!("| {} | {rname} | {} | {m:+.1} / {w:+.1} |", pattern_str(&pat), joins.len());
         }
         let grid_joins: Vec<i64> = src.iter().enumerate().skip(1).filter(|(j, k)| **k != src[j - 1] + 1).map(|(j, _)| (g.at(j as f64) * SR as f64) as i64).collect();
         let (m, w) = join_spike(&grid, &grid_joins, &mix, &beats);
-        println!("| {} | grid cut | {} | {m:+.1} / {w:+.1} | | |", pattern_str(&pat), grid_joins.len());
+        println!("| {} | grid cut | {} | {m:+.1} / {w:+.1} |", pattern_str(&pat), grid_joins.len());
         files.push((format!("real-{name}-1-engine-one-take"), one));
         files.push((format!("real-{name}-2-engine-stems"), st));
         files.push((format!("real-{name}-3-grid-cut"), grid));
