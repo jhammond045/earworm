@@ -15,6 +15,8 @@ import {
 } from '../m1/protocol';
 import { SCALES } from '../host/protocol';
 import { snapChoices, stateColor } from '../m3/geometry';
+import { metersOf, playedBar, writtenAt } from '../project/meter';
+import { lockTag, MeterRow } from './meter-ui';
 import { Analysis, teach, type Hit as AnalysisHit } from '../m2/analysis';
 import { SLOT_NAMES } from '../m2/sounds';
 import { meanLive } from '../m2/take';
@@ -129,12 +131,23 @@ async function main(): Promise<void> {
   const section = () => app.doc.sections.find((s) => s.id === app.ui.sectionId) ?? app.doc.sections[0];
   const layer = () => app.doc.layers.find((l) => l.id === app.ui.layerId) ?? app.doc.layers[0];
 
-  function pushMetro(doc: Project): void {
+  /** The section the transport is in while playing, else the selected one. */
+  function playingSection(doc: Project) {
+    const m = app.readMeters();
+    return (m && m[M_PLAYING] === 1 ? doc.sections[Math.round(m[M_SECTION])] : undefined) ?? section();
+  }
+  /** The bar the click last heard: Meter 1's bar as the playing section plays it. */
+  let metroBar = -1;
+  /** The click: its settings, and the bar it accents as Meter 1 plays `sec` (docs/meter.md
+   *  "The click"). The engine counts bars from each section's start; a pattern that changes the
+   *  bar's length is sent when its section starts playing. */
+  function pushMetro(doc: Project, sec = playingSection(doc)): void {
     const host = app.host;
     if (!host) return;
     const m = doc.metro ?? defaultMetro(doc.layers.find((l) => l.kind === 'beat')?.id ?? '');
     const i = Math.max(0, doc.layers.findIndex((l) => l.id === m.layerId));
-    host.setMetro(m.on, m.level, m.voice, i, m.slot, m.bar);
+    metroBar = playedBar(doc, sec);
+    host.setMetro(m.on, m.level, m.voice, i, m.slot, metroBar);
   }
 
   function acted(kind: Advance): void {
@@ -254,6 +267,14 @@ async function main(): Promise<void> {
         const tag = document.createElement('span');
         tag.className = 'tag';
         tag.textContent = 'mute';
+        b.append(tag);
+      }
+      const lock = lockTag(app.doc, l.id);
+      if (lock) {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = lock;
+        tag.title = lock === 'M mixed' ? 'Its clips lock to different meters' : `Locked to Meter ${lock.slice(1)}`;
         b.append(tag);
       }
       b.addEventListener('click', () => {
@@ -517,6 +538,7 @@ async function main(): Promise<void> {
     if (document.activeElement !== zoom) zoom.value = String(app.ui.zoom);
     fillSnap();
     fillFlex();
+    meterRow.render();
     const m = doc.metro ?? defaultMetro();
     btn('metro').setAttribute('aria-pressed', String(m.on));
     btn('metro').classList.toggle('down', m.on);
@@ -632,11 +654,12 @@ async function main(): Promise<void> {
   function fillSnap(): void {
     const sec = section();
     const sel = $<HTMLSelectElement>('snap');
-    const choices = snapChoices(sec?.feel ?? 'grid');
+    const bar = metersOf(app.doc)[0].bars.beats;
+    const choices = snapChoices(sec?.feel ?? 'grid', bar);
     const clip = sec?.clips[layer()?.id ?? ''];
     const cur = clip ? clip.timeSnap : Number(sel.value || 0);
-    if (sel.dataset.feel !== (sec?.feel ?? 'grid')) {
-      sel.dataset.feel = sec?.feel ?? 'grid';
+    if (sel.dataset.feel !== `${sec?.feel ?? 'grid'}:${bar}`) {
+      sel.dataset.feel = `${sec?.feel ?? 'grid'}:${bar}`;
       sel.replaceChildren(...choices.map((c) => new Option(c.label, String(c.value))));
     }
     const match = choices.find((c) => c.value === cur) ?? choices.find((c) => c.value === 0) ?? choices[0];
@@ -755,6 +778,8 @@ async function main(): Promise<void> {
       return { ...f, slotStrength: s };
     });
   }));
+
+  const meterRow = new MeterRow(app, () => section(), () => layer(), () => {});
 
   function pushTune(l: Layer, patch: Partial<TuneFields>): void {
     const host = app.host;
@@ -2059,8 +2084,12 @@ async function main(): Promise<void> {
       btn('record').setAttribute('aria-pressed', String(capture.recording));
       btn('play').textContent = playing ? '■ Playing' : '▶ Play';
       const pos = m[M_SECTION_POS];
-      $('posRead').textContent = playing ? positionLabel(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : positionLabel(secNow, 0);
-      const row = playing ? playRow(app.doc.sections[Math.round(m[M_SECTION])] ?? secNow, pos) : -1;
+      const secPlaying = app.doc.sections[Math.round(m[M_SECTION])] ?? secNow;
+      $('posRead').textContent = playing ? positionLabel(secPlaying, pos) : positionLabel(secNow, 0);
+      // The pattern grid is written time: under Meter 1's pattern the playing row skips dropped
+      // beats and goes back for repeated ones.
+      const row = playing ? playRow(secPlaying, writtenAt(app.doc, secPlaying, pos)) : -1;
+      if (playing && playedBar(app.doc, secPlaying) !== metroBar) pushMetro(app.doc, secPlaying);
       const beat = m[M_METRO_BEAT];
       $('posRead').title = beat >= 0 ? `Beat ${Math.round(beat) + 1} of the bar` : '';
       document.querySelectorAll('#pattern tbody tr').forEach((tr) => {

@@ -52,21 +52,24 @@ export const snapTo = (t: number, snap: number): number => (snap > 0 ? Math.roun
 
 export interface GridLine { t: number; strong: boolean }
 
-/** Beat and bar lines for a section (bars are 4 beats; a free section gets a line a second, strong every 4). */
-export function gridLines(feel: Feel, len: number): GridLine[] {
+/** Beat and bar lines for a section: bars of `bar` beats (Meter 1's, 4 by default); a free section
+ *  gets a line a second, strong every 4. */
+export function gridLines(feel: Feel, len: number, bar = 4): GridLine[] {
   const step = feel === 'grid' ? PPQ : 1;
+  const every = feel === 'grid' ? Math.max(1, bar) : 4;
   const out: GridLine[] = [];
-  for (let i = 0; i * step <= len + 1e-9; i++) out.push({ t: i * step, strong: i % 4 === 0 });
+  for (let i = 0; i * step <= len + 1e-9; i++) out.push({ t: i * step, strong: i % every === 0 });
   return out;
 }
 
 export interface SnapChoice { label: string; value: number }
 
-export function snapChoices(feel: Feel): SnapChoice[] {
+/** `bar`: beats in one of Meter 1's bars, the length of the "Bar" choice. */
+export function snapChoices(feel: Feel, bar = 4): SnapChoice[] {
   if (feel === 'grid') {
     return [
       { label: 'Off', value: 0 }, { label: '1/16 beat', value: PPQ / 16 }, { label: '1/8 beat', value: PPQ / 8 },
-      { label: '1/4 beat', value: PPQ / 4 }, { label: 'Beat', value: PPQ }, { label: 'Bar', value: PPQ * 4 },
+      { label: '1/4 beat', value: PPQ / 4 }, { label: 'Beat', value: PPQ }, { label: 'Bar', value: PPQ * bar },
     ];
   }
   return [

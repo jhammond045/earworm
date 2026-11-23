@@ -20,7 +20,7 @@ import { classicPatch, classicVectors, isClassic } from '../synth/classic';
 import { inputAt, layoutOf, patchBlob, type Patch } from '../synth/patch';
 import { KIT_SLOTS, LANE_SHAPES, MORPH_SHAPES, PPQ, type AutoLane, type Clip, type Hit, type Layer, type MorphMarker, type Note, type Project, type Section, type Take } from './types';
 import { MIN_GAP_SEC, clipAnchors, flexActive, flexAudio, flexClip, mapTime, quantize, stretchMap, type Moved } from './flex';
-import { lockOf, metersOf, playedAnchors, remapEvents, remapRuns, remapStretch, remapWarp, sectionPlayedLength } from './meter';
+import { lockOf, playedAnchors, remapEvents, remapRuns, remapStretch, remapWarp, sectionPlayedLength } from './meter';
 
 export interface Upload {
   /** LOAD_TRACK, LOAD_PATCH, LOAD_LAYER, LOAD_CURVE, LOAD_SAMPLE or LOAD_STATES (m1/protocol.ts). */

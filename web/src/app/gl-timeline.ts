@@ -10,6 +10,8 @@ import {
   type Range,
 } from '../m3/geometry';
 import { sectionLength, sectionUnitsPerSec } from '../project/compile';
+import { clipWrittenAt, metersOf, writtenAt } from '../project/meter';
+import { lockTag } from './meter-ui';
 import { positionLabel } from './pattern';
 import { LANE_FIXED, PPQ, type AutoLane, type Clip, type LanePoint, type Layer, type MorphShape, type Note, type Section } from '../project/types';
 
@@ -547,7 +549,7 @@ export class GlTimeline {
     const { bg, line, accent, dim, ink } = this.colors;
     mesh.quad(0, 0, cssW, cssH, bg);
     const vp = { ppu, x0: X0 };
-    for (const g of gridLines(sec.feel, len)) {
+    for (const g of gridLines(sec.feel, len, metersOf(doc)[0].bars.beats)) {
       const x = timeToX(g.t, vp);
       mesh.quad(x, 0, g.strong ? 1.5 : 1, RULER, g.strong ? accent : line);
     }
@@ -653,9 +655,10 @@ export class GlTimeline {
         for (let px = X0; px < x1; px += 2) mesh.quad(px, this.vToY(valueAt(xToTime(px, vp)), lane.target, at) - 1, 2, 2, ink2);
         for (const p of pts) mesh.quad(timeToX(p.t, vp) - 3, this.vToY(p.v, lane.target, at) - 3, 6, 6, accent);
       }
-      if (playT >= 0) mesh.quad(timeToX(clip ? playT % (clip.loopLen || len) : playT, vp), top, 2, LANE, accent);
+      // Clips are drawn as written; a locked clip's playhead follows the source beat it is playing.
+      if (playT >= 0) mesh.quad(timeToX(clip ? clipWrittenAt(doc, sec, clip, playT) : writtenAt(doc, sec, playT), vp), top, 2, LANE, accent);
     });
-    if (playT >= 0) mesh.quad(timeToX(playT, vp) - 4, 0, 8, RULER, accent);
+    if (playT >= 0) mesh.quad(timeToX(writtenAt(doc, sec, playT), vp) - 4, 0, 8, RULER, accent);
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.disable(gl.DEPTH_TEST);
@@ -677,7 +680,7 @@ export class GlTimeline {
   }
 
   private layoutNames(layers: Layer[]): void {
-    const key = layers.map((l) => `${l.id}:${l.name}:${l.id === this.app.ui.layerId ? 1 : 0}`).join('|');
+    const key = layers.map((l) => `${l.id}:${l.name}:${l.id === this.app.ui.layerId ? 1 : 0}:${lockTag(this.app.doc, l.id)}`).join('|');
     if (key === this.nameKey) return;
     this.nameKey = key;
     this.names.replaceChildren();
@@ -691,6 +694,14 @@ export class GlTimeline {
       d.style.height = `${STRIDE}px`;
       d.textContent = l.name;
       d.title = l.kind;
+      const lock = lockTag(this.app.doc, l.id);
+      if (lock) {
+        const t = document.createElement('span');
+        t.className = 'tl-lock';
+        t.textContent = lock;
+        d.append(t);
+        d.title = `${l.kind}, ${lock === 'M mixed' ? 'clips locked to different meters' : `locked to Meter ${lock.slice(1)}`}`;
+      }
       if (l.kind === 'beat') {
         SLOT_NAMES.forEach((name, k) => {
           const s = document.createElement('span');

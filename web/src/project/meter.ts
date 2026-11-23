@@ -105,6 +105,22 @@ export function writtenAt(doc: Pick<Project, 'meters' | 'metro'>, s: Section, po
   return s.beats * PPQ;
 }
 
+/** The written position of a clip that plays at played position `pos` of its section (for the
+ *  playhead on its lane): through its meter's pattern when it is locked, else its own loop. */
+export function clipWrittenAt(doc: Pick<Project, 'meters' | 'metro'>, s: Section, c: Clip, pos: number): number {
+  const L = c.loopLen || 1;
+  const lock = lockOf(doc, s, c);
+  const order = lock ? playOrder(L, lock.meter.bars.beats, lock.pattern) : [];
+  const OL = order.reduce((n, x) => n + x.len, 0);
+  if (!lock || !(OL > 0) || asWritten(order, L)) return pos % L;
+  let x = pos % OL;
+  for (const sl of order) {
+    if (x < sl.len) return sl.src * PPQ + x;
+    x -= sl.len;
+  }
+  return 0;
+}
+
 /** Check a pattern from outside (a command's argument). Throws RangeError. */
 export function checkPattern(p: unknown, beats: number): number[] {
   if (!Array.isArray(p) || p.length < 1 || p.length > MAX_PATTERN) throw new RangeError(`a pattern is 1 to ${MAX_PATTERN} beats`);

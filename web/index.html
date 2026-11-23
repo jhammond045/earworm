@@ -157,6 +157,18 @@
           <div class="status-row"><p id="flexNote" class="status"></p><button type="button" class="help" popovertarget="h-feel" aria-label="About Feel">?</button></div>
           <div id="h-feel" class="bubble" popover>Feel plays the lane's notes or hits on a grid while the track plays, and keeps what you played underneath. Strength brings some of the played timing back; Catch is how far from a grid line a note is still pulled to it. Groove swings every other grid step. Audio says how a take's own sound is stretched to follow: Hits cuts it at each attack, Smooth stretches it evenly.</div>
         </details>
+        <details class="tl-flex" id="meterBox" data-tour="meter">
+          <summary><span class="sum-name">Meter</span> <span id="meterSummary" class="dim"></span></summary>
+          <div class="fields flex-fields" role="group" aria-label="Meter: play the beats of each bar in a new order">
+            <label class="field">Lock <select id="meterLock" aria-label="Which meter this layer's clips lock to"></select></label>
+            <label class="field"><span id="meterBeatsName">Bar</span> <span class="unit"><input type="number" id="meterBeats" min="2" max="16" step="1" aria-label="Beats per bar of the meter"><span>beats</span></span></label>
+            <div class="field wide"><span>Play</span><span class="beat-row"><span id="meterChips" class="beat-chips" role="toolbar" aria-label="The beats each bar plays, in order. Arrows move, Shift with an arrow moves a beat, Enter repeats, Delete drops."></span><button type="button" id="meterAdd" title="Add a beat: the first one the bar does not play yet, or the last again">+ Beat</button></span></div>
+            <label class="field">Typed <input type="text" id="meterPattern" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="The pattern typed as beat numbers, for example 1 3 4 2; empty plays as written"></label>
+            <div class="field"><span>Presets</span><span class="with-action"><select id="meterPreset" aria-label="Common patterns"></select><button type="button" id="meterAll" title="Play this section's pattern in every section">Copy to all</button></span></div>
+          </div>
+          <div class="status-row"><p id="meterNote" class="status"></p><button type="button" class="help" popovertarget="h-meter" aria-label="About meters">?</button></div>
+          <div id="h-meter" class="bubble" popover>A meter cuts each bar into beats and plays them in the order you give, for every clip locked to it: 1 2 3 drops the last beat of a 4-beat bar, 1 2 3 3 plays the third beat twice, 1 3 4 2 shuffles the bar. Lock picks the meter for all of this layer's clips; Free plays them as written. Meter 1 also sets the section's length, the bar lines and the click's accent. The pattern belongs to this section. Press a beat to repeat it, drag it to move it, × to drop it, or type the numbers. Each cut falls on the clip's own hit nearest the beat, so a hit played a little early stays with its beat. A held sound in a dropped beat can ring on without its attack.</div>
+        </details>
         <div class="tl-body" id="tlBody">
           <div id="tlNames" class="tl-names"></div>
           <div class="tl-scroll" id="tlScroll">
